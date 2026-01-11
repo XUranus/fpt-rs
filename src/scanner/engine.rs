@@ -57,7 +57,7 @@ fn process_scan_result(dir_scan_result : DirBatchScanResult,
     //debug!("Writing dir scan result: {:#?}", dir_scan_result);
 
     let dmeta_loc = meta_writer.write_dirmeta(&dir_scan_result.dir).unwrap();
-    info!("store dir {:#?} => {:#?}", dir_scan_result.dir.common.name, dmeta_loc);
+    //info!("store dir {:#?} => {:#?}", dir_scan_result.dir.common.name, dmeta_loc);
 
     let mut sorted_fcaches = vec![];
     let files_count = dir_scan_result.files.len();
@@ -74,7 +74,7 @@ fn process_scan_result(dir_scan_result : DirBatchScanResult,
     
     for fcache in sorted_fcaches {
         _ = fcache_writer.write(&fcache).unwrap();
-        info!("write fcache {:#?}", fcache)
+        //debug!("write fcache {:#?}", fcache)
     }
     let mut dcache : DirCacheEntry = dir_scan_result.dir.into();
     dcache.meta_loc = dmeta_loc;
@@ -113,7 +113,6 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
             let (fcache_fid, fcache_offset) = (dcache_entry.fcache_fid, dcache_entry.fcache_offset);
             let files_count = dcache_entry.files_count;
             let dmeta = meta_reader.get_dmeta(dcache_entry.meta_loc).unwrap();
-
             let dctrl_entry = DirControlEntry {
                 path: dmeta.path,
                 diff: DirDiff::New,
@@ -122,6 +121,10 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
                 files_count: files_count,
             };
             ctrl_writer.write_dir(&dctrl_entry).unwrap();
+            
+            if files_count == 0 {
+                continue;
+            }
             
             // read file cache
             let fcache_path = fcache_dir.join(format!("{}_{}.dat", "fcache", fcache_fid));
@@ -132,7 +135,6 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
 
             for fcache_entry in fcache_iter {
                 let fmeta = meta_reader.get_fmeta(fcache_entry.meta_loc).unwrap();
-
                 let fctrl_entry = FileControlEntry {
                     name: fmeta.common.name,
                     diff: FileDiff::New,

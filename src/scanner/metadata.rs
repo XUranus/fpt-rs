@@ -4,6 +4,7 @@ mod filecache;
 
 mod meta_storage;
 mod cache_storage;
+mod generator;
 
 pub use filemeta::{
     MetaCommon,

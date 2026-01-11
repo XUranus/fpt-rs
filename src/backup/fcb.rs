@@ -14,7 +14,7 @@
 
 use std::{fs::File, path::PathBuf};
 
-use crate::scanner::metadata::FileMeta;
+use crate::scanner::metadata::{DirMeta, FileMeta};
 
 /// Maximum buffer size for file data (4 MiB).
 ///
@@ -82,6 +82,27 @@ pub struct FileControlBlock {
     pub dst_offset: u64,
 }
 
+/// Dir Control Block: orchestrates backup/restore of a single dir.
+///
+/// This struct carries all necessary metadata, paths to manage a dir creation operation
+/// It is **not thread-safe** for shared access, but is safe to **move between threads**.
+#[derive(Debug)]
+pub struct DirControlBlock {
+    /// Full metadata of the source dir.
+    pub meta: Box<DirMeta>,
+    /// Absolute path to the source file.
+    pub src_path: PathBuf,
+    /// Absolute path to the target file.
+    pub dst_path: PathBuf,
+}
+
+
+#[derive(Debug)]
+pub enum ControlBlockVarient {
+    FileControlBlock(FileControlBlock),
+    DirControlBlock(DirControlBlock)
+}
+
 impl From<FileMeta> for FileControlBlock {
     /// Creates a new `FileControlBlock` from file metadata.
     ///
@@ -109,6 +130,20 @@ impl From<FileMeta> for FileControlBlock {
             dst_path: PathBuf::new(),
             src_offset: 0,
             dst_offset: 0,
+        }
+    }
+}
+
+
+impl From<DirMeta> for DirControlBlock {
+    /// Creates a new `DirControlBlock` from dir metadata.
+    ///
+    /// Note: `src_path` and `dst_path` must be set externally before use.
+    fn from(dmeta: DirMeta) -> Self {
+        Self {
+            meta: Box::new(dmeta),
+            src_path: PathBuf::new(),
+            dst_path: PathBuf::new()
         }
     }
 }

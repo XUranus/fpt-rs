@@ -14,16 +14,19 @@
 //! - **Scalability**: Configurable number of I/O threads for parallelism.
 //! - **Observability**: Detailed statistics tracking via `BackupStats`.
 
-use crate::backup::fcb::{FileControlBlock, SourceHandleState, TargetHandleState};
-use std::fs::File;
+use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats}, scanner::metadata::{ControlEntry, ControlFileReader, DirMeta, MetaRepoReader}};
+use std::{fs::File, path::PathBuf, sync::mpsc::RecvTimeoutError, time::Duration};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    mpsc::{Receiver, Sender},
+    atomic::{Ordering},
+    mpsc,
     Arc,
 };
-use log::{debug, error};
+use bincode::de;
+use chrono::format::Item;
+use log::{debug, info, warn, error};
+use sha2::digest::typenum::Or;
 
 /// A blocking I/O task for the source (reader) side.
 #[derive(Debug)]
@@ -78,52 +81,70 @@ enum BioError {
     Unknown(io::Error),
 }
 
-/// Real-time statistics for backup operations.
-///
-/// All fields are atomic to support concurrent updates from multiple threads.
-#[derive(Debug)]
-pub struct BackupStats {
-    /// Total bytes copied to target.
-    pub bytes_copied: AtomicU64,
-    /// Number of source files successfully opened.
-    pub src_opened: AtomicU64,
-    /// Number of source files successfully closed.
-    pub src_closed: AtomicU64,
-    /// Number of target files successfully opened.
-    pub dst_opened: AtomicU64,
-    /// Number of target files successfully closed.
-    pub dst_closed: AtomicU64,
-    /// Number of files fully copied.
-    pub files_copied: AtomicU64,
-    /// Number of files deleted during incremental backup.
-    pub files_deleted: AtomicU64,
-    /// Number of directories created.
-    pub dirs_created: AtomicU64,
-    /// Number of directories deleted.
-    pub dirs_deleted: AtomicU64,
-    /// Number of files that failed during processing.
-    pub files_failed: AtomicU64,
-    /// Number of directories that failed during processing.
-    pub dirs_failed: AtomicU64,
+fn concat_dir_path(
+    source_dir_base : PathBuf,
+    path : String,
+) -> PathBuf
+{
+    let path: PathBuf = PathBuf::from(path).components()
+        .skip_while(|c| matches!(c, std::path::Component::RootDir))
+        .collect();
+    source_dir_base.join(path)
 }
 
-impl Default for BackupStats {
-    fn default() -> Self {
-        Self {
-            bytes_copied: AtomicU64::new(0),
-            src_opened: AtomicU64::new(0),
-            src_closed: AtomicU64::new(0),
-            dst_opened: AtomicU64::new(0),
-            dst_closed: AtomicU64::new(0),
-            files_copied: AtomicU64::new(0),
-            files_deleted: AtomicU64::new(0),
-            dirs_created: AtomicU64::new(0),
-            dirs_deleted: AtomicU64::new(0),
-            files_failed: AtomicU64::new(0),
-            dirs_failed: AtomicU64::new(0),
-        }
-    }
+
+fn concat_file_path(
+    source_dir_base : PathBuf,
+    target_dir_base : PathBuf,
+    name : String
+) -> PathBuf
+{
+    let target_dir_base: PathBuf = target_dir_base.components()
+        .skip_while(|c| matches!(c, std::path::Component::RootDir))
+        .collect();
+    source_dir_base.join(target_dir_base).join(name)
 }
+
+pub fn spawn_file_entry_producer(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    source_dir_base : PathBuf,
+    target_dir_base : PathBuf,
+    fcb_producer_tx: mpsc::Sender<ControlBlockVarient>,
+    shared_state : Arc<SharedState>) -> std::thread::JoinHandle<()>
+{
+    let meta_repo_reader = MetaRepoReader::new(meta_dir).unwrap();
+    std::thread::spawn(move || {
+        let control_reader = ControlFileReader::open(control_file).unwrap();
+        let mut dirpath = PathBuf::new();
+
+        for entry in control_reader {
+            let entry = entry.unwrap();
+            let item = match entry {
+                ControlEntry::Dir(dentry) => {
+                    let dmeta = meta_repo_reader.get_dmeta((dentry.meta_fid, dentry.meta_offset)).unwrap();
+                    let mut dcb = DirControlBlock::from(dmeta);
+                    dcb.src_path = concat_dir_path(source_dir_base.clone(), dentry.path.clone());
+                    dcb.dst_path = concat_dir_path(target_dir_base.clone(), dentry.path.clone());
+                    dirpath = dentry.path.into();
+                    ControlBlockVarient::DirControlBlock(dcb)
+                },
+                ControlEntry::File(fentry) => {
+                    let fmeta = meta_repo_reader.get_fmeta((fentry.meta_fid, fentry.meta_offset)).unwrap();
+                    let mut fcb: FileControlBlock = FileControlBlock::from(fmeta);
+                    fcb.src_path = concat_file_path(source_dir_base.clone(), dirpath.clone(), fentry.name.clone());
+                    fcb.dst_path = concat_file_path(target_dir_base.clone(), dirpath.clone(), fentry.name.clone());
+                    ControlBlockVarient::FileControlBlock(fcb)
+                }
+            };
+            fcb_producer_tx.send(item).unwrap();
+        }
+        shared_state.entry_produce_done.store(true, Ordering::Relaxed);
+        info!("file entry producer thread end.");
+    })
+}
+
+
 
 // === Reader Control Thread ===
 
@@ -132,22 +153,45 @@ impl Default for BackupStats {
 /// The thread continuously receives FCBs, inspects their source state, and
 /// enqueues the next required I/O operation.
 pub fn spawn_reader(
-    reader_rx: Receiver<FileControlBlock>,
-    reader_io_pool_tx: Sender<ReaderBioTask>,
+    reader_rx: mpsc::Receiver<ControlBlockVarient>,
+    reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
+    shared_state : Arc<SharedState>
 ) -> std::thread::JoinHandle<()> {
+
     std::thread::spawn(move || {
-        while let Ok(fcb) = reader_rx.recv() {
-            match fcb.src_state {
-                SourceHandleState::Inited => {
-                    let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+        loop {
+            let result = reader_rx.recv_timeout(Duration::from_millis(100));
+            match result {
+                Ok(item) => {
+                    match item {
+                        ControlBlockVarient::DirControlBlock(_) => (),
+                        ControlBlockVarient::FileControlBlock(fcb) => {
+                            match fcb.src_state {
+                                SourceHandleState::Inited => {
+                                    let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                }
+                                SourceHandleState::Opened => {
+                                    let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                }
+                                // Read/PartialRead/Closed states are handled by writer or completion
+                                _ => {}
+                            }
+                        }
+                    }
+                },
+                Err(RecvTimeoutError::Timeout) => {
+                    if shared_state.entry_produce_done.load(Ordering::Relaxed)
+                        && shared_state.active_reader_io_workers.load(Ordering::Relaxed) == 0 {
+                        shared_state.reader_done.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    break;
                 }
-                SourceHandleState::Opened => {
-                    let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
-                }
-                // Read/PartialRead/Closed states are handled by writer or completion
-                _ => {}
             }
         }
+        info!("reader thread end.");
     })
 }
 
@@ -158,9 +202,9 @@ pub fn spawn_reader(
 /// Completed read operations are sent to the writer queue; errors are logged
 /// and counted in statistics.
 pub fn spawn_reader_io_result_poll(
-    reader_tx: Sender<FileControlBlock>,
-    writer_tx: Sender<FileControlBlock>,
-    result_rx: Receiver<ReaderBioResult>,
+    result_rx: mpsc::Receiver<ReaderBioResult>,
+    reader_tx: mpsc::Sender<ControlBlockVarient>,
+    writer_tx: mpsc::Sender<ControlBlockVarient>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -168,26 +212,27 @@ pub fn spawn_reader_io_result_poll(
             match result {
                 ReaderBioResult::OpenSource(Ok(fcb)) => {
                     stats.src_opened.fetch_add(1, Ordering::Relaxed);
-                    let _ = reader_tx.send(fcb);
+                    let _ = reader_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 ReaderBioResult::OpenSource(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
                 }
                 ReaderBioResult::ReadSource(Ok(fcb)) => {
-                    let _ = writer_tx.send(fcb);
+                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 ReaderBioResult::ReadSource(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
                 }
                 ReaderBioResult::CloseSource(Ok(fcb)) => {
                     stats.src_closed.fetch_add(1, Ordering::Relaxed);
-                    let _ = writer_tx.send(fcb);
+                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 ReaderBioResult::CloseSource(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
+        info!("reader io_pool polling thread end.");
     })
 }
 
@@ -195,17 +240,19 @@ pub fn spawn_reader_io_result_poll(
 
 /// Spawns a pool of threads to execute reader-side blocking I/O tasks.
 ///
-/// ⚠️ **Note**: Using `Arc<Mutex<Receiver>>` serializes task retrieval.
+/// ⚠️ **Note**: Using `Arc<Mutex<mpsc::Receiver>>` serializes task retrieval.
 /// For higher throughput, consider lock-free channels (e.g., `crossbeam`).
 pub fn spawn_reader_io_pool(
-    task_rx: Arc<Mutex<Receiver<ReaderBioTask>>>,
-    result_tx: Sender<ReaderBioResult>,
+    task_rx: Arc<Mutex<mpsc::Receiver<ReaderBioTask>>>,
+    result_tx: mpsc::Sender<ReaderBioResult>,
     num_threads: usize,
+    shared_state : Arc<SharedState>
 ) -> Vec<std::thread::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(num_threads);
     for i in 0..num_threads {
         let task_rx = Arc::clone(&task_rx);
         let result_tx = result_tx.clone();
+        let shared_state = Arc::clone(&shared_state);
         let handle = std::thread::spawn(move || {
             debug!("Reader BIO worker {} started", i);
             loop {
@@ -217,16 +264,19 @@ pub fn spawn_reader_io_pool(
 
                 match task {
                     Ok(task) => {
+                        shared_state.active_reader_io_workers.fetch_add(1, Ordering::Relaxed);
                         let result = match task {
                             ReaderBioTask::OpenSource(fcb) => open_source(fcb),
                             ReaderBioTask::ReadSource(fcb) => read_source(fcb),
                             ReaderBioTask::CloseSource(fcb) => close_source(fcb),
                         };
                         let _ = result_tx.send(result);
+                        shared_state.active_reader_io_workers.fetch_sub(1, Ordering::Relaxed);
                     }
                     Err(_) => break, // Channel closed
                 }
             }
+            info!("reader io_pool worker[{}] thread end.", i);
         });
         handles.push(handle);
     }
@@ -240,22 +290,44 @@ pub fn spawn_reader_io_pool(
 /// The thread continuously receives FCBs, inspects their target state, and
 /// enqueues the next required I/O operation.
 pub fn spawn_writer(
-    writer_rx: Receiver<FileControlBlock>,
-    writer_io_pool_tx: Sender<WriterBioTask>,
+    writer_rx: mpsc::Receiver<ControlBlockVarient>,
+    writer_io_pool_tx: mpsc::Sender<WriterBioTask>,
+    shared_state : Arc<SharedState>
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        while let Ok(fcb) = writer_rx.recv() {
-            match fcb.dst_state {
-                TargetHandleState::Inited => {
-                    let _ = writer_io_pool_tx.send(WriterBioTask::OpenTarget(fcb));
+        loop {
+            let result = writer_rx.recv_timeout(Duration::from_millis(100));
+            match result {
+                Ok(item) => {
+                    match item {
+                        ControlBlockVarient::DirControlBlock(_) => (),
+                        ControlBlockVarient::FileControlBlock(fcb) => {
+                            match fcb.dst_state {
+                                TargetHandleState::Inited => {
+                                    let _ = writer_io_pool_tx.send(WriterBioTask::OpenTarget(fcb));
+                                }
+                                TargetHandleState::Opened => {
+                                    let _ = writer_io_pool_tx.send(WriterBioTask::WriteTarget(fcb));
+                                }
+                                // Written/Closed states are final
+                                _ => {}
+                            }
+                        }
+                    }
+                },
+                Err(RecvTimeoutError::Timeout) => {
+                    if shared_state.reader_done.load(Ordering::Relaxed)
+                        && shared_state.active_writer_io_workers.load(Ordering::Relaxed) == 0 {
+                        shared_state.writer_done.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    break;
                 }
-                TargetHandleState::Opened => {
-                    let _ = writer_io_pool_tx.send(WriterBioTask::WriteTarget(fcb));
-                }
-                // Written/Closed states are final
-                _ => {}
             }
         }
+        info!("writer thread end.");
     })
 }
 
@@ -266,9 +338,8 @@ pub fn spawn_writer(
 /// After a successful write, if the file is complete, it may be finalized.
 /// Errors are logged and counted in statistics.
 pub fn spawn_writer_io_result_poll(
-    _reader_tx: Sender<FileControlBlock>, // Unused in current design
-    writer_tx: Sender<FileControlBlock>,
-    result_rx: Receiver<WriterBioResult>,
+    result_rx: mpsc::Receiver<WriterBioResult>,
+    writer_tx: mpsc::Sender<ControlBlockVarient>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -276,7 +347,7 @@ pub fn spawn_writer_io_result_poll(
             match result {
                 WriterBioResult::OpenTarget(Ok(fcb)) => {
                     stats.dst_opened.fetch_add(1, Ordering::Relaxed);
-                    let _ = writer_tx.send(fcb);
+                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 WriterBioResult::OpenTarget(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
@@ -288,7 +359,7 @@ pub fn spawn_writer_io_result_poll(
                         stats.files_copied.fetch_add(1, Ordering::Relaxed);
                         stats.bytes_copied.fetch_add(fcb.meta.size, Ordering::Relaxed);
                     }
-                    let _ = writer_tx.send(fcb);
+                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 WriterBioResult::WriteTarget(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
@@ -302,6 +373,7 @@ pub fn spawn_writer_io_result_poll(
                 }
             }
         }
+        info!("writer io_pool polling thread end.");
     })
 }
 
@@ -309,14 +381,16 @@ pub fn spawn_writer_io_result_poll(
 
 /// Spawns a pool of threads to execute writer-side blocking I/O tasks.
 pub fn spawn_writer_io_pool(
-    task_rx: Arc<Mutex<Receiver<WriterBioTask>>>,
-    result_tx: Sender<WriterBioResult>,
+    task_rx: Arc<Mutex<mpsc::Receiver<WriterBioTask>>>,
+    result_tx: mpsc::Sender<WriterBioResult>,
     num_threads: usize,
+    shared_state : Arc<SharedState>
 ) -> Vec<std::thread::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(num_threads);
     for i in 0..num_threads {
         let task_rx = Arc::clone(&task_rx);
         let result_tx = result_tx.clone();
+        let shared_state = Arc::clone(&shared_state);
         let handle = std::thread::spawn(move || {
             debug!("Writer BIO worker {} started", i);
             loop {
@@ -327,16 +401,19 @@ pub fn spawn_writer_io_pool(
 
                 match task {
                     Ok(task) => {
+                        shared_state.active_writer_io_workers.fetch_add(1, Ordering::Relaxed);
                         let result = match task {
                             WriterBioTask::OpenTarget(fcb) => open_target(fcb),
                             WriterBioTask::WriteTarget(fcb) => write_target(fcb),
                             WriterBioTask::CloseTarget(fcb) => close_target(fcb),
                         };
+                        shared_state.active_writer_io_workers.fetch_sub(1, Ordering::Relaxed);
                         let _ = result_tx.send(result);
                     }
                     Err(_) => break,
                 }
             }
+            info!("writer io_pool worker[{}] thread end.", i);
         });
         handles.push(handle);
     }
@@ -406,6 +483,7 @@ fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
         }
     }
 
+    info!("open dst {:?}", fcb.dst_path);
     // Use create_new(true) to avoid overwriting existing files?
     match File::create(&fcb.dst_path) {
         Ok(file) => {

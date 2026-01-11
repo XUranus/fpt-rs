@@ -198,7 +198,7 @@ impl<T: DeserializeOwned + FixedSize> BinObjectRandomReader<T> {
 /// Iterator over all objects in a binary cache file.
 pub struct BinaryObjectSeqIterator<T: DeserializeOwned + FixedSize> {
     index: u32,
-    total_count: Option<u32>,
+    total_count: u32,
     freader: BinObjectRandomReader<T>,
 }
 
@@ -207,7 +207,7 @@ impl<T: DeserializeOwned + FixedSize> BinaryObjectSeqIterator<T> {
     pub fn new(freader: BinObjectRandomReader<T>, total_count: u32) -> Self {
         Self {
             index: 0,
-            total_count: Some(total_count),
+            total_count,
             freader,
         }
     }
@@ -217,14 +217,14 @@ impl<T: DeserializeOwned + FixedSize> Iterator for BinaryObjectSeqIterator<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let total = self.total_count?;
-        if self.index >= total {
+        if self.total_count == 0 {
             return None;
         }
 
         match self.freader.read_object(self.index) {
             Ok(item) => {
                 self.index += 1;
+                self.total_count -= 1;
                 Some(item)
             }
             Err(_) => None,
@@ -308,12 +308,12 @@ impl DirCacheIterator {
     pub fn from(freader : DirCacheRandomReader) -> Self {
         let total_count = freader.total_count();
         // visit `DirCacheEntry` from beginning
-        Self { index : 0, total_count: Some(total_count), freader }
+        Self { index : 0, total_count: total_count, freader }
     }
 }
 
 impl FileCacheIterator {
     pub fn from(freader : FileCacheRandomReader, total_count : u32, index : u32) -> Self {
-        Self { index, total_count: Some(total_count), freader }
+        Self { index, total_count: total_count, freader }
     }
 }
