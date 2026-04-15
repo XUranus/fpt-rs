@@ -43,6 +43,9 @@ pub struct ScanOption {
 
     /// Configuration for the spillable work queue.
     pub queue_option: QueueOption,
+
+    /// Configuration for sharded control files.
+    pub shard_option: ShardOption,
 }
 
 /// Output directory configuration.
@@ -110,6 +113,40 @@ pub struct QueueOption {
     pub spill_load_batch_size: usize,
 }
 
+/// Configuration for sharded control files.
+///
+/// Enables splitting control files into multiple shards for parallel processing
+/// and handling extremely large filesets (100+ billion files).
+#[derive(Debug, Clone)]
+pub struct ShardOption {
+    /// Whether to enable sharded control files.
+    pub enabled: bool,
+
+    /// Number of shards to create.
+    pub num_shards: usize,
+
+    /// Maximum entries per shard for copy phase.
+    pub max_entries_copy: usize,
+
+    /// Maximum entries per shard for other phases (delete, hardlink, mtime).
+    pub max_entries_other: usize,
+
+    /// Maximum shard file size in bytes for copy phase.
+    pub max_size: u64,
+}
+
+impl Default for ShardOption {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            num_shards: 16,
+            max_entries_copy: 1_000_000,
+            max_entries_other: 5_000_000,
+            max_size: 100 * 1024 * 1024, // 100MB
+        }
+    }
+}
+
 impl Default for ScanOption {
     fn default() -> Self {
         Self {
@@ -134,6 +171,7 @@ impl Default for ScanOption {
                 memory_lower_bound: 50_000,
                 spill_load_batch_size: 20_000,
             },
+            shard_option: ShardOption::default(),
         }
     }
 }
@@ -216,6 +254,36 @@ impl ScanOption {
     /// Sets the previous metadata directory for incremental backup.
     pub fn prev_meta_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.target_dir.prev_meta_dir = dir;
+        self
+    }
+
+    /// Enables sharded control files.
+    pub fn enable_sharding(mut self, enabled: bool) -> Self {
+        self.shard_option.enabled = enabled;
+        self
+    }
+
+    /// Sets the number of shards.
+    pub fn shard_num(mut self, num: usize) -> Self {
+        self.shard_option.num_shards = num;
+        self
+    }
+
+    /// Sets the maximum entries per shard for copy phase.
+    pub fn shard_max_entries_copy(mut self, max: usize) -> Self {
+        self.shard_option.max_entries_copy = max;
+        self
+    }
+
+    /// Sets the maximum entries per shard for other phases.
+    pub fn shard_max_entries_other(mut self, max: usize) -> Self {
+        self.shard_option.max_entries_other = max;
+        self
+    }
+
+    /// Sets the maximum shard file size in bytes.
+    pub fn shard_max_size(mut self, size: u64) -> Self {
+        self.shard_option.max_size = size;
         self
     }
 }

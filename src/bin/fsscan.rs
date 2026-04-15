@@ -102,6 +102,26 @@ struct Args {
     /// Previous metadata directory for incremental backup (optional)
     #[arg(long, value_name = "DIR")]
     prev_meta_dir: Option<PathBuf>,
+
+    /// Enable sharded control files
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    shard: bool,
+
+    /// Number of shards for control files (default: 16)
+    #[arg(long, default_value = "16", value_name = "COUNT")]
+    shard_num: usize,
+
+    /// Max entries per shard for copy phase (default: 1000000)
+    #[arg(long, value_name = "COUNT")]
+    shard_max_entries_copy: Option<usize>,
+
+    /// Max entries per shard for other phases (default: 5000000)
+    #[arg(long, value_name = "COUNT")]
+    shard_max_entries_other: Option<usize>,
+
+    /// Max shard file size in bytes for copy phase (default: 104857600 = 100MB)
+    #[arg(long, value_name = "BYTES")]
+    shard_max_size: Option<u64>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -139,7 +159,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .worker_count(args.workers)
     .writer_count(args.writers)
     .temp_dir(args.temp_dir)
-    .prev_meta_dir(args.prev_meta_dir);
+    .prev_meta_dir(args.prev_meta_dir)
+    .enable_sharding(args.shard)
+    .shard_num(args.shard_num);
+    
+    // Apply optional shard settings
+    let scan_option = if let Some(max) = args.shard_max_entries_copy {
+        scan_option.shard_max_entries_copy(max)
+    } else {
+        scan_option
+    };
+    let scan_option = if let Some(max) = args.shard_max_entries_other {
+        scan_option.shard_max_entries_other(max)
+    } else {
+        scan_option
+    };
+    let scan_option = if let Some(size) = args.shard_max_size {
+        scan_option.shard_max_size(size)
+    } else {
+        scan_option
+    };
 
     println!("scan option : {:#?}", scan_option);
 

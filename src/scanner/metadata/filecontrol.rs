@@ -214,6 +214,42 @@ impl ControlFileWriter {
         Ok(())
     }
 
+    /// Writes a directory control entry with batch information.
+    ///
+    /// For large directories split across multiple batches:
+    /// ```text
+    /// D NN 00000000 00000100 00000064 00000010 /data/huge BATCH=0/5
+    /// D NN 00000000 00000100 00000064 00000010 /data/huge BATCH=1/5 CONT
+    /// D NN 00000000 00000100 00000064 00000010 /data/huge BATCH=2/5 CONT LAST
+    /// ```
+    pub fn write_dir_with_batch(
+        &mut self,
+        entry: &DirControlEntry,
+        batch: crate::scanner::metadata::sharded_control::BatchInfo,
+    ) -> io::Result<()> {
+        let path_len = entry.path.len() as u32;
+        let batch_marker = format!(
+            "BATCH={}/{}{}{}",
+            batch.batch_num,
+            batch.total_batches,
+            if batch.is_continuation { " CONT" } else { "" },
+            if batch.is_last { " LAST" } else { "" }
+        );
+        writeln!(
+            self.fwriter,
+            "D {} {:08X} {:08X} {:08X} {:08X} {} {}",
+            entry.diff.as_str(),
+            entry.meta_fid,
+            entry.meta_offset,
+            entry.files_count,
+            path_len,
+            entry.path,
+            batch_marker
+        )?;
+        self.dir_count += 1;
+        Ok(())
+    }
+
     /// Finishes writing and flushes all data to disk.
     ///
     /// Note: The header is **not updated** with final counts. For accurate counts,

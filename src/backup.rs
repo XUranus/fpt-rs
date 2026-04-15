@@ -12,6 +12,7 @@ use crate::backup::{
 mod fcb;
 mod bio;
 mod stats;
+pub mod sharded_processor;
 
 pub struct BackupOption {
     /// source location path prefix

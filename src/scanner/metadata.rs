@@ -5,10 +5,10 @@ mod hardlink;
 mod mtime;
 mod delete;
 mod diff;
+mod sharded_control;
 
 mod meta_storage;
 mod cache_storage;
-mod generator;
 
 pub use filemeta::{
     MetaCommon,
@@ -77,4 +77,16 @@ pub use diff::{
     DiffType,
     diff_sorted_inodes,
     generate_incremental_control_files,
+};
+
+pub use sharded_control::{
+    ShardedControlFileManager,
+    ShardedControlInfo,
+    discover_sharded_controls,
+    BatchInfo,
+    ShardSplitPolicy,
+    DEFAULT_MAX_ENTRIES_PER_SHARD_COPY,
+    DEFAULT_MAX_ENTRIES_PER_SHARD_OTHER,
+    DEFAULT_MAX_SHARD_SIZE_COPY,
+    DEFAULT_MAX_FILES_PER_BATCH,
 };
