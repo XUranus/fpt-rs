@@ -3,6 +3,7 @@ use log::info;
 use crate::backup::{
         bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask}, 
         bio::hardlink::{self, HardlinkStatsSnapshot},
+        bio::mtime::{self, MtimeStatsSnapshot},
         fcb::{ControlBlockVarient, FileControlBlock}, 
         stats::{BackupStats, BackupStatsSnapshot}
     };
@@ -26,6 +27,9 @@ pub struct BackupOption {
     
     /// Whether to run the hardlink phase after copy phase
     enable_hardlink_phase : bool,
+    
+    /// Whether to run the mtime phase after copy/hardlink phase
+    enable_mtime_phase : bool,
 }
 
 
@@ -39,6 +43,7 @@ pub struct RunningBackup {
     option : BackupOption,
     stats : Arc<BackupStats>,
     hardlink_stats : Option<HardlinkStatsSnapshot>,
+    mtime_stats : Option<MtimeStatsSnapshot>,
     terminate_handle : thread::JoinHandle<()>,
     terminate_indicator : Arc<AtomicBool>
 }
@@ -60,12 +65,19 @@ impl BackupOption {
             ctrl_dir,
             control_file,
             enable_hardlink_phase : false,
+            enable_mtime_phase : false,
         }
     }
     
     /// Enable the hardlink phase
     pub fn enable_hardlink_phase(mut self, enable: bool) -> Self {
         self.enable_hardlink_phase = enable;
+        self
+    }
+    
+    /// Enable the mtime phase
+    pub fn enable_mtime_phase(mut self, enable: bool) -> Self {
+        self.enable_mtime_phase = enable;
         self
     }
 }
@@ -99,6 +111,7 @@ impl BackupTask {
         let meta_dir = self.option.meta_dir.clone();
         let ctrl_dir = self.option.ctrl_dir.clone();
         let enable_hardlink_phase = self.option.enable_hardlink_phase;
+        let enable_mtime_phase = self.option.enable_mtime_phase;
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
@@ -152,6 +165,20 @@ impl BackupTask {
                 }
             }
             
+            // Run mtime phase if enabled
+            if enable_mtime_phase {
+                info!("Starting mtime phase...");
+                match mtime::run_mtime_phase(&ctrl_dir, &source_dir_base, &target_dir_base) {
+                    Ok(mt_stats) => {
+                        info!("Mtime phase completed: {} restored, {} failed", 
+                            mt_stats.dirs_restored, mt_stats.dirs_failed);
+                    }
+                    Err(e) => {
+                        eprintln!("Mtime phase failed: {}", e);
+                    }
+                }
+            }
+            
             terminate_indicator_inner.store(true, Ordering::Relaxed);
         });
 
@@ -159,6 +186,7 @@ impl BackupTask {
             option : self.option,
             stats,
             hardlink_stats: None,
+            mtime_stats: None,
             terminate_handle,
             terminate_indicator
         })
@@ -181,6 +209,10 @@ impl RunningBackup {
     
     pub fn hardlink_stats(&self) -> Option<&HardlinkStatsSnapshot> {
         self.hardlink_stats.as_ref()
+    }
+    
+    pub fn mtime_stats(&self) -> Option<&MtimeStatsSnapshot> {
+        self.mtime_stats.as_ref()
     }
 
     pub fn complete(&self) -> bool {

@@ -23,6 +23,7 @@ SCAN_ACL=0
 SCAN_XATTRS=0
 SCAN_HARDLINKS=0
 BACKUP_HARDLINKS=0
+BACKUP_MTIME=0
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,6 +81,7 @@ Optional Arguments:
   --scan-xattrs            Scan extended attributes during backup
   --scan-hardlinks         Scan and track hardlinks during backup
   --backup-hardlinks       Enable hardlink phase during backup
+  --backup-mtime           Enable mtime phase during backup
   -h, --help               Show this help message
 
 Examples:
@@ -144,6 +146,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --backup-hardlinks)
             BACKUP_HARDLINKS=1
+            shift
+            ;;
+        --backup-mtime)
+            BACKUP_MTIME=1
             shift
             ;;
         -h|--help)
@@ -276,8 +282,12 @@ for ((i=0; i<${#INPUT_PATHS[@]}; i++)); do
         BACKUP_ARGS+=("--hardlink")
     fi
     
-    # Add ctrl-dir if hardlink backup is enabled
-    if [[ $BACKUP_HARDLINKS -eq 1 ]]; then
+    if [[ $BACKUP_MTIME -eq 1 ]]; then
+        BACKUP_ARGS+=("--mtime")
+    fi
+    
+    # Add ctrl-dir if hardlink or mtime backup is enabled
+    if [[ $BACKUP_HARDLINKS -eq 1 || $BACKUP_MTIME -eq 1 ]]; then
         BACKUP_ARGS+=("--ctrl-dir" "$CTRL_DIR")
     fi
     
@@ -318,6 +328,9 @@ if [[ $SKIP_DIFF -eq 0 ]]; then
         fi
         if [[ $SCAN_XATTRS -eq 1 ]]; then
             DIFF_ARGS+=("--compare-xattrs")
+        fi
+        if [[ $BACKUP_MTIME -eq 1 ]]; then
+            DIFF_ARGS+=("--compare-mtime")
         fi
         
         if "$FSDIFF" \

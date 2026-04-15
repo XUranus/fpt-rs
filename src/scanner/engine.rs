@@ -4,7 +4,7 @@ use log::{debug, info, warn, error};
 use crate::scanner::{
     ScanWorkerContext,
     metadata::{
-        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, DirDiff, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FileDiff, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter
+        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, DirDiff, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FileDiff, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry
     },
     models::DirBatchScanResult, options::TargetDirOption
 };
@@ -124,13 +124,19 @@ fn process_scan_result(
 
 pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io::Error> {
     let meta_dir = target_option.meta_dir.clone();
+    let ctrl_dir = target_option.ctrl_dir.clone();
     let dcache_dir = target_option.meta_dir.clone();
     let fcache_dir = target_option.meta_dir.clone();
 
+    // Ensure ctrl_dir exists
+    fs::create_dir_all(&ctrl_dir)?;
+
     let ctrl_file_path = meta_dir.join("ctrl.txt");
+    let mtime_file_path = ctrl_dir.join("mtime.txt");
     
     let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
     let mut ctrl_writer = ControlFileWriter::new(ctrl_file_path).unwrap();    
+    let mut mtime_writer = MtimeControlFileWriter::new(mtime_file_path).unwrap();
 
     let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
         .filter_map(|f| f.ok())
@@ -147,13 +153,24 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
             let files_count = dcache_entry.files_count;
             let dmeta = meta_reader.get_dmeta(dcache_entry.meta_loc).unwrap();
             let dctrl_entry = DirControlEntry {
-                path: dmeta.path,
+                path: dmeta.path.clone(),
                 diff: DirDiff::New,
                 meta_fid: dcache_entry.meta_loc.0,
                 meta_offset: dcache_entry.meta_loc.1,
                 files_count: files_count,
             };
             ctrl_writer.write_dir(&dctrl_entry).unwrap();
+            
+            // Write mtime entry for directory
+            let mtime_entry = MtimeDirEntry {
+                path: dmeta.path,
+                mode: dmeta.common.mode,
+                uid: 0, // TODO: extract from metadata if available
+                gid: 0, // TODO: extract from metadata if available
+                atime: dmeta.common.atime as u64,
+                mtime: dmeta.common.mtime as u64,
+            };
+            mtime_writer.write_dir(&mtime_entry).unwrap();
             
             if files_count == 0 {
                 continue;
@@ -181,5 +198,6 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
     }
 
     ctrl_writer.finish().unwrap();
+    mtime_writer.finish().unwrap();
     Ok(())
 }

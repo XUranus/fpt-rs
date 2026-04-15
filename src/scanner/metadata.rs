@@ -2,6 +2,7 @@ mod filecontrol;
 mod filemeta;
 mod filecache;
 mod hardlink;
+mod mtime;
 
 mod meta_storage;
 mod cache_storage;
@@ -53,4 +54,10 @@ pub use hardlink::{
     HardlinkGroup,
     HardlinkIndex,
     HardlinkInodeEntry,
+};
+
+pub use mtime::{
+    MtimeControlFileReader,
+    MtimeControlFileWriter,
+    MtimeDirEntry,
 };

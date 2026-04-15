@@ -38,6 +38,10 @@ struct Args {
     /// Compare extended attributes (xattrs)
     #[arg(long)]
     compare_xattrs: bool,
+    
+    /// Compare directory mtime (modification time)
+    #[arg(long)]
+    compare_mtime: bool,
 
     /// Verbose output
     #[arg(short, long)]
@@ -49,8 +53,10 @@ struct FileInfo {
     path: PathBuf,
     size: u64,
     checksum: Option<String>,
+    is_dir: bool,
     is_symlink: bool,
     symlink_target: Option<PathBuf>,
+    mtime: u64,
     #[cfg(target_os = "linux")]
     acl: Option<String>,
     #[cfg(target_os = "linux")]
@@ -64,6 +70,7 @@ struct DiffReport {
     size_mismatch: Vec<(PathBuf, u64, u64)>,
     checksum_mismatch: Vec<PathBuf>,
     symlink_mismatch: Vec<(PathBuf, Option<PathBuf>, Option<PathBuf>)>,
+    mtime_mismatch: Vec<(PathBuf, u64, u64)>,
     identical: Vec<PathBuf>,
 }
 
@@ -75,6 +82,7 @@ impl DiffReport {
             size_mismatch: Vec::new(),
             checksum_mismatch: Vec::new(),
             symlink_mismatch: Vec::new(),
+            mtime_mismatch: Vec::new(),
             identical: Vec::new(),
         }
     }
@@ -85,6 +93,7 @@ impl DiffReport {
             || !self.size_mismatch.is_empty()
             || !self.checksum_mismatch.is_empty()
             || !self.symlink_mismatch.is_empty()
+            || !self.mtime_mismatch.is_empty()
     }
 
     fn print_summary(&self) {
@@ -104,6 +113,9 @@ impl DiffReport {
             }
             if !self.symlink_mismatch.is_empty() {
                 println!("  ! {} files with symlink mismatch", self.symlink_mismatch.len());
+            }
+            if !self.mtime_mismatch.is_empty() {
+                println!("  ! {} directories with mtime mismatch", self.mtime_mismatch.len());
             }
             println!("\nResult: DIFFERENCES FOUND");
         } else {
@@ -154,6 +166,15 @@ impl DiffReport {
                 }
             }
         }
+        
+        if !self.mtime_mismatch.is_empty() {
+            println!("\n--- Directories with mtime mismatch ---");
+            for (path, src_mtime, tgt_mtime) in &self.mtime_mismatch {
+                println!("  ! {} (mtime: {} vs {})", 
+                    path.display(), src_mtime, tgt_mtime);
+            }
+        }
+        
         // Note: Identical files are not listed to reduce output noise
     }
 }
@@ -235,6 +256,7 @@ fn collect_files(
     strip_prefix: Option<&Path>,
     compare_acl: bool,
     compare_xattrs: bool,
+    compare_mtime: bool,
 ) -> io::Result<HashMap<PathBuf, FileInfo>> {
     let mut files = HashMap::new();
     
@@ -302,14 +324,30 @@ fn collect_files(
         #[cfg(not(target_os = "linux"))]
         let (acl, xattrs) = (None, None);
         
+        let is_dir = metadata.is_dir();
+        
+        // Get mtime from metadata
+        #[cfg(unix)]
+        let mtime = if compare_mtime {
+            use std::os::unix::fs::MetadataExt;
+            metadata.mtime() as u64
+        } else {
+            0
+        };
+        
+        #[cfg(not(unix))]
+        let mtime = 0u64;
+        
         files.insert(
             relative_path,
             FileInfo {
                 path: path.to_path_buf(),
                 size: metadata.len(),
                 checksum,
+                is_dir,
                 is_symlink,
                 symlink_target,
+                mtime,
                 #[cfg(target_os = "linux")]
                 acl,
                 #[cfg(target_os = "linux")]
@@ -330,20 +368,21 @@ fn compare_directories(
     follow_links: bool,
     compare_acl: bool,
     compare_xattrs: bool,
+    compare_mtime: bool,
     verbose: bool,
 ) -> io::Result<DiffReport> {
     println!("Scanning source directory: {}", source_path.display());
     if let Some(prefix) = source_strip_prefix {
         println!("  Stripping prefix: {}", prefix.display());
     }
-    let source_files = collect_files(source_path, follow_links, source_strip_prefix, compare_acl, compare_xattrs)?;
+    let source_files = collect_files(source_path, follow_links, source_strip_prefix, compare_acl, compare_xattrs, compare_mtime)?;
     println!("  Found {} entries", source_files.len());
     
     println!("Scanning target directory: {}", target_path.display());
     if let Some(prefix) = target_strip_prefix {
         println!("  Stripping prefix: {}", prefix.display());
     }
-    let target_files = collect_files(target_path, follow_links, target_strip_prefix, compare_acl, compare_xattrs)?;
+    let target_files = collect_files(target_path, follow_links, target_strip_prefix, compare_acl, compare_xattrs, compare_mtime)?;
     println!("  Found {} entries", target_files.len());
     
     let mut report = DiffReport::new();
@@ -390,6 +429,15 @@ fn compare_directories(
                     } else {
                         report.identical.push(rel_path.clone());
                     }
+                }
+                
+                // Compare mtime for directories if requested
+                if compare_mtime && src_info.is_dir && src_info.mtime != tgt_info.mtime {
+                    report.mtime_mismatch.push((
+                        rel_path.clone(),
+                        src_info.mtime,
+                        tgt_info.mtime,
+                    ));
                 }
             }
         }
@@ -443,6 +491,7 @@ fn main() -> io::Result<()> {
         args.follow_links,
         args.compare_acl,
         args.compare_xattrs,
+        args.compare_mtime,
         args.verbose,
     )?;
     
