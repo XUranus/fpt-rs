@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use clap::Parser;
 use sha2::{Sha256, Digest};
 use walkdir::WalkDir;
+use base64::Engine as _;
 
 #[derive(Parser)]
 #[command(name = "fsdiff", version = "1.0", author = "Bifrost")]
@@ -30,6 +31,14 @@ struct Args {
     #[arg(short, long)]
     follow_links: bool,
 
+    /// Compare ACLs (Access Control Lists)
+    #[arg(long)]
+    compare_acl: bool,
+
+    /// Compare extended attributes (xattrs)
+    #[arg(long)]
+    compare_xattrs: bool,
+
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
@@ -42,6 +51,10 @@ struct FileInfo {
     checksum: Option<String>,
     is_symlink: bool,
     symlink_target: Option<PathBuf>,
+    #[cfg(target_os = "linux")]
+    acl: Option<String>,
+    #[cfg(target_os = "linux")]
+    xattrs: Option<String>,
 }
 
 #[derive(Debug)]
@@ -162,11 +175,66 @@ fn calculate_checksum(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Get ACL text for a file (Linux only)
+#[cfg(target_os = "linux")]
+fn get_acl_text(path: &Path) -> Option<String> {
+    use exacl::getfacl;
+    match getfacl(path, None) {
+        Ok(acl_entries) => {
+            let text = acl_entries.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_acl_text(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Get xattrs text for a file (Linux only)
+#[cfg(target_os = "linux")]
+fn get_xattrs_text(path: &Path) -> Option<String> {
+    match xattr::list(path) {
+        Ok(attrs) => {
+            let mut pairs = Vec::new();
+            for attr in attrs {
+                let attr_str = attr.to_string_lossy().into_owned();
+                if let Ok(Some(value)) = xattr::get(path, &attr) {
+                    let b64_value = base64::engine::general_purpose::STANDARD.encode(&value);
+                    pairs.push(format!("{}={}", attr_str, b64_value));
+                }
+            }
+            if pairs.is_empty() {
+                None
+            } else {
+                Some(pairs.join("\n"))
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_xattrs_text(_path: &Path) -> Option<String> {
+    None
+}
+
 /// Collect file information from a directory
 fn collect_files(
     base_path: &Path,
     follow_links: bool,
     strip_prefix: Option<&Path>,
+    compare_acl: bool,
+    compare_xattrs: bool,
 ) -> io::Result<HashMap<PathBuf, FileInfo>> {
     let mut files = HashMap::new();
     
@@ -224,6 +292,16 @@ fn collect_files(
             None
         };
         
+        #[cfg(target_os = "linux")]
+        let (acl, xattrs) = if compare_acl || compare_xattrs {
+            (get_acl_text(path), get_xattrs_text(path))
+        } else {
+            (None, None)
+        };
+        
+        #[cfg(not(target_os = "linux"))]
+        let (acl, xattrs) = (None, None);
+        
         files.insert(
             relative_path,
             FileInfo {
@@ -232,6 +310,10 @@ fn collect_files(
                 checksum,
                 is_symlink,
                 symlink_target,
+                #[cfg(target_os = "linux")]
+                acl,
+                #[cfg(target_os = "linux")]
+                xattrs,
             },
         );
     }
@@ -246,20 +328,22 @@ fn compare_directories(
     source_strip_prefix: Option<&Path>,
     target_strip_prefix: Option<&Path>,
     follow_links: bool,
+    compare_acl: bool,
+    compare_xattrs: bool,
     verbose: bool,
 ) -> io::Result<DiffReport> {
     println!("Scanning source directory: {}", source_path.display());
     if let Some(prefix) = source_strip_prefix {
         println!("  Stripping prefix: {}", prefix.display());
     }
-    let source_files = collect_files(source_path, follow_links, source_strip_prefix)?;
+    let source_files = collect_files(source_path, follow_links, source_strip_prefix, compare_acl, compare_xattrs)?;
     println!("  Found {} entries", source_files.len());
     
     println!("Scanning target directory: {}", target_path.display());
     if let Some(prefix) = target_strip_prefix {
         println!("  Stripping prefix: {}", prefix.display());
     }
-    let target_files = collect_files(target_path, follow_links, target_strip_prefix)?;
+    let target_files = collect_files(target_path, follow_links, target_strip_prefix, compare_acl, compare_xattrs)?;
     println!("  Found {} entries", target_files.len());
     
     let mut report = DiffReport::new();
@@ -357,6 +441,8 @@ fn main() -> io::Result<()> {
         args.strip_source_prefix.as_deref(),
         args.strip_target_prefix.as_deref(),
         args.follow_links,
+        args.compare_acl,
+        args.compare_xattrs,
         args.verbose,
     )?;
     

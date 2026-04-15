@@ -15,7 +15,7 @@
 //! - **Observability**: Detailed statistics tracking via `BackupStats`.
 
 use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats}, scanner::metadata::{ControlEntry, ControlFileReader, DirMeta, MetaRepoReader}};
-use std::{fs::File, path::PathBuf, sync::mpsc::RecvTimeoutError, time::Duration};
+use std::{fs::File, path::{Path, PathBuf}, sync::mpsc::RecvTimeoutError, time::Duration};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 use std::sync::{
@@ -27,6 +27,7 @@ use bincode::de;
 use chrono::format::Item;
 use log::{debug, info, warn, error};
 use sha2::digest::typenum::Or;
+use base64::Engine as _;
 
 /// A blocking I/O task for the source (reader) side.
 #[derive(Debug)]
@@ -180,15 +181,21 @@ pub fn spawn_reader(
                             let _ = writer_tx.send(ControlBlockVarient::DirControlBlock(dcb));
                         }
                         ControlBlockVarient::FileControlBlock(fcb) => {
-                            match fcb.src_state {
-                                SourceHandleState::Inited => {
-                                    let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                            // Check if this is a symlink - symlinks don't need content copying
+                            if fcb.meta.common.symlink_target_path.is_some() {
+                                // Forward directly to writer for symlink creation
+                                let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
+                            } else {
+                                match fcb.src_state {
+                                    SourceHandleState::Inited => {
+                                        let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                    }
+                                    SourceHandleState::Opened => {
+                                        let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                    }
+                                    // Read/PartialRead/Closed states are handled by writer or completion
+                                    _ => {}
                                 }
-                                SourceHandleState::Opened => {
-                                    let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
-                                }
-                                // Read/PartialRead/Closed states are handled by writer or completion
-                                _ => {}
                             }
                         }
                     }
@@ -498,6 +505,34 @@ fn close_source(mut fcb: FileControlBlock) -> ReaderBioResult {
 }
 
 fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
+    // Check if this is a symlink
+    if let Some(ref symlink_target) = fcb.meta.common.symlink_target_path {
+        // Create parent directories if needed
+        if let Some(parent) = fcb.dst_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                error!("Failed to create target directory {:?}: {}", parent, e);
+                return WriterBioResult::OpenTarget(Err(BioError::Unknown(e)));
+            }
+        }
+        
+        // Create the symlink
+        if let Err(e) = create_symlink(&fcb.src_path, &fcb.dst_path, symlink_target) {
+            error!("Failed to create symlink {:?} -> {}: {}", fcb.dst_path, symlink_target, e);
+            return WriterBioResult::OpenTarget(Err(BioError::Unknown(e)));
+        }
+        
+        // Restore ACLs and xattrs for symlinks too
+        #[cfg(target_os = "linux")]
+        {
+            restore_xattrs(&fcb.dst_path, &fcb.meta.common.xattributes);
+            restore_acl(&fcb.dst_path, &fcb.meta.common.posix_access_acl, &fcb.meta.common.posix_default_acl);
+        }
+        
+        // Mark as written (symlinks don't need content copying)
+        fcb.dst_state = TargetHandleState::Written;
+        return WriterBioResult::OpenTarget(Ok(fcb));
+    }
+    
     // Create parent directories if needed
     if let Some(parent) = fcb.dst_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -548,8 +583,95 @@ fn write_target(mut fcb: FileControlBlock) -> WriterBioResult {
     }
 }
 
+/// Restore extended attributes to the target file
+#[cfg(target_os = "linux")]
+fn restore_xattrs(path: &PathBuf, xattrs: &Option<String>) {
+    use base64::Engine as _;
+    
+    if let Some(xattr_str) = xattrs {
+        for line in xattr_str.lines() {
+            if let Some((name, b64_value)) = line.split_once('=') {
+                if let Ok(value) = base64::engine::general_purpose::STANDARD.decode(b64_value) {
+                    if let Err(e) = xattr::set(path, name, &value) {
+                        error!("Failed to set xattr {} on {:?}: {}", name, path, e);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn restore_xattrs(_path: &PathBuf, _xattrs: &Option<String>) {}
+
+/// Restore ACL to the target file
+#[cfg(target_os = "linux")]
+fn restore_acl(path: &PathBuf, access_acl: &Option<String>, default_acl: &Option<String>) {
+    use exacl::{setfacl, AclEntry};
+    
+    let mut acl_entries = Vec::new();
+    
+    // Parse and add access ACL entries
+    if let Some(acl_str) = access_acl {
+        for line in acl_str.lines() {
+            if let Ok(entry) = line.parse::<AclEntry>() {
+                acl_entries.push(entry);
+            }
+        }
+    }
+    
+    // Parse and add default ACL entries (for directories)
+    if let Some(acl_str) = default_acl {
+        for line in acl_str.lines() {
+            if let Ok(entry) = line.parse::<AclEntry>() {
+                acl_entries.push(entry);
+            }
+        }
+    }
+    
+    if !acl_entries.is_empty() {
+        if let Err(e) = setfacl(&[path.as_path()], &acl_entries, None) {
+            error!("Failed to set ACL on {:?}: {}", path, e);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn restore_acl(_path: &PathBuf, _access_acl: &Option<String>, _default_acl: &Option<String>) {}
+
+/// Create a symlink at the target path
+fn create_symlink(src_path: &PathBuf, dst_path: &PathBuf, target: &str) -> io::Result<()> {
+    // Remove existing file/symlink if exists
+    if dst_path.exists() {
+        std::fs::remove_file(dst_path)?;
+    }
+    
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, dst_path)
+    }
+    #[cfg(windows)]
+    {
+        // On Windows, determine if it's a file or directory symlink
+        let src_target = src_path.parent().unwrap_or(Path::new("")).join(target);
+        if src_target.is_dir() {
+            std::os::windows::fs::symlink_dir(target, dst_path)
+        } else {
+            std::os::windows::fs::symlink_file(target, dst_path)
+        }
+    }
+}
+
 fn close_target(mut fcb: FileControlBlock) -> WriterBioResult {
     drop(fcb.dst_handle.take()); // Close file if open
+    
+    // Restore metadata (ACLs, xattrs) after file is closed
+    #[cfg(target_os = "linux")]
+    {
+        restore_xattrs(&fcb.dst_path, &fcb.meta.common.xattributes);
+        restore_acl(&fcb.dst_path, &fcb.meta.common.posix_access_acl, &fcb.meta.common.posix_default_acl);
+    }
+    
     fcb.dst_state = TargetHandleState::Closed;
     WriterBioResult::CloseTarget(Ok(fcb))
 }

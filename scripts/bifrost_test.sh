@@ -19,6 +19,8 @@ BACKUP_WORKERS=4
 VERBOSE=0
 SKIP_DIFF=0
 KEEP_WORK_DIR=0
+SCAN_ACL=0
+SCAN_XATTRS=0
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,6 +74,8 @@ Optional Arguments:
   --skip-diff              Skip diff verification
   -v, --verbose            Verbose output
   --keep-work-dir          Keep working directory after test
+  --scan-acl               Scan ACLs during backup
+  --scan-xattrs            Scan extended attributes during backup
   -h, --help               Show this help message
 
 Examples:
@@ -120,6 +124,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --keep-work-dir)
             KEEP_WORK_DIR=1
+            shift
+            ;;
+        --scan-acl)
+            SCAN_ACL=1
+            shift
+            ;;
+        --scan-xattrs)
+            SCAN_XATTRS=1
             shift
             ;;
         -h|--help)
@@ -196,6 +208,12 @@ SCAN_ARGS=()
 if [[ $VERBOSE -eq 1 ]]; then
     SCAN_ARGS+=("-v")
 fi
+if [[ $SCAN_ACL -eq 1 ]]; then
+    SCAN_ARGS+=("--scan-acl")
+fi
+if [[ $SCAN_XATTRS -eq 1 ]]; then
+    SCAN_ARGS+=("--scan-xattrs")
+fi
 
 # Run fsscan
 echo "Running fsscan..."
@@ -271,6 +289,12 @@ if [[ $SKIP_DIFF -eq 0 ]]; then
         DIFF_ARGS=()
         if [[ $VERBOSE -eq 1 ]]; then
             DIFF_ARGS+=("-v")
+        fi
+        if [[ $SCAN_ACL -eq 1 ]]; then
+            DIFF_ARGS+=("--compare-acl")
+        fi
+        if [[ $SCAN_XATTRS -eq 1 ]]; then
+            DIFF_ARGS+=("--compare-xattrs")
         fi
         
         if "$FSDIFF" \

@@ -188,4 +188,16 @@ impl ScanOption {
         self.queue_option.temp_dir = dir;
         self
     }
+
+    /// Configures whether ACLs should be scanned.
+    pub fn scan_acl(mut self, scan: bool) -> Self {
+        self.meta_option.scan_acl = scan;
+        self
+    }
+
+    /// Configures whether extended attributes should be scanned.
+    pub fn scan_xattrs(mut self, scan: bool) -> Self {
+        self.meta_option.scan_xattrs = scan;
+        self
+    }
 }

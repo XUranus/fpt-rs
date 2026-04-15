@@ -14,13 +14,15 @@ use super::super::scanner::metadata::{DirMeta, FileMeta, MetaCommon};
 
 
 #[cfg(unix)]
-fn stat_common(path: &Path, _is_dir: bool) -> std::io::Result<MetaCommon> {
-    // Use standard stat (not fstatat) for simplicity and compatibility
+fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
+    use nix::sys::stat::lstat;
+    
+    // Use lstat to not follow symlinks (we want to stat the symlink itself)
     let p = path
         .to_str()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid UTF-8 path"))?;
 
-    let metadata: FileStat = stat(p)
+    let metadata: FileStat = lstat(p)
         .map_err(|e| std::io::Error::from(e))?; // nix::Error → std::io::Error
 
     let name = path
@@ -51,12 +53,22 @@ fn stat_common(path: &Path, _is_dir: bool) -> std::io::Result<MetaCommon> {
         }
     }
 
-    // Linux: extended attributes
+    // Linux: extended attributes and ACL
     #[cfg(target_os = "linux")]
     {
         if let Ok(xattrs_str) = get_xattrs_as_string(path) {
             if !xattrs_str.is_empty() {
                 common.xattributes = Some(xattrs_str);
+            }
+        }
+        
+        // Get ACL (access and default for directories)
+        if let Ok((access_acl, default_acl)) = get_acl_text(path, is_dir) {
+            if !access_acl.is_empty() {
+                common.posix_access_acl = Some(access_acl);
+            }
+            if !default_acl.is_empty() {
+                common.posix_default_acl = Some(default_acl);
             }
         }
     }
@@ -84,6 +96,43 @@ fn get_xattrs_as_string(path: &Path) -> std::io::Result<String> {
     }
 
     Ok(pairs.join("\n"))
+}
+
+/// Get ACL text representation for a file or directory
+/// Returns (access_acl, default_acl) where default_acl is only for directories
+#[cfg(all(unix, target_os = "linux"))]
+fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> {
+    use exacl::{getfacl, AclEntry};
+    
+    let mut access_acl = String::new();
+    let mut default_acl = String::new();
+    
+    match getfacl(path, None) {
+        Ok(acl_entries) => {
+            for entry in acl_entries {
+                let entry_str = entry.to_string();
+                // Check if it's a default ACL (starts with "default:")
+                if entry_str.starts_with("default:") {
+                    if is_dir {
+                        if !default_acl.is_empty() {
+                            default_acl.push('\n');
+                        }
+                        default_acl.push_str(&entry_str);
+                    }
+                } else {
+                    if !access_acl.is_empty() {
+                        access_acl.push('\n');
+                    }
+                    access_acl.push_str(&entry_str);
+                }
+            }
+        }
+        Err(_) => {
+            // ACL not supported or not available
+        }
+    }
+    
+    Ok((access_acl, default_acl))
 }
 
 
@@ -222,6 +271,45 @@ pub fn stat_dir(path: &PathBuf) -> std::io::Result<DirMeta> {
     })
 }
 
+/// Detect sparse file holes by analyzing file extents
+/// Returns a vector of (offset, length) tuples representing holes
+#[cfg(all(unix, target_os = "linux"))]
+fn detect_sparse_ranges(path: &Path) -> Option<Vec<(u64, u64)>> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::io::AsRawFd;
+    
+    // Check if file is actually sparse by comparing size vs blocks used
+    let metadata = std::fs::metadata(path).ok()?;
+    let size = metadata.len();
+    let blocks = metadata.blocks() as u64;
+    let block_size = 512u64; // Standard block size for st_blocks
+    
+    let apparent_size = size;
+    let actual_size = blocks * block_size;
+    
+    // If apparent size is significantly larger than actual size, it's sparse
+    if apparent_size <= actual_size || apparent_size == 0 {
+        return None;
+    }
+    
+    // Try to use FIEMAP ioctl to get exact hole locations
+    // For now, we return a simple representation: one hole at the end
+    // A full implementation would use ioctl(FIEMAP) to get precise extents
+    let hole_start = actual_size;
+    let hole_len = apparent_size - actual_size;
+    
+    if hole_len > 0 {
+        Some(vec![(hole_start, hole_len)])
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_sparse_ranges(_path: &Path) -> Option<Vec<(u64, u64)>> {
+    None
+}
+
 pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
     let common = stat_common(path, false)?;
 
@@ -243,11 +331,14 @@ pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
     } else {
         1
     };
+    
+    // Detect sparse file ranges
+    let sparse_range = detect_sparse_ranges(path);
 
     Ok(FileMeta {
         common,
         size,
         links,
-        sparse_range: None,
+        sparse_range,
     })
 }

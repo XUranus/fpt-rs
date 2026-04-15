@@ -92,7 +92,47 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     continue;
                 }
 
-                if file_type.is_dir() {
+                if file_type.is_symlink() {
+                    // Handle symlinks - always record them as files, but only follow if configured
+                    debug!("Processing symlink: {:?}", path);
+                    match fstat::stat_file(&path) {
+                        Ok(file_meta) => {
+                            let file_size = file_meta.size;
+                            dir_result.files.push(file_meta);
+                            stats.add_file_size(file_size);
+                            stats.inc_files();
+                            
+                            // Only follow symlink if it's a directory and follow_symlinks is enabled
+                            if scan_option.meta_option.follow_symlinks {
+                                if let Ok(target_meta) = std::fs::metadata(&path) {
+                                    if target_meta.is_dir() {
+                                        debug!("Following symlink to directory: {:?}", path);
+                                        if let Err(e) = dirent_queue.push(DirScanEntry::new(path, depth + 1)) {
+                                            error!("Failed to push directory to queue: {:?}", e);
+                                            stats.inc_failed_dirs();
+                                        } else {
+                                            stats.inc_dirs();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Broken symlinks will fail here, but we should still record them
+                            error!("Failed to stat symlink {:?}: {} (may be broken)", path, e);
+                            // Try to get basic info for broken symlinks
+                            match fstat::stat_file(&path) {
+                                Ok(file_meta) => {
+                                    dir_result.files.push(file_meta);
+                                    stats.inc_files();
+                                }
+                                Err(_) => {
+                                    stats.inc_failed_files();
+                                }
+                            }
+                        }
+                    }
+                } else if file_type.is_dir() {
                     // Enqueue subdirectory for recursive scanning
                     debug!("Enqueuing subdirectory: {:?}", path);
                     if let Err(e) = dirent_queue.push(DirScanEntry::new(path, depth + 1)) {
@@ -102,7 +142,7 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         stats.inc_dirs();
                     }
                 } else {
-                    // Process regular file (or symlink, device, etc.)
+                    // Process regular file (or device, etc.)
                     debug!("Processing file: {:?}", path);
                     match fstat::stat_file(&path) {
                         Ok(file_meta) => {

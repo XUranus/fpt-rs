@@ -86,6 +86,14 @@ struct Args {
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
+    /// Scan ACLs (Access Control Lists)
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    scan_acl: bool,
+
+    /// Scan extended attributes (xattrs)
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    scan_xattrs: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -116,6 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .follow_symlinks(args.follow_symlinks)
     .scan_hidden(args.scan_hidden)
+    .scan_acl(args.scan_acl)
+    .scan_xattrs(args.scan_xattrs)
     .max_depth(args.max_depth)
     .worker_count(args.workers)
     .writer_count(args.writers)
