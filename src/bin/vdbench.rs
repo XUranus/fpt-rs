@@ -156,6 +156,7 @@ fn main() {
     let file_count = Arc::new(AtomicU64::new(0));
     let dir_count = Arc::new(AtomicU64::new(0));
     let total_size = Arc::new(AtomicU64::new(0));
+    let pending_work = Arc::new(AtomicU64::new(1)); // Start with 1 for root
 
     // Pre-allocate file content buffer (zero-filled)
     let content = vec![0u8; opts.size as usize];
@@ -171,38 +172,66 @@ fn main() {
         let file_count = Arc::clone(&file_count);
         let dir_count = Arc::clone(&dir_count);
         let total_size = Arc::clone(&total_size);
+        let pending = Arc::clone(&pending_work);
         let content = content.clone();
         let opts = opts.clone();
         let tx = tx.clone();
 
         let handle = thread::spawn(move || {
-            while let Ok((path, current_depth)) = rx.recv() {
-                if current_depth >= opts.depth {
-                    continue;
-                }
+            loop {
+                // Try to receive work item
+                match rx.try_recv() {
+                    Ok((path, current_depth)) => {
+                        if current_depth >= opts.depth {
+                            // Just count down and skip
+                            pending.fetch_sub(1, Ordering::SeqCst);
+                            continue;
+                        }
 
-                // Create subdirectories
-                let mut new_dirs = Vec::with_capacity(opts.dirs as usize);
-                for i in 0..opts.dirs {
-                    let subdir = path.join(format!("d{}", i));
-                    fs::create_dir_all(&subdir).expect("Failed to create subdirectory");
-                    dir_count.fetch_add(1, Ordering::Relaxed);
-                    new_dirs.push(subdir);
-                }
+                        // Create subdirectories
+                        let mut new_dirs = Vec::with_capacity(opts.dirs as usize);
+                        for i in 0..opts.dirs {
+                            let subdir = path.join(format!("d{}", i));
+                            fs::create_dir_all(&subdir).expect("Failed to create subdirectory");
+                            dir_count.fetch_add(1, Ordering::Relaxed);
+                            new_dirs.push(subdir);
+                        }
 
-                // Create files
-                for i in 0..opts.files {
-                    let file_path = path.join(format!("f{}", i));
-                    fs::write(&file_path, &content).expect("Failed to write file");
-                    file_count.fetch_add(1, Ordering::Relaxed);
-                    total_size.fetch_add(opts.size, Ordering::Relaxed);
-                }
+                        // Create files
+                        for i in 0..opts.files {
+                            let file_path = path.join(format!("f{}", i));
+                            fs::write(&file_path, &content).expect("Failed to write file");
+                            file_count.fetch_add(1, Ordering::Relaxed);
+                            total_size.fetch_add(opts.size, Ordering::Relaxed);
+                        }
 
-                // Queue subdirectories for deeper levels
-                for subdir in new_dirs {
-                    tx.send((subdir, current_depth + 1)).unwrap();
+                        // Queue subdirectories for deeper levels
+                        let new_work = new_dirs.len() as u64;
+                        if new_work > 0 {
+                            pending.fetch_add(new_work, Ordering::SeqCst);
+                            for subdir in new_dirs {
+                                tx.send((subdir, current_depth + 1)).unwrap();
+                            }
+                        }
+                        
+                        // Mark current work as done
+                        pending.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    Err(crossbeam::channel::TryRecvError::Empty) => {
+                        // No work available, check if we're done
+                        if pending.load(Ordering::SeqCst) == 0 {
+                            break;
+                        }
+                        // Brief sleep to avoid busy-waiting
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                        break;
+                    }
                 }
             }
+            // Drop tx when worker exits to allow channel to close
+            drop(tx);
         });
         handles.push(handle);
     }
@@ -211,33 +240,50 @@ fn main() {
     let file_count_report = Arc::clone(&file_count);
     let dir_count_report = Arc::clone(&dir_count);
     let total_size_report = Arc::clone(&total_size);
-    let last_report_clone = Arc::clone(&last_report);
     let report_handle = thread::spawn(move || {
+        let mut last_files = 0u64;
+        let mut last_report_time = Instant::now();
+        
         loop {
-            thread::sleep(Duration::from_secs(5));
+            thread::sleep(Duration::from_secs(1));
             
             let files = file_count_report.load(Ordering::Relaxed);
             let dirs = dir_count_report.load(Ordering::Relaxed);
             let size = total_size_report.load(Ordering::Relaxed);
-            let elapsed = start.elapsed().as_secs();
-            
-            // Check if work is done (no progress in last 5 seconds and files > 0)
-            let last = last_report_clone.load(Ordering::Relaxed);
-            if files == last && files > 0 {
-                break;
-            }
-            last_report_clone.store(files, Ordering::Relaxed);
-            
-            println!(
-                "[Progress] Elapsed: {:3}s | Dirs: {:6} | Files: {:7} | Size: {}",
-                elapsed,
-                dirs,
-                files,
-                format_bytes(size)
-            );
             
             // Exit if we've generated all expected files
-            if files >= total_files {
+            if files >= total_files && files > 0 {
+                let elapsed = start.elapsed().as_secs();
+                println!(
+                    "[Progress] Elapsed: {:3}s | Dirs: {:6} | Files: {:7} | Size: {}",
+                    elapsed,
+                    dirs,
+                    files,
+                    format_bytes(size)
+                );
+                break;
+            }
+            
+            // Print progress every 5 seconds or when there's progress
+            let now = Instant::now();
+            let should_report = now.duration_since(last_report_time).as_secs() >= 5 
+                || (files != last_files && files > 0);
+            
+            if should_report {
+                let elapsed = start.elapsed().as_secs();
+                println!(
+                    "[Progress] Elapsed: {:3}s | Dirs: {:6} | Files: {:7} | Size: {}",
+                    elapsed,
+                    dirs,
+                    files,
+                    format_bytes(size)
+                );
+                last_report_time = now;
+                last_files = files;
+            }
+            
+            // Check if work is done (no progress in last 5 seconds and files > 0)
+            if files == last_files && files > 0 && now.duration_since(last_report_time).as_secs() >= 5 {
                 break;
             }
         }

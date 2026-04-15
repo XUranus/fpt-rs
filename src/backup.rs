@@ -91,11 +91,11 @@ impl BackupTask {
     
         let entry_producer_handle = copy::spawn_file_entry_producer(control_file, meta_dir, source_dir_base, target_dir_base, fcb_reader_tx.clone(), Arc::clone(&shared_state));
 
-        let reader_handle = copy::spawn_reader(fcb_reader_rx, reader_io_task_tx, Arc::clone(&shared_state));
+        let reader_handle = copy::spawn_reader(fcb_reader_rx, reader_io_task_tx, fcb_writer_tx.clone(), Arc::clone(&shared_state));
         let reader_io_pool = copy::spawn_reader_io_pool(Arc::clone(&reader_io_task_rx), reader_io_result_tx, worker_count, Arc::clone(&shared_state));
         let reader_io_result_poll = copy::spawn_reader_io_result_poll(reader_io_result_rx, fcb_reader_tx, fcb_writer_tx.clone(), Arc::clone(&stats));
 
-        let writer_handle = copy::spawn_writer(fcb_writer_rx, writer_io_task_tx, Arc::clone(&shared_state));
+        let writer_handle = copy::spawn_writer(fcb_writer_rx, writer_io_task_tx, Arc::clone(&shared_state), Arc::clone(&stats));
         let writer_io_pool = copy::spawn_writer_io_pool(writer_io_task_rx, writer_io_result_tx, worker_count, Arc::clone(&shared_state));
         let writer_io_result_poll = copy::spawn_writer_io_result_poll(writer_io_result_rx, fcb_writer_tx, Arc::clone(&stats));
 

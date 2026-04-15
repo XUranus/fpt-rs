@@ -165,6 +165,7 @@ pub fn spawn_file_entry_producer(
 pub fn spawn_reader(
     reader_rx: mpsc::Receiver<ControlBlockVarient>,
     reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
+    writer_tx: mpsc::Sender<ControlBlockVarient>,
     shared_state : Arc<SharedState>
 ) -> std::thread::JoinHandle<()> {
 
@@ -174,7 +175,10 @@ pub fn spawn_reader(
             match result {
                 Ok(item) => {
                     match item {
-                        ControlBlockVarient::DirControlBlock(_) => (),
+                        ControlBlockVarient::DirControlBlock(dcb) => {
+                            // Forward directory entries to writer for creation
+                            let _ = writer_tx.send(ControlBlockVarient::DirControlBlock(dcb));
+                        }
                         ControlBlockVarient::FileControlBlock(fcb) => {
                             match fcb.src_state {
                                 SourceHandleState::Inited => {
@@ -302,7 +306,8 @@ pub fn spawn_reader_io_pool(
 pub fn spawn_writer(
     writer_rx: mpsc::Receiver<ControlBlockVarient>,
     writer_io_pool_tx: mpsc::Sender<WriterBioTask>,
-    shared_state : Arc<SharedState>
+    shared_state : Arc<SharedState>,
+    stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         loop {
@@ -310,7 +315,15 @@ pub fn spawn_writer(
             match result {
                 Ok(item) => {
                     match item {
-                        ControlBlockVarient::DirControlBlock(_) => (),
+                        ControlBlockVarient::DirControlBlock(dcb) => {
+                            // Create the directory explicitly
+                            if let Err(e) = std::fs::create_dir_all(&dcb.dst_path) {
+                                error!("Failed to create target directory {:?}: {}", dcb.dst_path, e);
+                                stats.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                stats.dirs_created.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                         ControlBlockVarient::FileControlBlock(fcb) => {
                             match fcb.dst_state {
                                 TargetHandleState::Inited => {

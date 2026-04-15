@@ -75,22 +75,31 @@ impl DiffReport {
     }
 
     fn print_summary(&self) {
-        println!("\n=== Diff Report Summary ===");
-        println!("Files only in source:      {}", self.source_only.len());
-        println!("Files only in target:      {}", self.target_only.len());
-        println!("Files with size mismatch:  {}", self.size_mismatch.len());
-        println!("Files with checksum diff:  {}", self.checksum_mismatch.len());
-        println!("Files with symlink diff:   {}", self.symlink_mismatch.len());
-        println!("Identical files:           {}", self.identical.len());
-        
         if self.has_differences() {
+            println!("\n=== Diff Summary ===");
+            if !self.source_only.is_empty() {
+                println!("  + {} files only in source", self.source_only.len());
+            }
+            if !self.target_only.is_empty() {
+                println!("  - {} files only in target", self.target_only.len());
+            }
+            if !self.size_mismatch.is_empty() {
+                println!("  ! {} files with size mismatch", self.size_mismatch.len());
+            }
+            if !self.checksum_mismatch.is_empty() {
+                println!("  ! {} files with checksum mismatch", self.checksum_mismatch.len());
+            }
+            if !self.symlink_mismatch.is_empty() {
+                println!("  ! {} files with symlink mismatch", self.symlink_mismatch.len());
+            }
             println!("\nResult: DIFFERENCES FOUND");
         } else {
-            println!("\nResult: DIRECTORIES ARE IDENTICAL");
+            println!("\nResult: DIRECTORIES ARE IDENTICAL ({} files checked)", self.identical.len());
         }
     }
 
     fn print_details(&self) {
+        // Only print different entries, skip identical files
         if !self.source_only.is_empty() {
             println!("\n--- Files only in source ---");
             for path in &self.source_only {
@@ -108,7 +117,7 @@ impl DiffReport {
         if !self.size_mismatch.is_empty() {
             println!("\n--- Files with size mismatch ---");
             for (path, src_size, tgt_size) in &self.size_mismatch {
-                println!("  ! {} (source: {} bytes, target: {} bytes)", 
+                println!("  ! {} ({} vs {} bytes)", 
                     path.display(), src_size, tgt_size);
             }
         }
@@ -124,17 +133,15 @@ impl DiffReport {
             println!("\n--- Files with symlink mismatch ---");
             for (path, src_target, tgt_target) in &self.symlink_mismatch {
                 println!("  ! {}", path.display());
-                println!("      source -> {:?}", src_target);
-                println!("      target -> {:?}", tgt_target);
+                if let Some(ref src) = src_target {
+                    println!("      source -> {}", src.display());
+                }
+                if let Some(ref tgt) = tgt_target {
+                    println!("      target -> {}", tgt.display());
+                }
             }
         }
-
-        if !self.identical.is_empty() {
-            println!("\n--- Identical files ({}) ---", self.identical.len());
-            for path in &self.identical {
-                println!("  = {}", path.display());
-            }
-        }
+        // Note: Identical files are not listed to reduce output noise
     }
 }
 
