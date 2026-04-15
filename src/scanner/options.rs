@@ -200,4 +200,10 @@ impl ScanOption {
         self.meta_option.scan_xattrs = scan;
         self
     }
+
+    /// Configures whether hardlinks should be scanned and tracked.
+    pub fn scan_hardlinks(mut self, scan: bool) -> Self {
+        self.meta_option.scan_hardlinks = scan;
+        self
+    }
 }

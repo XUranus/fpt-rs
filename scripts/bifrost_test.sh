@@ -21,6 +21,8 @@ SKIP_DIFF=0
 KEEP_WORK_DIR=0
 SCAN_ACL=0
 SCAN_XATTRS=0
+SCAN_HARDLINKS=0
+BACKUP_HARDLINKS=0
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,6 +78,8 @@ Optional Arguments:
   --keep-work-dir          Keep working directory after test
   --scan-acl               Scan ACLs during backup
   --scan-xattrs            Scan extended attributes during backup
+  --scan-hardlinks         Scan and track hardlinks during backup
+  --backup-hardlinks       Enable hardlink phase during backup
   -h, --help               Show this help message
 
 Examples:
@@ -132,6 +136,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --scan-xattrs)
             SCAN_XATTRS=1
+            shift
+            ;;
+        --scan-hardlinks)
+            SCAN_HARDLINKS=1
+            shift
+            ;;
+        --backup-hardlinks)
+            BACKUP_HARDLINKS=1
             shift
             ;;
         -h|--help)
@@ -214,6 +226,9 @@ fi
 if [[ $SCAN_XATTRS -eq 1 ]]; then
     SCAN_ARGS+=("--scan-xattrs")
 fi
+if [[ $SCAN_HARDLINKS -eq 1 ]]; then
+    SCAN_ARGS+=("--scan-hardlinks")
+fi
 
 # Run fsscan
 echo "Running fsscan..."
@@ -256,6 +271,14 @@ for ((i=0; i<${#INPUT_PATHS[@]}; i++)); do
     BACKUP_ARGS=()
     if [[ $VERBOSE -eq 1 ]]; then
         BACKUP_ARGS+=("-v")
+    fi
+    if [[ $BACKUP_HARDLINKS -eq 1 ]]; then
+        BACKUP_ARGS+=("--hardlink")
+    fi
+    
+    # Add ctrl-dir if hardlink backup is enabled
+    if [[ $BACKUP_HARDLINKS -eq 1 ]]; then
+        BACKUP_ARGS+=("--ctrl-dir" "$CTRL_DIR")
     fi
     
     "$FSBACKUP" \

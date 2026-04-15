@@ -1,6 +1,10 @@
 use std::{path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc}, thread};
+use log::info;
 use crate::backup::{
-        bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask}, fcb::{ControlBlockVarient, FileControlBlock}, stats::{BackupStats, BackupStatsSnapshot}
+        bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask}, 
+        bio::hardlink::{self, HardlinkStatsSnapshot},
+        fcb::{ControlBlockVarient, FileControlBlock}, 
+        stats::{BackupStats, BackupStatsSnapshot}
     };
 
 mod fcb;
@@ -14,10 +18,14 @@ pub struct BackupOption {
     target_dir_base : PathBuf,
 
     meta_dir : PathBuf,
+    ctrl_dir : PathBuf,
     // path for control file
     control_file : PathBuf,
 
-    worker_count : usize
+    worker_count : usize,
+    
+    /// Whether to run the hardlink phase after copy phase
+    enable_hardlink_phase : bool,
 }
 
 
@@ -30,6 +38,7 @@ pub struct BackupTask {
 pub struct RunningBackup {
     option : BackupOption,
     stats : Arc<BackupStats>,
+    hardlink_stats : Option<HardlinkStatsSnapshot>,
     terminate_handle : thread::JoinHandle<()>,
     terminate_indicator : Arc<AtomicBool>
 }
@@ -42,8 +51,22 @@ pub enum BackupError {
 }
 
 impl BackupOption {
-    pub fn new(source_dir_base : PathBuf, target_dir_base : PathBuf, meta_dir : PathBuf, control_file : PathBuf) -> Self {
-        Self { worker_count : 4, source_dir_base, target_dir_base, meta_dir, control_file }
+    pub fn new(source_dir_base : PathBuf, target_dir_base : PathBuf, meta_dir : PathBuf, ctrl_dir : PathBuf, control_file : PathBuf) -> Self {
+        Self { 
+            worker_count : 4, 
+            source_dir_base, 
+            target_dir_base, 
+            meta_dir, 
+            ctrl_dir,
+            control_file,
+            enable_hardlink_phase : false,
+        }
+    }
+    
+    /// Enable the hardlink phase
+    pub fn enable_hardlink_phase(mut self, enable: bool) -> Self {
+        self.enable_hardlink_phase = enable;
+        self
     }
 }
 
@@ -74,6 +97,8 @@ impl BackupTask {
         let source_dir_base = self.option.source_dir_base.clone();
         let target_dir_base = self.option.target_dir_base.clone();
         let meta_dir = self.option.meta_dir.clone();
+        let ctrl_dir = self.option.ctrl_dir.clone();
+        let enable_hardlink_phase = self.option.enable_hardlink_phase;
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
@@ -89,7 +114,7 @@ impl BackupTask {
         let reader_io_task_rx = Arc::new(Mutex::new(reader_io_task_rx));
         let writer_io_task_rx = Arc::new( Mutex::new(writer_io_task_rx));
     
-        let entry_producer_handle = copy::spawn_file_entry_producer(control_file, meta_dir, source_dir_base, target_dir_base, fcb_reader_tx.clone(), Arc::clone(&shared_state));
+        let entry_producer_handle = copy::spawn_file_entry_producer(control_file, meta_dir.clone(), source_dir_base.clone(), target_dir_base.clone(), fcb_reader_tx.clone(), Arc::clone(&shared_state));
 
         let reader_handle = copy::spawn_reader(fcb_reader_rx, reader_io_task_tx, fcb_writer_tx.clone(), Arc::clone(&shared_state));
         let reader_io_pool = copy::spawn_reader_io_pool(Arc::clone(&reader_io_task_rx), reader_io_result_tx, worker_count, Arc::clone(&shared_state));
@@ -112,12 +137,28 @@ impl BackupTask {
                 handle.join().unwrap();
             }
             writer_io_result_poll.join().unwrap();
+            
+            // Run hardlink phase if enabled
+            if enable_hardlink_phase {
+                info!("Starting hardlink phase...");
+                match hardlink::run_hardlink_phase(&ctrl_dir, &meta_dir, &source_dir_base, &target_dir_base) {
+                    Ok(hl_stats) => {
+                        info!("Hardlink phase completed: {} created, {} failed", 
+                            hl_stats.hardlinks_created, hl_stats.hardlinks_failed);
+                    }
+                    Err(e) => {
+                        eprintln!("Hardlink phase failed: {}", e);
+                    }
+                }
+            }
+            
             terminate_indicator_inner.store(true, Ordering::Relaxed);
         });
 
         Ok(RunningBackup{
             option : self.option,
             stats,
+            hardlink_stats: None,
             terminate_handle,
             terminate_indicator
         })
@@ -136,6 +177,10 @@ impl From<BackupOption> for BackupTask {
 impl RunningBackup {
     pub fn stats(&self) -> BackupStatsSnapshot {
         self.stats.snapshot()
+    }
+    
+    pub fn hardlink_stats(&self) -> Option<&HardlinkStatsSnapshot> {
+        self.hardlink_stats.as_ref()
     }
 
     pub fn complete(&self) -> bool {

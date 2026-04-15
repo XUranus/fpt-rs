@@ -116,10 +116,11 @@ fn main() {
     let source_dir_base = PathBuf::from("/");
     let target_dir_base = PathBuf::from("/home/xuranus/workspace/bifrost/mnt/target");
     let meta_dir = PathBuf::from("/tmp/bifrost/meta");
+    let ctrl_dir = PathBuf::from("/tmp/bifrost/ctrl");
     let control_file = PathBuf::from("/tmp/bifrost/meta/ctrl.txt");
     
     let mut i = 0;
-    let fsbackup : BackupTask = BackupOption::new(source_dir_base, target_dir_base, meta_dir, control_file).into();
+    let fsbackup : BackupTask = BackupOption::new(source_dir_base, target_dir_base, meta_dir, ctrl_dir, control_file).into();
     let task = fsbackup.start().unwrap();
     while !task.complete() {
         let stats = task.stats();

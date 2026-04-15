@@ -94,6 +94,10 @@ struct Args {
     /// Scan extended attributes (xattrs)
     #[arg(long, action = clap::ArgAction::SetTrue)]
     scan_xattrs: bool,
+
+    /// Scan and track hardlinks
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    scan_hardlinks: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -126,6 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .scan_hidden(args.scan_hidden)
     .scan_acl(args.scan_acl)
     .scan_xattrs(args.scan_xattrs)
+    .scan_hardlinks(args.scan_hardlinks)
     .max_depth(args.max_depth)
     .worker_count(args.workers)
     .writer_count(args.writers)

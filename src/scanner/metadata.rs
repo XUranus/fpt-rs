@@ -1,6 +1,7 @@
 mod filecontrol;
 mod filemeta;
 mod filecache;
+mod hardlink;
 
 mod meta_storage;
 mod cache_storage;
@@ -42,4 +43,14 @@ pub use filecontrol::{
     FileControlEntry,
     DirDiff,
     FileDiff
+};
+
+pub use hardlink::{
+    HardlinkControlFileReader,
+    HardlinkControlFileWriter,
+    HardlinkEntry,
+    HardlinkFileEntry,
+    HardlinkGroup,
+    HardlinkIndex,
+    HardlinkInodeEntry,
 };

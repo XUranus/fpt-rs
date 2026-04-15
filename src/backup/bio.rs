@@ -1,4 +1,4 @@
 pub mod copy;
 mod delete;
-mod hardlink;
+pub mod hardlink;
 mod mtime;

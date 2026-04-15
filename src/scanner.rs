@@ -22,11 +22,13 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     thread::JoinHandle,
 };
 use log::{debug, info, warn, error};
+
+use crate::scanner::metadata::HardlinkIndex;
 
 use crate::{
     scanner::{
@@ -173,15 +175,24 @@ impl Scanner {
                 .map_err(|e| ScanError::InvalidEnqueue(e.to_string()))?;
         }
 
+        // Create hardlink index if hardlink scanning is enabled
+        let scan_hardlinks = self.context.scan_option.meta_option.scan_hardlinks;
+        let hardlink_index: Option<Arc<Mutex<HardlinkIndex>>> = if scan_hardlinks {
+            Some(Arc::new(Mutex::new(HardlinkIndex::new())))
+        } else {
+            None
+        };
+
         // Start worker threads
         let traversal_handles = bio::traversal::start_workers(&self.context, worker_count);
-        let writer_handles = engine::start_meta_writers(&self.context, writer_count);
+        let writer_handles = engine::start_meta_writers(&self.context, writer_count, hardlink_index.clone());
 
         // Spawn termination/coordinator thread
         let terminate_indicator = Arc::new(AtomicBool::new(false));
         let terminate_indicator_cloned = Arc::clone(&terminate_indicator);
         let output_queue = Arc::clone(&self.context.output_queue);
         let scan_option = Arc::clone(&self.context.scan_option);
+        let hardlink_index_clone = hardlink_index.clone();
 
         let terminator_handle = std::thread::spawn(move || {
             // Wait for all traversal workers to finish
@@ -204,6 +215,22 @@ impl Scanner {
             // Generate final control files
             if let Err(e) = engine::generate_control_files(&scan_option.target_dir) {
                 error!("Failed to generate control files: {}", e);
+            }
+
+            // Write hardlink control file if hardlink scanning was enabled
+            if scan_hardlinks {
+                if let Some(index) = hardlink_index_clone {
+                    if let Ok(idx) = index.lock() {
+                        let hardlink_ctrl_path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
+                        if let Err(e) = idx.write_to_file(&hardlink_ctrl_path) {
+                            error!("Failed to write hardlink control file: {}", e);
+                        } else {
+                            info!("Hardlink control file written to {:?}", hardlink_ctrl_path);
+                            info!("Found {} hardlink groups with {} total files", 
+                                idx.group_count(), idx.total_file_count());
+                        }
+                    }
+                }
             }
 
             terminate_indicator_cloned.store(true, Ordering::Relaxed);
