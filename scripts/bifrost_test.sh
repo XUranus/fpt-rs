@@ -23,6 +23,7 @@ SCAN_ACL=0
 SCAN_XATTRS=0
 SCAN_HARDLINKS=0
 BACKUP_HARDLINKS=0
+BACKUP_DELETE=0
 BACKUP_MTIME=0
 
 # Get script directory
@@ -81,6 +82,7 @@ Optional Arguments:
   --scan-xattrs            Scan extended attributes during backup
   --scan-hardlinks         Scan and track hardlinks during backup
   --backup-hardlinks       Enable hardlink phase during backup
+  --backup-delete          Enable delete phase during backup
   --backup-mtime           Enable mtime phase during backup
   -h, --help               Show this help message
 
@@ -146,6 +148,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --backup-hardlinks)
             BACKUP_HARDLINKS=1
+            shift
+            ;;
+        --backup-delete)
+            BACKUP_DELETE=1
             shift
             ;;
         --backup-mtime)
@@ -246,13 +252,13 @@ echo "Running fsscan..."
     "${SCAN_ARGS[@]}" \
     "${INPUT_PATHS[@]}"
 
-CTRL_FILE="${META_DIR}/ctrl.txt"
-if [[ ! -f "$CTRL_FILE" ]]; then
-    error_exit "Control file was not created: $CTRL_FILE"
+COPY_FILE="${CTRL_DIR}/copy.txt"
+if [[ ! -f "$COPY_FILE" ]]; then
+    error_exit "Copy control file was not created: $COPY_FILE"
 fi
 
 print_success "Scan completed successfully."
-echo "  Control file: $CTRL_FILE"
+echo "  Copy control file: $COPY_FILE"
 
 # =============================================================================
 # STEP 2: Backup
@@ -282,12 +288,16 @@ for ((i=0; i<${#INPUT_PATHS[@]}; i++)); do
         BACKUP_ARGS+=("--hardlink")
     fi
     
+    if [[ $BACKUP_DELETE -eq 1 ]]; then
+        BACKUP_ARGS+=("--delete")
+    fi
+    
     if [[ $BACKUP_MTIME -eq 1 ]]; then
         BACKUP_ARGS+=("--mtime")
     fi
     
-    # Add ctrl-dir if hardlink or mtime backup is enabled
-    if [[ $BACKUP_HARDLINKS -eq 1 || $BACKUP_MTIME -eq 1 ]]; then
+    # Add ctrl-dir if hardlink, delete, or mtime backup is enabled
+    if [[ $BACKUP_HARDLINKS -eq 1 || $BACKUP_DELETE -eq 1 || $BACKUP_MTIME -eq 1 ]]; then
         BACKUP_ARGS+=("--ctrl-dir" "$CTRL_DIR")
     fi
     
@@ -295,7 +305,7 @@ for ((i=0; i<${#INPUT_PATHS[@]}; i++)); do
         -s "$input_path" \
         -t "$target_subdir" \
         -m "$META_DIR" \
-        -c "$CTRL_FILE" \
+        -c "$COPY_FILE" \
         "${BACKUP_ARGS[@]}"
     
     print_success "Backup completed for: $dir_name"

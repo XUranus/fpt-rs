@@ -40,6 +40,10 @@ struct Args {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     hardlink: bool,
     
+    /// Enable delete phase after hardlink phase
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    delete: bool,
+    
     /// Enable mtime phase after copy/hardlink phase
     #[arg(long, action = clap::ArgAction::SetTrue)]
     mtime: bool,
@@ -83,6 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ctrl_dir,
         args.control_file,
     ).enable_hardlink_phase(args.hardlink)
+     .enable_delete_phase(args.delete)
      .enable_mtime_phase(args.mtime);
     
     let backup_task: backup::BackupTask = backup_option.into();

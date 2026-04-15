@@ -3,6 +3,8 @@ mod filemeta;
 mod filecache;
 mod hardlink;
 mod mtime;
+mod delete;
+mod diff;
 
 mod meta_storage;
 mod cache_storage;
@@ -60,4 +62,19 @@ pub use mtime::{
     MtimeControlFileReader,
     MtimeControlFileWriter,
     MtimeDirEntry,
+};
+
+pub use delete::{
+    DeleteControlFileReader,
+    DeleteControlFileWriter,
+    DeleteEntry,
+    DeleteEntryType,
+};
+
+pub use diff::{
+    IncrementalDiff,
+    DiffStats,
+    DiffType,
+    diff_sorted_inodes,
+    generate_incremental_control_files,
 };

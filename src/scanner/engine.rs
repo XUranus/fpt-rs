@@ -4,7 +4,8 @@ use log::{debug, info, warn, error};
 use crate::scanner::{
     ScanWorkerContext,
     metadata::{
-        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, DirDiff, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FileDiff, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry
+        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, DirDiff, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FileDiff, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
+        generate_incremental_control_files,
     },
     models::DirBatchScanResult, options::TargetDirOption
 };
@@ -131,11 +132,68 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
     // Ensure ctrl_dir exists
     fs::create_dir_all(&ctrl_dir)?;
 
-    let ctrl_file_path = meta_dir.join("ctrl.txt");
+    let copy_file_path = ctrl_dir.join("copy.txt");
     let mtime_file_path = ctrl_dir.join("mtime.txt");
     
+    // Check if incremental backup is requested
+    if let Some(ref prev_meta_dir) = target_option.prev_meta_dir {
+        info!("Generating incremental control files...");
+        info!("  Previous metadata: {}", prev_meta_dir.display());
+        info!("  Current metadata: {}", meta_dir.display());
+        
+        match generate_incremental_control_files(
+            Some(prev_meta_dir.as_path()),
+            meta_dir.as_path(),
+            ctrl_dir.as_path(),
+        ) {
+            Ok(stats) => {
+                info!("Incremental control files generated:");
+                info!("  New dirs: {}, Modified dirs: {}, Deleted dirs: {}", 
+                    stats.new_dirs, stats.modified_dirs, stats.deleted_dirs);
+                info!("  New files: {}, Modified files: {}, Deleted files: {}",
+                    stats.new_files, stats.modified_files, stats.deleted_files);
+            }
+            Err(e) => {
+                error!("Failed to generate incremental control files: {}", e);
+                return Err(e);
+            }
+        }
+        
+        // Still generate mtime.txt for all directories (needed for mtime phase)
+        let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
+        let mut mtime_writer = MtimeControlFileWriter::new(mtime_file_path).unwrap();
+        
+        let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
+            .filter_map(|f| f.ok())
+            .filter(|f|f.file_name().to_string_lossy().starts_with("dcache_"))
+            .map(|f| f.path())
+            .collect();
+
+        for dcache in dcaches {
+            let dcache_iter : DirCacheIterator = DirCacheIterator::from(
+                DirCacheRandomReader::open(dcache).unwrap());
+            
+            for dcache_entry in dcache_iter {
+                let dmeta = meta_reader.get_dmeta(dcache_entry.meta_loc).unwrap();
+                let mtime_entry = MtimeDirEntry {
+                    path: dmeta.path,
+                    mode: dmeta.common.mode,
+                    uid: 0,
+                    gid: 0,
+                    atime: dmeta.common.atime as u64,
+                    mtime: dmeta.common.mtime as u64,
+                };
+                mtime_writer.write_dir(&mtime_entry).unwrap();
+            }
+        }
+        
+        mtime_writer.finish().unwrap();
+        return Ok(());
+    }
+    
+    // Full backup mode - generate copy.txt with all entries marked as NN
     let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
-    let mut ctrl_writer = ControlFileWriter::new(ctrl_file_path).unwrap();    
+    let mut copy_writer = ControlFileWriter::new(copy_file_path).unwrap();    
     let mut mtime_writer = MtimeControlFileWriter::new(mtime_file_path).unwrap();
 
     let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
@@ -159,7 +217,7 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
                 meta_offset: dcache_entry.meta_loc.1,
                 files_count: files_count,
             };
-            ctrl_writer.write_dir(&dctrl_entry).unwrap();
+            copy_writer.write_dir(&dctrl_entry).unwrap();
             
             // Write mtime entry for directory
             let mtime_entry = MtimeDirEntry {
@@ -191,13 +249,13 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
                     meta_fid: fcache_entry.meta_loc.0,
                     meta_offset: fcache_entry.meta_loc.1,
                 };
-                ctrl_writer.write_file(&fctrl_entry).unwrap();
+                copy_writer.write_file(&fctrl_entry).unwrap();
 
             }
         }
     }
 
-    ctrl_writer.finish().unwrap();
+    copy_writer.finish().unwrap();
     mtime_writer.finish().unwrap();
     Ok(())
 }

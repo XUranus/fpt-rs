@@ -4,6 +4,7 @@ use crate::backup::{
         bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask}, 
         bio::hardlink::{self, HardlinkStatsSnapshot},
         bio::mtime::{self, MtimeStatsSnapshot},
+        bio::delete::{self, DeleteStatsSnapshot},
         fcb::{ControlBlockVarient, FileControlBlock}, 
         stats::{BackupStats, BackupStatsSnapshot}
     };
@@ -28,6 +29,9 @@ pub struct BackupOption {
     /// Whether to run the hardlink phase after copy phase
     enable_hardlink_phase : bool,
     
+    /// Whether to run the delete phase after hardlink phase
+    enable_delete_phase : bool,
+    
     /// Whether to run the mtime phase after copy/hardlink phase
     enable_mtime_phase : bool,
 }
@@ -43,6 +47,7 @@ pub struct RunningBackup {
     option : BackupOption,
     stats : Arc<BackupStats>,
     hardlink_stats : Option<HardlinkStatsSnapshot>,
+    delete_stats : Option<DeleteStatsSnapshot>,
     mtime_stats : Option<MtimeStatsSnapshot>,
     terminate_handle : thread::JoinHandle<()>,
     terminate_indicator : Arc<AtomicBool>
@@ -65,6 +70,7 @@ impl BackupOption {
             ctrl_dir,
             control_file,
             enable_hardlink_phase : false,
+            enable_delete_phase : false,
             enable_mtime_phase : false,
         }
     }
@@ -72,6 +78,12 @@ impl BackupOption {
     /// Enable the hardlink phase
     pub fn enable_hardlink_phase(mut self, enable: bool) -> Self {
         self.enable_hardlink_phase = enable;
+        self
+    }
+    
+    /// Enable the delete phase
+    pub fn enable_delete_phase(mut self, enable: bool) -> Self {
+        self.enable_delete_phase = enable;
         self
     }
     
@@ -111,6 +123,7 @@ impl BackupTask {
         let meta_dir = self.option.meta_dir.clone();
         let ctrl_dir = self.option.ctrl_dir.clone();
         let enable_hardlink_phase = self.option.enable_hardlink_phase;
+        let enable_delete_phase = self.option.enable_delete_phase;
         let enable_mtime_phase = self.option.enable_mtime_phase;
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
@@ -165,6 +178,20 @@ impl BackupTask {
                 }
             }
             
+            // Run delete phase if enabled (between hardlink and mtime)
+            if enable_delete_phase {
+                info!("Starting delete phase...");
+                match delete::run_delete_phase(&ctrl_dir, &source_dir_base, &target_dir_base) {
+                    Ok(del_stats) => {
+                        info!("Delete phase completed: {} files deleted, {} dirs deleted", 
+                            del_stats.files_deleted, del_stats.dirs_deleted);
+                    }
+                    Err(e) => {
+                        eprintln!("Delete phase failed: {}", e);
+                    }
+                }
+            }
+            
             // Run mtime phase if enabled
             if enable_mtime_phase {
                 info!("Starting mtime phase...");
@@ -186,6 +213,7 @@ impl BackupTask {
             option : self.option,
             stats,
             hardlink_stats: None,
+            delete_stats: None,
             mtime_stats: None,
             terminate_handle,
             terminate_indicator
@@ -209,6 +237,10 @@ impl RunningBackup {
     
     pub fn hardlink_stats(&self) -> Option<&HardlinkStatsSnapshot> {
         self.hardlink_stats.as_ref()
+    }
+    
+    pub fn delete_stats(&self) -> Option<&DeleteStatsSnapshot> {
+        self.delete_stats.as_ref()
     }
     
     pub fn mtime_stats(&self) -> Option<&MtimeStatsSnapshot> {

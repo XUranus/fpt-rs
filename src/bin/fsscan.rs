@@ -98,6 +98,10 @@ struct Args {
     /// Scan and track hardlinks
     #[arg(long, action = clap::ArgAction::SetTrue)]
     scan_hardlinks: bool,
+    
+    /// Previous metadata directory for incremental backup (optional)
+    #[arg(long, value_name = "DIR")]
+    prev_meta_dir: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -134,7 +138,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .max_depth(args.max_depth)
     .worker_count(args.workers)
     .writer_count(args.writers)
-    .temp_dir(args.temp_dir);
+    .temp_dir(args.temp_dir)
+    .prev_meta_dir(args.prev_meta_dir);
 
     println!("scan option : {:#?}", scan_option);
 

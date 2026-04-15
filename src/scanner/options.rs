@@ -53,6 +53,11 @@ pub struct TargetDirOption {
 
     /// Directory path where **metadata files** (serialized `FileMeta`/`DirMeta`) are stored.
     pub meta_dir: PathBuf,
+    
+    /// Optional: Previous metadata directory for incremental backup.
+    /// If provided, the scanner will generate incremental control files
+    /// (copy.txt with only new/modified entries, delete.txt for deleted files).
+    pub prev_meta_dir: Option<PathBuf>,
 }
 
 /// Metadata scanning preferences.
@@ -121,6 +126,7 @@ impl Default for ScanOption {
             target_dir: TargetDirOption {
                 ctrl_dir: PathBuf::from("/tmp/bifrost/ctrl"),
                 meta_dir: PathBuf::from("/tmp/bifrost/meta"),
+                prev_meta_dir: None,
             },
             queue_option: QueueOption {
                 temp_dir: PathBuf::from("/tmp/bifrost/cache"),
@@ -204,6 +210,12 @@ impl ScanOption {
     /// Configures whether hardlinks should be scanned and tracked.
     pub fn scan_hardlinks(mut self, scan: bool) -> Self {
         self.meta_option.scan_hardlinks = scan;
+        self
+    }
+    
+    /// Sets the previous metadata directory for incremental backup.
+    pub fn prev_meta_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.target_dir.prev_meta_dir = dir;
         self
     }
 }
