@@ -16,6 +16,10 @@ use bifrost::backup;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    /// Source base directory (used to construct source file paths)
+    #[arg(long, short = 's', required = true, value_name = "DIR")]
+    source_dir: PathBuf,
+
     /// Target base directory for backup output
     #[arg(long, short = 't', required = true, value_name = "DIR")]
     target_dir: PathBuf,
@@ -56,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create backup option and task
     let backup_option = crate::backup::BackupOption::new(
-        PathBuf::from("/"),
+        args.source_dir,
         args.target_dir,
         args.meta_dir,
         args.control_file,

@@ -81,29 +81,34 @@ pub enum BioError {
     Unknown(io::Error),
 }
 
-fn concat_dir_path(
-    source_dir_base : PathBuf,
-    path : String,
-) -> PathBuf
-{
-    let path: PathBuf = PathBuf::from(path).components()
-        .skip_while(|c| matches!(c, std::path::Component::RootDir))
-        .collect();
-    source_dir_base.join(path)
+/// Make path relative to base_dir and then join with target_base
+/// e.g., base_dir=/tmp/bifrost_test/source, path=/tmp/bifrost_test/source/subdir
+///       -> target_base/subdir
+fn make_relative_and_join(
+    base_dir: &PathBuf,
+    target_base: PathBuf,
+    path: String,
+) -> PathBuf {
+    let path_buf = PathBuf::from(&path);
+    
+    // Try to strip the base_dir prefix from path
+    let relative_path = if path_buf.starts_with(base_dir) {
+        path_buf.strip_prefix(base_dir)
+            .map(|p| p.to_path_buf())
+            .unwrap_or(path_buf)
+    } else if path_buf.is_absolute() {
+        // If path doesn't start with base_dir but is absolute,
+        // just use the last component as fallback
+        path_buf.file_name()
+            .map(|name| PathBuf::from(name))
+            .unwrap_or_else(|| path_buf)
+    } else {
+        path_buf
+    };
+    
+    target_base.join(relative_path)
 }
 
-
-fn concat_file_path(
-    source_dir_base : PathBuf,
-    target_dir_base : PathBuf,
-    name : String
-) -> PathBuf
-{
-    let target_dir_base: PathBuf = target_dir_base.components()
-        .skip_while(|c| matches!(c, std::path::Component::RootDir))
-        .collect();
-    source_dir_base.join(target_dir_base).join(name)
-}
 
 pub fn spawn_file_entry_producer(
     control_file: PathBuf,
@@ -124,16 +129,21 @@ pub fn spawn_file_entry_producer(
                 ControlEntry::Dir(dentry) => {
                     let dmeta = meta_repo_reader.get_dmeta((dentry.meta_fid, dentry.meta_offset)).unwrap();
                     let mut dcb = DirControlBlock::from(dmeta);
-                    dcb.src_path = concat_dir_path(source_dir_base.clone(), dentry.path.clone());
-                    dcb.dst_path = concat_dir_path(target_dir_base.clone(), dentry.path.clone());
+                    // Source path uses the absolute path from control file
+                    dcb.src_path = PathBuf::from(dentry.path.clone());
+                    // Target path: make relative to source base and join with target base
+                    dcb.dst_path = make_relative_and_join(&source_dir_base, target_dir_base.clone(), dentry.path.clone());
                     dirpath = dentry.path.into();
                     ControlBlockVarient::DirControlBlock(dcb)
                 },
                 ControlEntry::File(fentry) => {
                     let fmeta = meta_repo_reader.get_fmeta((fentry.meta_fid, fentry.meta_offset)).unwrap();
                     let mut fcb: FileControlBlock = FileControlBlock::from(fmeta);
-                    fcb.src_path = concat_file_path(source_dir_base.clone(), dirpath.clone(), fentry.name.clone());
-                    fcb.dst_path = concat_file_path(target_dir_base.clone(), dirpath.clone(), fentry.name.clone());
+                    // Source path uses absolute path from dirpath + filename
+                    fcb.src_path = PathBuf::from(&dirpath).join(fentry.name.clone());
+                    // Target path: make dirpath relative to source base and join with target base + filename
+                    let relative_dir = make_relative_and_join(&source_dir_base, target_dir_base.clone(), dirpath.to_string_lossy().to_string());
+                    fcb.dst_path = relative_dir.join(fentry.name.clone());
                     ControlBlockVarient::FileControlBlock(fcb)
                 }
             };
