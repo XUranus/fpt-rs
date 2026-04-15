@@ -110,6 +110,8 @@ pub struct RunningScan {
 /// Errors that can occur during scanner setup.
 #[derive(Debug)]
 pub enum ScanError {
+    /// No enqueued paths to scan.
+    EmptyEnqueue,
     /// Failed to enqueue a path (e.g., invalid path).
     InvalidEnqueue(String),
     /// Invalid scan configuration option.
@@ -119,6 +121,7 @@ pub enum ScanError {
 impl fmt::Display for ScanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ScanError::EmptyEnqueue => write!(f, "No paths enqueued for scanning"),
             ScanError::InvalidEnqueue(msg) => write!(f, "Failed to enqueue path: {}", msg),
             ScanError::InvalidOption(msg) => write!(f, "Invalid scan option: {}", msg),
         }
@@ -157,6 +160,10 @@ impl Scanner {
         let worker_count = self.context.scan_option.worker_count;
         let writer_count = self.context.scan_option.writer_count;
         let stats = Arc::clone(&self.context.stats);
+
+        if self.enqueued_paths.is_empty() {
+            return Err(ScanError::EmptyEnqueue);
+        }
 
         // Enqueue all root paths at depth 0
         for path in &self.enqueued_paths {

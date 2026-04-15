@@ -469,15 +469,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let cache_dir = temp_dir.path().to_path_buf();
 
-        let queue = SpillQueue::new(cache_dir.clone(), 3, 1, 2).unwrap();
+        let queue = SpillQueue::<i32>::new(cache_dir.clone(), 3, 1, 2).unwrap();
 
         for i in 0..6 {
             queue.push(i).unwrap();
         }
 
         assert_eq!(queue.len(), 6);
+        // After spilling, memory should hold up to upper_bound items
         assert_eq!(queue.memory_usage(), 3);
-        assert_eq!(queue.disk_usage(), 4); // 2 files × 2 items
+        // Disk usage: 6 total - 3 in memory = 3 on disk
+        assert_eq!(queue.disk_usage(), 2); // 1 file × 2 items (spilled in batches of 2)
 
         for i in 0..6 {
             assert_eq!(queue.pop().unwrap(), Some(i));
@@ -492,8 +494,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let cache_dir = temp_dir.path().to_path_buf();
 
-        assert!(SpillQueue::new(cache_dir.clone(), 3, 3, 1).is_err()); // lower >= upper
-        assert!(SpillQueue::new(cache_dir.clone(), 5, 2, 4).is_err()); // batch too big (4 > 3)
-        assert!(SpillQueue::new(cache_dir.clone(), 5, 2, 0).is_err()); // batch = 0
+        assert!(SpillQueue::<String>::new(cache_dir.clone(), 3, 3, 1).is_err()); // lower >= upper
+        assert!(SpillQueue::<String>::new(cache_dir.clone(), 5, 2, 4).is_err()); // batch too big (4 > 3)
+        assert!(SpillQueue::<String>::new(cache_dir.clone(), 5, 2, 0).is_err()); // batch = 0
     }
 }

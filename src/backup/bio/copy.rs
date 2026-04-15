@@ -74,7 +74,7 @@ pub enum WriterBioResult {
 
 /// Error type for backup I/O operations.
 #[derive(Debug)]
-enum BioError {
+pub enum BioError {
     /// Insufficient disk space on the target device.
     InsufficientSpace(io::Error),
     /// Any other I/O error.
@@ -483,7 +483,7 @@ fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
         }
     }
 
-    info!("open dst {:?}", fcb.dst_path);
+    debug!("open dst {:?}", fcb.dst_path);
     // Use create_new(true) to avoid overwriting existing files?
     match File::create(&fcb.dst_path) {
         Ok(file) => {
