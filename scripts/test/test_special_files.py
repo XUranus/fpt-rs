@@ -256,7 +256,7 @@ class TestSpecialFiles(BifrostTestBase):
 
 def main():
     args = parse_args()
-    runner = TestRunner(verbose=args.verbose, keep_on_failure=args.keep_on_failure)
+    runner = TestRunner(verbose=args.verbose, keep_on_failure=args.keep_on_failure, keep_logs=args.keep_logs)
     result = runner.run_test(TestSpecialFiles, work_dir=args.work_dir)
     runner.print_summary()
     return 0 if result.passed else 1

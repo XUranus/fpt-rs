@@ -76,6 +76,8 @@ Examples:
                         help="Enable verbose output")
     parser.add_argument("--keep-on-failure", action="store_true",
                         help="Keep work directories for failed tests")
+    parser.add_argument("--keep-logs", action="store_true",
+                        help="Keep logs directories even when tests pass")
     parser.add_argument("--suite", choices=["basic", "intermediate", "advanced",
                                             "scalability", "all"],
                         default="all",
@@ -187,7 +189,8 @@ def main():
     # Run tests
     runner = TestRunner(
         verbose=args.verbose,
-        keep_on_failure=args.keep_on_failure
+        keep_on_failure=args.keep_on_failure,
+        keep_logs=args.keep_logs
     )
 
     for i, test in enumerate(tests, 1):
@@ -222,6 +225,13 @@ def main():
             if not result.passed:
                 test_dir = base_work_dir / f"test_{runner.results.index(result) + 1:02d}"
                 print(f"  - {result.name}: {test_dir}")
+
+    if args.keep_logs and runner.all_passed():
+        print(f"\nLogs preserved in: {base_work_dir}")
+        print("Test log directories:")
+        for i, result in enumerate(runner.results, 1):
+            test_dir = base_work_dir / f"test_{i:02d}"
+            print(f"  - {result.name}: {test_dir}/logs/")
 
     print(f"\nEnd time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 

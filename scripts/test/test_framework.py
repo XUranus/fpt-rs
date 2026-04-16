@@ -36,8 +36,9 @@ class TestResult:
 class BifrostTestBase:
     """Base class for all Bifrost tests"""
 
-    def __init__(self, work_dir: Optional[str] = None, verbose: bool = False):
+    def __init__(self, work_dir: Optional[str] = None, verbose: bool = False, keep_logs: bool = False):
         self.verbose = verbose
+        self.keep_logs = keep_logs
         self.work_dir = work_dir or tempfile.mkdtemp(prefix="bifrost_test_")
         self.work_dir = Path(self.work_dir).resolve()
 
@@ -116,6 +117,20 @@ class BifrostTestBase:
         """Cleanup test environment"""
         if not self.test_passed and keep_on_failure:
             print(f"  Test failed. Keeping work directory: {self.work_dir}")
+            return
+
+        if self.test_passed and self.keep_logs:
+            print(f"  Test passed. Keeping logs: {self.logs_dir}")
+            # Remove everything except logs directory
+            for item in self.work_dir.iterdir():
+                if item.name != "logs":
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item)
+                        else:
+                            item.unlink()
+                    except Exception as e:
+                        print(f"  Warning: Failed to remove {item}: {e}")
             return
 
         try:
@@ -373,9 +388,10 @@ class BifrostTestBase:
 class TestRunner:
     """Runner for multiple tests"""
 
-    def __init__(self, verbose: bool = False, keep_on_failure: bool = True):
+    def __init__(self, verbose: bool = False, keep_on_failure: bool = True, keep_logs: bool = False):
         self.verbose = verbose
         self.keep_on_failure = keep_on_failure
+        self.keep_logs = keep_logs
         self.results: List[TestResult] = []
 
     def run_test(self, test_class, work_dir: Optional[str] = None,
@@ -389,7 +405,10 @@ class TestRunner:
         start_time = datetime.now()
 
         try:
-            test = test_class(work_dir=work_dir, verbose=self.verbose, **kwargs)
+            # Pass keep_logs to test class if it supports it
+            test_kwargs = {'verbose': self.verbose, 'keep_logs': self.keep_logs}
+            test_kwargs.update(kwargs)
+            test = test_class(work_dir=work_dir, **test_kwargs)
 
             if not test.setup():
                 result = TestResult(
@@ -462,4 +481,6 @@ def parse_args():
                         help="Verbose output")
     parser.add_argument("--keep-on-failure", action="store_true",
                         help="Keep work directory on failure")
+    parser.add_argument("--keep-logs", action="store_true",
+                        help="Keep logs directory even when test passes")
     return parser.parse_args()

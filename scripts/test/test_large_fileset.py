@@ -6,6 +6,7 @@ Tests handling of large numbers of files and directories
 
 import sys
 import os
+import argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pathlib import Path
@@ -15,9 +16,9 @@ from test_framework import BifrostTestBase, TestResult, TestRunner, parse_args
 class TestLargeFileset(BifrostTestBase):
     """Test backup of large filesets"""
 
-    def __init__(self, work_dir=None, verbose=False, num_files=1000,
+    def __init__(self, work_dir=None, verbose=False, keep_logs=False, num_files=1000,
                  num_dirs=100, file_size=1024):
-        super().__init__(work_dir, verbose)
+        super().__init__(work_dir, verbose, keep_logs)
         self.num_files = num_files
         self.num_dirs = num_dirs
         self.file_size = file_size
@@ -188,6 +189,8 @@ def main():
                         help="Verbose output")
     parser.add_argument("--keep-on-failure", action="store_true",
                         help="Keep work directory on failure")
+    parser.add_argument("--keep-logs", action="store_true",
+                        help="Keep logs directory even when test passes")
     parser.add_argument("--files", type=int, default=1000,
                         help="Number of files to create (default: 1000)")
     parser.add_argument("--dirs", type=int, default=100,
@@ -196,7 +199,7 @@ def main():
                         help="File size in bytes (default: 1024)")
     args = parser.parse_args()
 
-    runner = TestRunner(verbose=args.verbose, keep_on_failure=args.keep_on_failure)
+    runner = TestRunner(verbose=args.verbose, keep_on_failure=args.keep_on_failure, keep_logs=args.keep_logs)
     result = runner.run_test(
         TestLargeFileset,
         work_dir=args.work_dir,
