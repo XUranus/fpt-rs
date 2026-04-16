@@ -185,11 +185,10 @@ impl BackupTask {
                 self.option.aggregate_config.max_blob_size,
                 self.option.aggregate_config.file_threshold);
             
-            let index_path = target_dir_base.join("aggregate_index.sqlite");
             match aggregate_engine::AggregateBackupEngine::new(
                 self.option.aggregate_config,
+                source_dir_base.clone(),
                 target_dir_base.clone(),
-                &index_path,
             ) {
                 Ok(engine) => Some(Arc::new(engine)),
                 Err(e) => {

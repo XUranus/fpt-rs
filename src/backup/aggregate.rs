@@ -211,6 +211,133 @@ pub fn generate_blob_name(counter: u64) -> String {
     format!("{:016x}.bifrost.blob", counter)
 }
 
+/// Snowflake-like unique ID generator for blob filenames.
+/// Generates unique 64-bit IDs using timestamp, process ID, and sequence number.
+/// This ensures unique IDs even when multiple processes write to the same directory.
+pub struct SnowflakeIdGenerator {
+    /// Last timestamp (milliseconds since custom epoch)
+    last_timestamp: u64,
+    /// Sequence number (12 bits)
+    sequence: u16,
+    /// Process ID (10 bits)
+    process_id: u16,
+    /// Custom epoch (milliseconds) - Bifrost project start date
+    epoch: u64,
+}
+
+impl SnowflakeIdGenerator {
+    /// Custom epoch: 2024-01-01 00:00:00 UTC in milliseconds
+    const BIFROST_EPOCH: u64 = 1704067200000;
+    
+    /// Maximum sequence number (12 bits)
+    const MAX_SEQUENCE: u16 = 4095;
+    
+    /// Creates a new Snowflake ID generator.
+    /// process_id should be unique per process (0-1023).
+    pub fn new(process_id: u16) -> Self {
+        Self {
+            last_timestamp: 0,
+            sequence: 0,
+            process_id: process_id & 0x3FF, // 10 bits
+            epoch: Self::BIFROST_EPOCH,
+        }
+    }
+    
+    /// Creates a new Snowflake ID generator with default process ID.
+    /// Uses process ID derived from current process ID modulo 1024.
+    pub fn default() -> Self {
+        let pid = std::process::id() as u16 & 0x3FF;
+        Self::new(pid)
+    }
+    
+    /// Gets current timestamp in milliseconds since epoch.
+    fn current_timestamp(&self) -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        now.saturating_sub(self.epoch)
+    }
+    
+    /// Waits until the next millisecond.
+    fn wait_next_millis(&self, last: u64) -> u64 {
+        let mut timestamp = self.current_timestamp();
+        while timestamp <= last {
+            std::thread::yield_now();
+            timestamp = self.current_timestamp();
+        }
+        timestamp
+    }
+    
+    /// Generates a new unique 64-bit ID.
+    /// 
+    /// ID structure (64 bits):
+    /// - 41 bits: Timestamp (milliseconds since epoch, ~69 years)
+    /// - 10 bits: Process ID (0-1023, unique per process)
+    /// - 12 bits: Sequence number (0-4095, per millisecond)
+    /// - 1 bit: Reserved (0)
+    pub fn next_id(&mut self) -> u64 {
+        let mut timestamp = self.current_timestamp();
+        
+        if timestamp < self.last_timestamp {
+            // Clock moved backwards, wait until we catch up
+            timestamp = self.wait_next_millis(self.last_timestamp);
+        }
+        
+        if timestamp == self.last_timestamp {
+            // Same millisecond, increment sequence
+            self.sequence += 1;
+            if self.sequence > Self::MAX_SEQUENCE {
+                // Sequence overflow, wait for next millisecond
+                timestamp = self.wait_next_millis(timestamp);
+                self.sequence = 0;
+            }
+        } else {
+            // New millisecond, reset sequence
+            self.sequence = 0;
+        }
+        
+        self.last_timestamp = timestamp;
+        
+        // Compose the ID
+        // | 41 bits timestamp | 10 bits process | 12 bits sequence | 1 bit reserved |
+        (timestamp << 23) | ((self.process_id as u64) << 12) | (self.sequence as u64)
+    }
+    
+    /// Generates a unique blob filename.
+    pub fn generate_blob_name(&mut self) -> String {
+        format!("{:016x}.bifrost.blob", self.next_id())
+    }
+}
+
+/// Thread-safe Snowflake ID generator wrapper.
+pub struct ThreadSafeSnowflake {
+    inner: std::sync::Mutex<SnowflakeIdGenerator>,
+}
+
+impl ThreadSafeSnowflake {
+    /// Creates a new thread-safe Snowflake generator.
+    pub fn new(process_id: u16) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(SnowflakeIdGenerator::new(process_id)),
+        }
+    }
+    
+    /// Creates a new thread-safe Snowflake generator with default process ID.
+    pub fn default() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(SnowflakeIdGenerator::default()),
+        }
+    }
+    
+    /// Generates a new unique blob filename.
+    pub fn generate_blob_name(&self) -> String {
+        let mut generator = self.inner.lock().unwrap();
+        generator.generate_blob_name()
+    }
+}
+
 /// Check if a file should be aggregated based on size.
 pub fn should_aggregate(file_size: u64, config: &AggregateConfig) -> bool {
     config.enabled && file_size > 0 && file_size < config.file_threshold

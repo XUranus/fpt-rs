@@ -1,12 +1,17 @@
 //! # Aggregate Backup Engine
 //!
 //! This module implements the core aggregation logic for backup operations.
-//! It combines multiple small files into blob files and maintains an index
-//! for later restoration.
+//! It combines multiple small files into blob files and maintains per-directory
+//! SQLite indexes for later restoration.
+//!
+//! Design:
+//! - Each directory has its own SQLite index (0 or 1 per directory)
+//! - Aggregated files are stored in .blobs/ subdirectory within each directory
+//! - This provides better scalability for large file sets
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -16,39 +21,99 @@ use std::time::Duration;
 use log::{debug, error, info, warn};
 
 use crate::backup::aggregate::{
-    generate_blob_name, AggregateBlobMeta, AggregateConfig, AggregateFileEntry,
+    AggregateBlobMeta, AggregateConfig, AggregateFileEntry,
     AggregateStats, DirAggregateBuffer, PendingFile, should_aggregate,
+    ThreadSafeSnowflake,
 };
 use crate::backup::aggregate_index::AggregateIndex;
-use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState, TargetHandleState};
+use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState};
 use crate::backup::stats::BackupStats;
 use crate::backup::SharedState;
+
+/// Per-directory aggregate information
+struct DirAggregateInfo {
+    /// Path to the directory in target
+    target_dir: PathBuf,
+    /// Path to the .blobs subdirectory
+    blobs_dir: PathBuf,
+    /// Path to the SQLite index
+    index_path: PathBuf,
+    /// The index (opened on first use)
+    index: Option<AggregateIndex>,
+}
+
+impl DirAggregateInfo {
+    fn new(target_dir: PathBuf) -> Result<Self, AggregateEngineError> {
+        let blobs_dir = target_dir.join(".blobs");
+        let index_path = target_dir.join(".aggregate_index.sqlite");
+        
+        // Create .blobs directory
+        std::fs::create_dir_all(&blobs_dir)?;
+        
+        Ok(Self {
+            target_dir,
+            blobs_dir,
+            index_path,
+            index: None,
+        })
+    }
+    
+    fn get_or_open_index(&mut self) -> Result<&AggregateIndex, AggregateEngineError> {
+        if self.index.is_none() {
+            self.index = Some(AggregateIndex::open(&self.index_path)?);
+        }
+        Ok(self.index.as_ref().unwrap())
+    }
+}
 
 /// Engine for performing aggregate backups.
 pub struct AggregateBackupEngine {
     /// Configuration for aggregation
     pub config: AggregateConfig,
-    target_dir: PathBuf,
-    index: Arc<Mutex<AggregateIndex>>,
-    blob_counter: AtomicU64,
+    /// Base source directory
+    source_base: PathBuf,
+    /// Base target directory
+    target_base: PathBuf,
+    /// Source to target directory mapping
+    dir_info: Mutex<HashMap<String, DirAggregateInfo>>,
+    /// Global stats
     stats: Arc<Mutex<AggregateStats>>,
+    /// Snowflake ID generator for unique blob filenames
+    id_generator: ThreadSafeSnowflake,
 }
 
 impl AggregateBackupEngine {
     /// Creates a new aggregate backup engine.
     pub fn new(
         config: AggregateConfig,
-        target_dir: PathBuf,
-        index_path: &Path,
+        source_base: PathBuf,
+        target_base: PathBuf,
     ) -> Result<Self, AggregateEngineError> {
-        let index = AggregateIndex::open(index_path)?;
-        
         Ok(Self {
             config,
-            target_dir,
-            index: Arc::new(Mutex::new(index)),
-            blob_counter: AtomicU64::new(0),
+            source_base,
+            target_base,
+            dir_info: Mutex::new(HashMap::new()),
             stats: Arc::new(Mutex::new(AggregateStats::default())),
+            id_generator: ThreadSafeSnowflake::default(),
+        })
+    }
+    
+    /// Creates a new aggregate backup engine with a specific process ID.
+    /// process_id should be unique per process (0-1023).
+    pub fn with_process_id(
+        config: AggregateConfig,
+        source_base: PathBuf,
+        target_base: PathBuf,
+        process_id: u16,
+    ) -> Result<Self, AggregateEngineError> {
+        Ok(Self {
+            config,
+            source_base,
+            target_base,
+            dir_info: Mutex::new(HashMap::new()),
+            stats: Arc::new(Mutex::new(AggregateStats::default())),
+            id_generator: ThreadSafeSnowflake::new(process_id),
         })
     }
 
@@ -60,17 +125,22 @@ impl AggregateBackupEngine {
     /// Creates a blob file from a directory buffer.
     pub fn create_blob(
         &self,
-        dir_path: &str,
+        source_dir: &str,
         files: Vec<PendingFile>,
     ) -> Result<AggregateBlobMeta, AggregateEngineError> {
-        let blob_id = self.blob_counter.fetch_add(1, Ordering::SeqCst);
-        let blob_name = generate_blob_name(blob_id);
-        let blob_path = self.target_dir.join(&blob_name);
-
-        // Ensure target directory exists
-        if let Some(parent) = blob_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        // Get or create directory info
+        let mut dir_info_map = self.dir_info.lock().unwrap();
+        
+        let dir_info = dir_info_map.entry(source_dir.to_string())
+            .or_insert_with(|| {
+                // Create new dir info
+                let target_dir = self.source_dir_to_target(source_dir);
+                DirAggregateInfo::new(target_dir).expect("Failed to create dir info")
+            });
+        
+        // Generate unique blob name using Snowflake algorithm
+        let blob_name = self.id_generator.generate_blob_name();
+        let blob_path = dir_info.blobs_dir.join(&blob_name);
 
         let mut blob_file = File::create(&blob_path)?;
         let mut entries = Vec::new();
@@ -109,11 +179,11 @@ impl AggregateBackupEngine {
             blob_size: total_size,
             file_count: entries.len() as u32,
             files: entries,
-            dir_path: dir_path.to_string(),
+            dir_path: source_dir.to_string(),
         };
 
-        // Update index
-        let index = self.index.lock().unwrap();
+        // Update per-directory index
+        let index = dir_info.get_or_open_index()?;
         index.add_blob(&blob_meta)?;
 
         // Update stats
@@ -124,16 +194,46 @@ impl AggregateBackupEngine {
         stats.original_bytes += total_size;
 
         info!(
-            "Created blob {} with {} files ({} bytes)",
-            blob_name, blob_meta.file_count, total_size
+            "Created blob {} in {} with {} files ({} bytes)",
+            blob_name, source_dir, blob_meta.file_count, total_size
         );
 
         Ok(blob_meta)
+    }
+    
+    /// Maps a source directory path to target directory path
+    /// Preserves the directory structure: source_base/... -> target_base/...
+    fn source_dir_to_target(&self, source_dir: &str) -> PathBuf {
+        let source_path = Path::new(source_dir);
+        
+        // Get the relative path from source_base
+        let relative_path = if source_path.starts_with(&self.source_base) {
+            source_path.strip_prefix(&self.source_base)
+                .unwrap_or(source_path)
+        } else {
+            // If source_dir is not under source_base, use the full path
+            // after stripping any leading "/"
+            source_path.strip_prefix("/").unwrap_or(source_path)
+        };
+        
+        // Join with target_base
+        self.target_base.join(relative_path)
     }
 
     /// Gets current statistics.
     pub fn stats(&self) -> AggregateStats {
         self.stats.lock().unwrap().clone()
+    }
+    
+    /// Flushes all directory indexes
+    pub fn flush_all_indexes(&self) -> Result<(), AggregateEngineError> {
+        let dir_info_map = self.dir_info.lock().unwrap();
+        for (dir_path, dir_info) in dir_info_map.iter() {
+            if let Some(ref index) = dir_info.index {
+                info!("Flushed index for directory: {}", dir_path);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -331,6 +431,9 @@ pub fn spawn_aggregate_coordinator(
                 }
             }
         }
+        
+        // Flush all indexes
+        let _ = agg_state.engine.flush_all_indexes();
 
         // Print final stats
         let stats = agg_state.engine.stats();

@@ -283,21 +283,15 @@ fn init_global_logger(verbose: u8) -> Result<(), fern::InitError> {
 }
 
 /// Find all control files in a directory, sorted by priority
+/// For backup operations, we only process copy control files
 fn find_control_files(ctrl_dir: &Path) -> Vec<(PathBuf, ControlFilePriority)> {
     let mut files = Vec::new();
 
-    let priorities = [
-        ("copy.txt", ControlFilePriority::Copy),
-        ("hardlink.txt", ControlFilePriority::Hardlink),
-        ("delete.txt", ControlFilePriority::Delete),
-        ("mtime.txt", ControlFilePriority::Mtime),
-    ];
-
-    for (filename, priority) in priorities {
-        let path = ctrl_dir.join(filename);
-        if path.exists() {
-            files.push((path, priority));
-        }
+    // Only process copy control files for backup
+    // hardlink, delete, and mtime are handled separately by the backup engine phases
+    let copy_file = ctrl_dir.join("copy.txt");
+    if copy_file.exists() {
+        files.push((copy_file, ControlFilePriority::Copy));
     }
 
     // Also check for sharded control files
@@ -313,8 +307,62 @@ fn find_control_files(ctrl_dir: &Path) -> Vec<(PathBuf, ControlFilePriority)> {
         }
     }
 
-    // Sort by priority
-    files.sort_by_key(|(_, p)| *p);
+    files
+}
+
+/// Find all control files for restore operations
+/// Restore processes all 4 phases: copy, hardlink, delete, mtime
+fn find_restore_control_files(ctrl_dir: &Path) -> Vec<(PathBuf, ControlFilePriority)> {
+    let mut files = Vec::new();
+
+    // Process copy control files (highest priority)
+    let copy_file = ctrl_dir.join("copy.txt");
+    if copy_file.exists() {
+        files.push((copy_file, ControlFilePriority::Copy));
+    }
+
+    // Process hardlink control files
+    let hardlink_file = ctrl_dir.join("hardlink.txt");
+    if hardlink_file.exists() {
+        files.push((hardlink_file, ControlFilePriority::Hardlink));
+    }
+
+    // Process delete control files
+    let delete_file = ctrl_dir.join("delete.txt");
+    if delete_file.exists() {
+        files.push((delete_file, ControlFilePriority::Delete));
+    }
+
+    // Process mtime control files
+    let mtime_file = ctrl_dir.join("mtime.txt");
+    if mtime_file.exists() {
+        files.push((mtime_file, ControlFilePriority::Mtime));
+    }
+
+    // Also check for sharded control files
+    if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.ends_with(".txt") {
+                    if name_str.starts_with("copy_") {
+                        files.push((entry.path(), ControlFilePriority::Copy));
+                    } else if name_str.starts_with("hardlink_") {
+                        files.push((entry.path(), ControlFilePriority::Hardlink));
+                    } else if name_str.starts_with("delete_") {
+                        files.push((entry.path(), ControlFilePriority::Delete));
+                    } else if name_str.starts_with("mtime_") {
+                        files.push((entry.path(), ControlFilePriority::Mtime));
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by priority (Copy < Hardlink < Delete < Mtime)
+    files.sort_by_key(|(_, priority)| *priority);
+
     files
 }
 
@@ -537,6 +585,18 @@ fn cmd_backup(
         let log_file_clone = log_file.clone();
         let priority_clone = priority;
 
+        // Enable phases based on command-line flags and format
+        // For aggregated format, only copy phase is used (hardlink/delete/mtime are ignored)
+        // For common format, all phases can be enabled via flags
+        let is_aggregated = matches!(format_clone, BackupFormat::Aggregated);
+        let enable_hardlink_phase = hardlink && !is_aggregated;
+        let enable_delete_phase = delete && !is_aggregated;
+        let enable_mtime_phase = mtime && !is_aggregated;
+
+        if is_aggregated && (hardlink || delete || mtime) {
+            println!("[{}] Note: hardlink/delete/mtime phases are ignored for aggregated format", subtask_id_clone);
+        }
+
         let handle = thread::spawn(move || {
             let result = execute_backup_subtask(
                 subtask_id_clone.clone(),
@@ -545,9 +605,9 @@ fn cmd_backup(
                 ctrl_file_clone,
                 format_clone,
                 workers,
-                hardlink && matches!(priority_clone, ControlFilePriority::Hardlink),
-                delete && matches!(priority_clone, ControlFilePriority::Delete),
-                mtime && matches!(priority_clone, ControlFilePriority::Mtime),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
                 blob_size,
                 threshold,
                 log_file_clone,
@@ -662,8 +722,9 @@ fn cmd_restore(
     std::fs::create_dir_all(&target)?;
 
     // Find control files for restore
+    // Restore processes all 4 phases: copy, hardlink, delete, mtime
     let ctrl_dir = copy.m_repo.join("ctrl");
-    let control_files = find_control_files(&ctrl_dir);
+    let control_files = find_restore_control_files(&ctrl_dir);
 
     if control_files.is_empty() {
         return Err("No control files found for restore".into());
