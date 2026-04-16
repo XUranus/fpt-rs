@@ -257,3 +257,284 @@ impl RunningBackup {
         Ok(())
     }
 }
+
+// ============================================================================
+// Restore Task Implementation
+// ============================================================================
+
+/// Policy for handling existing files during restore operations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RestorePolicy {
+    /// Replace existing files with restored versions.
+    /// This is the default behavior - always overwrite.
+    Replace,
+    /// Skip existing files - do not restore if target exists.
+    /// Files that exist are counted as skipped in stats.
+    Skip,
+    /// Keep newer files - only restore if source (backup) is newer than target.
+    /// If target is newer or same age, skip the file.
+    KeepNewer,
+}
+
+impl Default for RestorePolicy {
+    fn default() -> Self {
+        RestorePolicy::Replace
+    }
+}
+
+impl RestorePolicy {
+    /// Determines whether to restore a file based on the policy and file metadata.
+    ///
+    /// # Arguments
+    /// * `source_mtime` - Modification time of the source (backup) file
+    /// * `target_exists` - Whether the target file already exists
+    /// * `target_mtime` - Modification time of the target file (if it exists)
+    ///
+    /// # Returns
+    /// `true` if the file should be restored, `false` if it should be skipped.
+    pub fn should_restore(
+        &self,
+        source_mtime: Option<std::time::SystemTime>,
+        target_exists: bool,
+        target_mtime: Option<std::time::SystemTime>,
+    ) -> bool {
+        match self {
+            RestorePolicy::Replace => true,
+            RestorePolicy::Skip => !target_exists,
+            RestorePolicy::KeepNewer => {
+                if !target_exists {
+                    return true;
+                }
+                match (source_mtime, target_mtime) {
+                    (Some(src), Some(tgt)) => src > tgt,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (None, None) => true,
+                }
+            }
+        }
+    }
+}
+
+/// Statistics for restore operations, tracking skipped files based on policy.
+#[derive(Debug, Default, Clone)]
+pub struct RestoreStats {
+    /// Total files that were restored (copied)
+    pub files_restored: u64,
+    /// Total bytes copied during restore
+    pub bytes_restored: u64,
+    /// Files skipped due to restore policy (Skip or KeepNewer)
+    pub files_skipped: u64,
+    /// Bytes that would have been copied if not skipped
+    pub bytes_skipped: u64,
+    /// Files that failed to restore
+    pub files_failed: u64,
+    /// Directories created
+    pub dirs_created: u64,
+}
+
+/// Configuration options for restore operations.
+#[derive(Debug, Clone)]
+pub struct RestoreOption {
+    /// Source directory (backup location)
+    pub source_dir_base: PathBuf,
+    /// Target directory (restore destination)
+    pub target_dir_base: PathBuf,
+    /// Metadata directory containing meta_*.dat files
+    pub meta_dir: PathBuf,
+    /// Control file directory containing restore control files
+    pub ctrl_dir: PathBuf,
+    /// Path to the specific control file for this restore task
+    pub control_file: PathBuf,
+    /// Restore policy for handling existing files
+    pub policy: RestorePolicy,
+    /// Number of worker threads
+    pub worker_count: usize,
+    /// Whether to restore hardlinks
+    pub restore_hardlinks: bool,
+    /// Whether to restore mtime attributes
+    pub restore_mtime: bool,
+}
+
+impl RestoreOption {
+    /// Creates a new RestoreOption with required paths.
+    pub fn new(
+        source_dir_base: PathBuf,
+        target_dir_base: PathBuf,
+        meta_dir: PathBuf,
+        ctrl_dir: PathBuf,
+        control_file: PathBuf,
+    ) -> Self {
+        Self {
+            source_dir_base,
+            target_dir_base,
+            meta_dir,
+            ctrl_dir,
+            control_file,
+            policy: RestorePolicy::default(),
+            worker_count: 4,
+            restore_hardlinks: false,
+            restore_mtime: true,
+        }
+    }
+
+    /// Sets the restore policy.
+    pub fn policy(mut self, policy: RestorePolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Sets the number of worker threads.
+    pub fn worker_count(mut self, count: usize) -> Self {
+        self.worker_count = count;
+        self
+    }
+
+    /// Enables or disables hardlink restoration.
+    pub fn restore_hardlinks(mut self, enable: bool) -> Self {
+        self.restore_hardlinks = enable;
+        self
+    }
+
+    /// Enables or disables mtime restoration.
+    pub fn restore_mtime(mut self, enable: bool) -> Self {
+        self.restore_mtime = enable;
+        self
+    }
+}
+
+/// A restore task that performs data restoration from backup.
+/// Similar to BackupTask but operates in reverse direction (backup -> target).
+pub struct RestoreTask {
+    option: RestoreOption,
+}
+
+/// Represents a running restore operation.
+pub struct RunningRestore {
+    option: RestoreOption,
+    stats: Arc<Mutex<RestoreStats>>,
+    terminate_handle: thread::JoinHandle<()>,
+    terminate_indicator: Arc<AtomicBool>,
+}
+
+/// Errors that can occur during restore operations.
+#[derive(Debug)]
+pub enum RestoreError {
+    InvalidSourcePath,
+    InvalidTargetPath,
+    InvalidMetaPath,
+    InvalidControlFile,
+    InsufficientDiskSpace,
+    IoError(std::io::Error),
+}
+
+impl std::fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestoreError::InvalidSourcePath => write!(f, "Invalid source path"),
+            RestoreError::InvalidTargetPath => write!(f, "Invalid target path"),
+            RestoreError::InvalidMetaPath => write!(f, "Invalid metadata path"),
+            RestoreError::InvalidControlFile => write!(f, "Invalid control file"),
+            RestoreError::InsufficientDiskSpace => write!(f, "Insufficient disk space"),
+            RestoreError::IoError(e) => write!(f, "IO error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for RestoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RestoreError::IoError(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for RestoreError {
+    fn from(e: std::io::Error) -> Self {
+        RestoreError::IoError(e)
+    }
+}
+
+impl RestoreTask {
+    /// Creates a new RestoreTask from RestoreOption.
+    pub fn new(option: RestoreOption) -> Self {
+        Self { option }
+    }
+
+    /// Starts the restore operation.
+    ///
+    /// This method validates paths and spawns the restore worker threads.
+    /// The restore operation reads from the backup source and writes to the target,
+    /// respecting the configured RestorePolicy for existing files.
+    pub fn start(self) -> Result<RunningRestore, RestoreError> {
+        // Validate paths
+        if !self.option.source_dir_base.exists() {
+            return Err(RestoreError::InvalidSourcePath);
+        }
+        if !self.option.meta_dir.exists() {
+            return Err(RestoreError::InvalidMetaPath);
+        }
+        if !self.option.control_file.exists() {
+            return Err(RestoreError::InvalidControlFile);
+        }
+
+        // Ensure target directory exists
+        std::fs::create_dir_all(&self.option.target_dir_base)
+            .map_err(RestoreError::IoError)?;
+
+        let stats = Arc::new(Mutex::new(RestoreStats::default()));
+        let terminate_indicator = Arc::new(AtomicBool::new(false));
+        let terminate_indicator_inner = Arc::clone(&terminate_indicator);
+
+        let option = self.option.clone();
+        let stats_inner = Arc::clone(&stats);
+
+        let terminate_handle = thread::spawn(move || {
+            // TODO: Implement actual restore logic
+            // This would:
+            // 1. Parse control file to get list of files to restore
+            // 2. For each file, check RestorePolicy::should_restore()
+            // 3. Copy files from source to target (reverse of backup)
+            // 4. Update stats accordingly (files_restored, files_skipped, bytes_skipped)
+            // 5. Handle hardlinks and mtime if enabled
+            
+            info!("Restore operation started with policy: {:?}", option.policy);
+            info!("Source: {:?}, Target: {:?}", option.source_dir_base, option.target_dir_base);
+            
+            // Placeholder: mark as complete
+            terminate_indicator_inner.store(true, Ordering::Relaxed);
+        });
+
+        Ok(RunningRestore {
+            option: self.option,
+            stats,
+            terminate_handle,
+            terminate_indicator,
+        })
+    }
+}
+
+impl From<RestoreOption> for RestoreTask {
+    fn from(option: RestoreOption) -> Self {
+        Self::new(option)
+    }
+}
+
+impl RunningRestore {
+    /// Gets a snapshot of current restore statistics.
+    pub fn stats(&self) -> RestoreStats {
+        self.stats.lock().unwrap().clone()
+    }
+
+    /// Checks if the restore operation is complete.
+    pub fn complete(&self) -> bool {
+        self.terminate_indicator.load(Ordering::Relaxed)
+    }
+
+    /// Waits for the restore operation to complete.
+    pub fn wait(self) -> Result<(), RestoreError> {
+        self.terminate_handle.join().unwrap();
+        Ok(())
+    }
+}
