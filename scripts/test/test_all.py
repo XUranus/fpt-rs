@@ -24,6 +24,7 @@ from test_sparse_files import TestSparseFiles
 from test_permissions import TestPermissions
 from test_empty_directories import TestEmptyDirectories
 from test_large_fileset import TestLargeFileset
+from test_aggregate import AggregateBackupTest, AggregateRestoreTest, AggregateMixedFilesTest
 
 
 # Define test suites
@@ -47,7 +48,13 @@ SCALABILITY_TESTS = [
     (TestLargeFileset, {"num_files": 500, "num_dirs": 50, "file_size": 1024}),
 ]
 
-ALL_TESTS = BASIC_TESTS + INTERMEDIATE_TESTS + ADVANCED_TESTS + SCALABILITY_TESTS
+AGGREGATE_TESTS = [
+    AggregateBackupTest,
+    AggregateRestoreTest,
+    AggregateMixedFilesTest,
+]
+
+ALL_TESTS = BASIC_TESTS + INTERMEDIATE_TESTS + ADVANCED_TESTS + SCALABILITY_TESTS + AGGREGATE_TESTS
 
 
 def parse_args():
@@ -61,6 +68,7 @@ Test Suites:
   intermediate - Permission, hardlinks, sparse files
   advanced     - Incremental backup
   scalability  - Large fileset handling
+  aggregate    - Aggregate backup/restore tests
   all          - Run all tests (default)
 
 Examples:
@@ -79,7 +87,7 @@ Examples:
     parser.add_argument("--keep-logs", action="store_true",
                         help="Keep logs directories even when tests pass")
     parser.add_argument("--suite", choices=["basic", "intermediate", "advanced",
-                                            "scalability", "all"],
+                                            "scalability", "aggregate", "all"],
                         default="all",
                         help="Test suite to run (default: all)")
     parser.add_argument("--list", action="store_true",
@@ -106,6 +114,9 @@ def get_tests_to_run(args) -> list:
             "sparse_files": TestSparseFiles,
             "incremental": TestIncrementalBackup,
             "large_fileset": (TestLargeFileset, {"num_files": 500, "num_dirs": 50}),
+            "aggregate_backup": AggregateBackupTest,
+            "aggregate_restore": AggregateRestoreTest,
+            "aggregate_mixed": AggregateMixedFilesTest,
         }
 
         tests = []
@@ -124,6 +135,7 @@ def get_tests_to_run(args) -> list:
         "intermediate": INTERMEDIATE_TESTS,
         "advanced": ADVANCED_TESTS,
         "scalability": SCALABILITY_TESTS,
+        "aggregate": AGGREGATE_TESTS,
         "all": ALL_TESTS,
     }
 
@@ -140,6 +152,7 @@ def list_tests():
         ("Intermediate Tests", INTERMEDIATE_TESTS),
         ("Advanced Tests", ADVANCED_TESTS),
         ("Scalability Tests", SCALABILITY_TESTS),
+        ("Aggregate Tests", AGGREGATE_TESTS),
     ]
 
     for suite_name, tests in test_suites:

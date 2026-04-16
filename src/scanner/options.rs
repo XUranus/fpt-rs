@@ -101,6 +101,17 @@ pub struct MetaScanOption {
     ///
     /// Enabled by default for safety.
     pub skip_block_devices: bool,
+
+    /// Whether to enable aggregate backup mode.
+    /// When enabled, small files are combined into larger blob files.
+    /// Disabled by default.
+    pub enable_aggregation: bool,
+
+    /// Maximum size of aggregate blob files in bytes (default: 64MB).
+    pub max_aggregate_blob_size: u64,
+
+    /// Files smaller than this threshold are aggregated (default: 1MB).
+    pub aggregate_file_threshold: u64,
 }
 
 /// Configuration for the spillable in-memory work queue.
@@ -167,6 +178,9 @@ impl Default for MetaScanOption {
             follow_symlinks: false, // safe default
             skip_entries: Vec::new(),
             skip_block_devices: true, // safe default
+            enable_aggregation: false,
+            max_aggregate_blob_size: 64 * 1024 * 1024, // 64MB
+            aggregate_file_threshold: 1024 * 1024,     // 1MB
         }
     }
 }
@@ -320,6 +334,24 @@ impl ScanOption {
     /// Configures whether to skip block devices during scanning.
     pub fn skip_block_devices(mut self, skip: bool) -> Self {
         self.meta_option.skip_block_devices = skip;
+        self
+    }
+
+    /// Configures whether to enable aggregate backup mode.
+    pub fn enable_aggregation(mut self, enable: bool) -> Self {
+        self.meta_option.enable_aggregation = enable;
+        self
+    }
+
+    /// Sets the maximum aggregate blob size in bytes.
+    pub fn max_aggregate_blob_size(mut self, size: u64) -> Self {
+        self.meta_option.max_aggregate_blob_size = size;
+        self
+    }
+
+    /// Sets the file threshold for aggregation (files smaller than this are aggregated).
+    pub fn aggregate_file_threshold(mut self, threshold: u64) -> Self {
+        self.meta_option.aggregate_file_threshold = threshold;
         self
     }
 }

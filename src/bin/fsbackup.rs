@@ -48,6 +48,22 @@ struct Args {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     mtime: bool,
 
+    /// Enable aggregate backup mode (combines small files into blobs)
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    aggregate: bool,
+
+    /// Maximum size of aggregate blob files in MB (default: 64)
+    #[arg(long, value_name = "SIZE_MB", default_value = "64")]
+    max_blob_size: u64,
+
+    /// File size threshold for aggregation in KB (files smaller than this are aggregated, default: 1024)
+    #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
+    aggregate_threshold: u64,
+
+    /// Directory for aggregate index and blob files (default: target_dir)
+    #[arg(long, value_name = "DIR")]
+    aggregate_dir: Option<PathBuf>,
+
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -80,15 +96,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create backup option and task
-    let backup_option = crate::backup::BackupOption::new(
-        args.source_dir,
-        args.target_dir,
+    let mut backup_option = crate::backup::BackupOption::new(
+        args.source_dir.clone(),
+        args.target_dir.clone(),
         args.meta_dir,
         ctrl_dir,
         args.control_file,
     ).enable_hardlink_phase(args.hardlink)
      .enable_delete_phase(args.delete)
      .enable_mtime_phase(args.mtime);
+
+    // Configure aggregation if enabled
+    if args.aggregate {
+        let max_blob_size = args.max_blob_size * 1024 * 1024; // Convert MB to bytes
+        let aggregate_threshold = args.aggregate_threshold * 1024; // Convert KB to bytes
+        backup_option = backup_option
+            .enable_aggregation(true)
+            .aggregate_max_blob_size(max_blob_size)
+            .aggregate_file_threshold(aggregate_threshold);
+        info!("Aggregate backup enabled: max_blob_size={}MB, threshold={}KB",
+              args.max_blob_size, args.aggregate_threshold);
+    }
     
     let backup_task: backup::BackupTask = backup_option.into();
     

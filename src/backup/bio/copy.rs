@@ -14,7 +14,7 @@
 //! - **Scalability**: Configurable number of I/O threads for parallelism.
 //! - **Observability**: Detailed statistics tracking via `BackupStats`.
 
-use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats}, scanner::metadata::{ControlEntry, ControlFileReader, DirMeta, MetaRepoReader}};
+use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats, aggregate_engine::{AggregateBackupEngine, AggregateBackupState, fcb_to_pending_file}}, scanner::metadata::{ControlEntry, ControlFileReader, DirMeta, MetaRepoReader}};
 use std::{fs::File, path::{Path, PathBuf}, sync::mpsc::RecvTimeoutError, time::Duration};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
@@ -216,6 +216,118 @@ pub fn spawn_reader(
     })
 }
 
+/// Spawns a reader control thread with aggregation support.
+/// Small files are routed to the aggregate engine instead of normal backup.
+pub fn spawn_reader_with_aggregation(
+    reader_rx: mpsc::Receiver<ControlBlockVarient>,
+    reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
+    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    shared_state : Arc<SharedState>,
+    aggregate_engine: Arc<AggregateBackupEngine>,
+    stats: Arc<BackupStats>,
+) -> std::thread::JoinHandle<()> {
+
+    std::thread::spawn(move || {
+        // Create aggregate state for buffering files
+        let agg_state = Arc::new(AggregateBackupState::new(aggregate_engine));
+        
+        loop {
+            let result = reader_rx.recv_timeout(Duration::from_millis(100));
+            match result {
+                Ok(item) => {
+                    match item {
+                        ControlBlockVarient::DirControlBlock(dcb) => {
+                            // Forward directory entries to writer for creation
+                            let _ = writer_tx.send(ControlBlockVarient::DirControlBlock(dcb));
+                        }
+                        ControlBlockVarient::FileControlBlock(fcb) => {
+                            // Check if this is a symlink - symlinks don't need content copying
+                            if fcb.meta.common.symlink_target_path.is_some() {
+                                // Forward directly to writer for symlink creation
+                                let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
+                            } else {
+                                // Check if file should be aggregated
+                                let should_agg = agg_state.engine.should_aggregate(fcb.meta.size);
+                                
+                                if should_agg && fcb.src_state == SourceHandleState::Read {
+                                    // File is small and already read - aggregate it
+                                    let pending = fcb_to_pending_file(&fcb);
+                                    let dir_path = fcb.src_path.parent()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    
+                                    // Add to buffer
+                                    if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
+                                        // Buffer is full, create blob
+                                        match agg_state.engine.create_blob(&dir, files) {
+                                            Ok(blob_meta) => {
+                                                info!("Created blob {} for dir {} with {} files", 
+                                                    blob_meta.blob_name, dir, blob_meta.file_count);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to create blob for dir {}: {}", dir, e);
+                                                stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                        }
+                                    }
+                                } else if should_agg {
+                                    // File should be aggregated but not yet read - send to reader
+                                    match fcb.src_state {
+                                        SourceHandleState::Inited => {
+                                            let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                        }
+                                        SourceHandleState::Opened => {
+                                            let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    // Large file - normal backup pipeline
+                                    match fcb.src_state {
+                                        SourceHandleState::Inited => {
+                                            let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                        }
+                                        SourceHandleState::Opened => {
+                                            let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(RecvTimeoutError::Timeout) => {
+                    if shared_state.entry_produce_done.load(Ordering::Relaxed)
+                        && shared_state.active_reader_io_workers.load(Ordering::Relaxed) == 0 {
+                        // Flush remaining aggregate buffers before exiting
+                        let remaining = agg_state.flush_all();
+                        for (dir, files) in remaining {
+                            if !files.is_empty() {
+                                match agg_state.engine.create_blob(&dir, files) {
+                                    Ok(blob_meta) => {
+                                        info!("Created final blob {} for dir {} with {} files", 
+                                            blob_meta.blob_name, dir, blob_meta.file_count);
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to create final blob for dir {}: {}", dir, e);
+                                    }
+                                }
+                            }
+                        }
+                        shared_state.reader_done.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+            }
+        }
+        info!("reader with aggregation thread end.");
+    })
+}
+
 // === Reader I/O Result Poller ===
 
 /// Spawns a thread that processes reader I/O results and routes FCBs onward.
@@ -254,6 +366,53 @@ pub fn spawn_reader_io_result_poll(
             }
         }
         info!("reader io_pool polling thread end.");
+    })
+}
+
+/// Spawns a thread that processes reader I/O results with aggregation support.
+///
+/// Completed read operations for small files are routed back to the aggregation
+/// reader for blob creation. Large files and other operations go to the writer.
+pub fn spawn_reader_io_result_poll_with_aggregation(
+    result_rx: mpsc::Receiver<ReaderBioResult>,
+    reader_tx: mpsc::Sender<ControlBlockVarient>,
+    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    stats: Arc<BackupStats>,
+    aggregate_engine: Arc<AggregateBackupEngine>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        while let Ok(result) = result_rx.recv() {
+            match result {
+                ReaderBioResult::OpenSource(Ok(fcb)) => {
+                    stats.src_opened.fetch_add(1, Ordering::Relaxed);
+                    let _ = reader_tx.send(ControlBlockVarient::FileControlBlock(fcb));
+                }
+                ReaderBioResult::OpenSource(Err(_)) => {
+                    stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                ReaderBioResult::ReadSource(Ok(fcb)) => {
+                    // Check if this file should be aggregated
+                    if aggregate_engine.should_aggregate(fcb.meta.size) {
+                        // Route back to reader for aggregation
+                        let _ = reader_tx.send(ControlBlockVarient::FileControlBlock(fcb));
+                    } else {
+                        // Large file - send to writer for normal backup
+                        let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
+                    }
+                }
+                ReaderBioResult::ReadSource(Err(_)) => {
+                    stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                ReaderBioResult::CloseSource(Ok(fcb)) => {
+                    stats.src_closed.fetch_add(1, Ordering::Relaxed);
+                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
+                }
+                ReaderBioResult::CloseSource(Err(_)) => {
+                    stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        info!("reader io_pool polling thread (with aggregation) end.");
     })
 }
 

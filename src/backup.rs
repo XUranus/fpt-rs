@@ -1,18 +1,25 @@
 use std::{path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc}, thread};
 use log::info;
 use crate::backup::{
-        bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask}, 
+        bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask},
         bio::hardlink::{self, HardlinkStatsSnapshot},
         bio::mtime::{self, MtimeStatsSnapshot},
         bio::delete::{self, DeleteStatsSnapshot},
-        fcb::{ControlBlockVarient, FileControlBlock}, 
-        stats::{BackupStats, BackupStatsSnapshot}
+        fcb::{ControlBlockVarient, FileControlBlock},
+        stats::{BackupStats, BackupStatsSnapshot},
+        aggregate::AggregateConfig,
     };
 
 mod fcb;
 mod bio;
 mod stats;
 pub mod sharded_processor;
+
+// Aggregate backup/restore modules
+pub mod aggregate;
+pub mod aggregate_index;
+pub mod aggregate_engine;
+pub mod aggregate_restore;
 
 pub struct BackupOption {
     /// source location path prefix
@@ -26,15 +33,18 @@ pub struct BackupOption {
     control_file : PathBuf,
 
     worker_count : usize,
-    
+
     /// Whether to run the hardlink phase after copy phase
     enable_hardlink_phase : bool,
-    
+
     /// Whether to run the delete phase after hardlink phase
     enable_delete_phase : bool,
-    
+
     /// Whether to run the mtime phase after copy/hardlink phase
     enable_mtime_phase : bool,
+
+    /// Aggregate backup configuration
+    pub aggregate_config : AggregateConfig,
 }
 
 
@@ -63,16 +73,17 @@ pub enum BackupError {
 
 impl BackupOption {
     pub fn new(source_dir_base : PathBuf, target_dir_base : PathBuf, meta_dir : PathBuf, ctrl_dir : PathBuf, control_file : PathBuf) -> Self {
-        Self { 
-            worker_count : 4, 
-            source_dir_base, 
-            target_dir_base, 
-            meta_dir, 
+        Self {
+            worker_count : 4,
+            source_dir_base,
+            target_dir_base,
+            meta_dir,
             ctrl_dir,
             control_file,
             enable_hardlink_phase : false,
             enable_delete_phase : false,
             enable_mtime_phase : false,
+            aggregate_config : AggregateConfig::default(),
         }
     }
     
@@ -91,6 +102,30 @@ impl BackupOption {
     /// Enable the mtime phase
     pub fn enable_mtime_phase(mut self, enable: bool) -> Self {
         self.enable_mtime_phase = enable;
+        self
+    }
+
+    /// Enable aggregation with default settings
+    pub fn enable_aggregation(mut self, enable: bool) -> Self {
+        self.aggregate_config.enabled = enable;
+        self
+    }
+
+    /// Set aggregation configuration
+    pub fn aggregate_config(mut self, config: AggregateConfig) -> Self {
+        self.aggregate_config = config;
+        self
+    }
+
+    /// Set maximum blob size for aggregation (in bytes)
+    pub fn aggregate_max_blob_size(mut self, size: u64) -> Self {
+        self.aggregate_config.max_blob_size = size;
+        self
+    }
+
+    /// Set file threshold for aggregation (files smaller than this are aggregated)
+    pub fn aggregate_file_threshold(mut self, threshold: u64) -> Self {
+        self.aggregate_config.file_threshold = threshold;
         self
     }
 }
@@ -126,10 +161,33 @@ impl BackupTask {
         let enable_hardlink_phase = self.option.enable_hardlink_phase;
         let enable_delete_phase = self.option.enable_delete_phase;
         let enable_mtime_phase = self.option.enable_mtime_phase;
+        let enable_aggregation = self.option.aggregate_config.enabled;
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
         let terminate_indicator_inner = Arc::clone(&terminate_indicator);
+
+        // Set up aggregate engine if enabled
+        let aggregate_engine = if enable_aggregation {
+            info!("Aggregation enabled: max_blob_size={}, file_threshold={}",
+                self.option.aggregate_config.max_blob_size,
+                self.option.aggregate_config.file_threshold);
+            
+            let index_path = target_dir_base.join("aggregate_index.sqlite");
+            match aggregate_engine::AggregateBackupEngine::new(
+                self.option.aggregate_config,
+                target_dir_base.clone(),
+                &index_path,
+            ) {
+                Ok(engine) => Some(Arc::new(engine)),
+                Err(e) => {
+                    eprintln!("Failed to create aggregate engine: {}. Continuing without aggregation.", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         let (fcb_reader_tx, fcb_reader_rx) = mpsc::channel::<ControlBlockVarient>();
         let (fcb_writer_tx, fcb_writer_rx) = mpsc::channel::<ControlBlockVarient>();
@@ -143,9 +201,34 @@ impl BackupTask {
     
         let entry_producer_handle = copy::spawn_file_entry_producer(control_file, meta_dir.clone(), source_dir_base.clone(), target_dir_base.clone(), fcb_reader_tx.clone(), Arc::clone(&shared_state));
 
-        let reader_handle = copy::spawn_reader(fcb_reader_rx, reader_io_task_tx, fcb_writer_tx.clone(), Arc::clone(&shared_state));
+        // If aggregation is enabled, use the aggregate-aware reader
+        let reader_handle = if let Some(ref engine) = aggregate_engine {
+            copy::spawn_reader_with_aggregation(
+                fcb_reader_rx, 
+                reader_io_task_tx, 
+                fcb_writer_tx.clone(), 
+                Arc::clone(&shared_state),
+                Arc::clone(engine),
+                Arc::clone(&stats)
+            )
+        } else {
+            copy::spawn_reader(fcb_reader_rx, reader_io_task_tx, fcb_writer_tx.clone(), Arc::clone(&shared_state))
+        };
+        
         let reader_io_pool = copy::spawn_reader_io_pool(Arc::clone(&reader_io_task_rx), reader_io_result_tx, worker_count, Arc::clone(&shared_state));
-        let reader_io_result_poll = copy::spawn_reader_io_result_poll(reader_io_result_rx, fcb_reader_tx, fcb_writer_tx.clone(), Arc::clone(&stats));
+        
+        // Use aggregation-aware result poller if aggregation is enabled
+        let reader_io_result_poll = if let Some(ref engine) = aggregate_engine {
+            copy::spawn_reader_io_result_poll_with_aggregation(
+                reader_io_result_rx, 
+                fcb_reader_tx, 
+                fcb_writer_tx.clone(), 
+                Arc::clone(&stats),
+                Arc::clone(engine)
+            )
+        } else {
+            copy::spawn_reader_io_result_poll(reader_io_result_rx, fcb_reader_tx, fcb_writer_tx.clone(), Arc::clone(&stats))
+        };
 
         let writer_handle = copy::spawn_writer(fcb_writer_rx, writer_io_task_tx, Arc::clone(&shared_state), Arc::clone(&stats));
         let writer_io_pool = copy::spawn_writer_io_pool(writer_io_task_rx, writer_io_result_tx, worker_count, Arc::clone(&shared_state));
@@ -164,6 +247,15 @@ impl BackupTask {
                 handle.join().unwrap();
             }
             writer_io_result_poll.join().unwrap();
+            
+            // Flush any remaining aggregate buffers
+            if let Some(ref engine) = aggregate_engine {
+                info!("Flushing aggregate buffers...");
+                // The aggregate stats are tracked within the engine
+                let agg_stats = engine.stats();
+                info!("Aggregate stats: {} blobs created, {} files aggregated", 
+                    agg_stats.blobs_created, agg_stats.files_aggregated);
+            }
             
             // Run hardlink phase if enabled
             if enable_hardlink_phase {
