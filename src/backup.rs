@@ -71,6 +71,18 @@ pub enum BackupError {
     InsuffientDiskSpace,
 }
 
+impl std::fmt::Display for BackupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackupError::InvalidMetaPath => write!(f, "Invalid metadata path"),
+            BackupError::InvalidControlFile => write!(f, "Invalid control file"),
+            BackupError::InsuffientDiskSpace => write!(f, "Insufficient disk space"),
+        }
+    }
+}
+
+impl std::error::Error for BackupError {}
+
 impl BackupOption {
     pub fn new(source_dir_base : PathBuf, target_dir_base : PathBuf, meta_dir : PathBuf, ctrl_dir : PathBuf, control_file : PathBuf) -> Self {
         Self {
