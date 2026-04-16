@@ -91,6 +91,16 @@ pub struct MetaScanOption {
     /// **Warning**: Enabling this may cause infinite loops in cyclic directory structures.
     /// Disabled by default for safety.
     pub follow_symlinks: bool,
+
+    /// List of entry names to skip during scanning (e.g., "node_modules", ".git").
+    ///
+    /// Empty by default.
+    pub skip_entries: Vec<String>,
+
+    /// Whether to skip block devices during scanning.
+    ///
+    /// Enabled by default for safety.
+    pub skip_block_devices: bool,
 }
 
 /// Configuration for the spillable in-memory work queue.
@@ -147,19 +157,27 @@ impl Default for ShardOption {
     }
 }
 
+impl Default for MetaScanOption {
+    fn default() -> Self {
+        Self {
+            scan_acl: false,
+            scan_xattrs: false,
+            scan_hardlinks: false,
+            scan_hidden: false,
+            follow_symlinks: false, // safe default
+            skip_entries: Vec::new(),
+            skip_block_devices: true, // safe default
+        }
+    }
+}
+
 impl Default for ScanOption {
     fn default() -> Self {
         Self {
             max_depth: None, // unlimited depth
             worker_count: 4,
             writer_count: 4,
-            meta_option: MetaScanOption {
-                scan_acl: false,
-                scan_xattrs: false,
-                scan_hardlinks: false,
-                scan_hidden: false,
-                follow_symlinks: false, // safe default
-            },
+            meta_option: MetaScanOption::default(),
             target_dir: TargetDirOption {
                 ctrl_dir: PathBuf::from("/tmp/bifrost/ctrl"),
                 meta_dir: PathBuf::from("/tmp/bifrost/meta"),
@@ -284,6 +302,24 @@ impl ScanOption {
     /// Sets the maximum shard file size in bytes.
     pub fn shard_max_size(mut self, size: u64) -> Self {
         self.shard_option.max_size = size;
+        self
+    }
+
+    /// Sets the list of entry names to skip during scanning.
+    pub fn skip_entries(mut self, entries: Vec<String>) -> Self {
+        self.meta_option.skip_entries = entries;
+        self
+    }
+
+    /// Adds a single entry name to skip during scanning.
+    pub fn skip_entry(mut self, entry: &str) -> Self {
+        self.meta_option.skip_entries.push(entry.to_string());
+        self
+    }
+
+    /// Configures whether to skip block devices during scanning.
+    pub fn skip_block_devices(mut self, skip: bool) -> Self {
+        self.meta_option.skip_block_devices = skip;
         self
     }
 }

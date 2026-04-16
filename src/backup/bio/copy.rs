@@ -452,7 +452,31 @@ pub fn spawn_writer_io_pool(
 
 // === I/O Implementation ===
 
+/// Check if a path is a block device
+#[cfg(unix)]
+fn is_block_device(path: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.file_type().is_block_device(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_block_device(_path: &Path) -> bool {
+    // Block devices are a Unix concept; always return false on non-Unix systems
+    false
+}
+
 fn open_source(mut fcb: FileControlBlock) -> ReaderBioResult {
+    // Check if the source is a block device before opening
+    if is_block_device(&fcb.src_path) {
+        warn!("Skipping block device: {:?}", fcb.src_path);
+        // Return an error to skip this file
+        let e = io::Error::new(io::ErrorKind::Other, "Block device skipped");
+        return ReaderBioResult::OpenSource(Err(BioError::Unknown(e)));
+    }
+
     match File::open(&fcb.src_path) {
         Ok(file) => {
             fcb.src_handle = Some(file);

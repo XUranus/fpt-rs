@@ -98,7 +98,15 @@ struct Args {
     /// Scan and track hardlinks
     #[arg(long, action = clap::ArgAction::SetTrue)]
     scan_hardlinks: bool,
-    
+
+    /// Skip block devices during scanning
+    #[arg(long, action = clap::ArgAction::SetTrue, default_value = "true")]
+    skip_block_devices: bool,
+
+    /// Entry names to skip (can be specified multiple times, e.g., --skip node_modules --skip .git)
+    #[arg(long, value_name = "NAME")]
+    skip: Vec<String>,
+
     /// Previous metadata directory for incremental backup (optional)
     #[arg(long, value_name = "DIR")]
     prev_meta_dir: Option<PathBuf>,
@@ -155,6 +163,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .scan_acl(args.scan_acl)
     .scan_xattrs(args.scan_xattrs)
     .scan_hardlinks(args.scan_hardlinks)
+    .skip_block_devices(args.skip_block_devices)
+    .skip_entries(args.skip)
     .max_depth(args.max_depth)
     .worker_count(args.workers)
     .writer_count(args.writers)

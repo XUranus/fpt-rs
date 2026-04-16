@@ -17,7 +17,7 @@ use std::{
     time,
 };
 use std::fs;
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use crate::{
     native::fstat,
@@ -81,14 +81,29 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     }
                 };
 
-                // Apply hidden file filter (Unix-style: leading dot)
-                let is_hidden = path
+                // Get entry name for filtering
+                let entry_name = path
                     .file_name()
-                    .map(|name| name.to_string_lossy().starts_with('.'))
-                    .unwrap_or(false);
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                // Skip "." and ".." entries (current and parent directory)
+                if entry_name == "." || entry_name == ".." {
+                    debug!("Skipping special directory entry: {:?}", path);
+                    continue;
+                }
+
+                // Apply hidden file filter (Unix-style: leading dot)
+                let is_hidden = entry_name.starts_with('.');
 
                 if !scan_option.meta_option.scan_hidden && is_hidden {
                     debug!("Skipping hidden entry: {:?}", path);
+                    continue;
+                }
+
+                // Apply configured entry name filter (e.g., skip "node_modules", ".git")
+                if scan_option.meta_option.skip_entries.contains(&entry_name) {
+                    debug!("Skipping configured entry: {:?}", path);
                     continue;
                 }
 
@@ -141,8 +156,8 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     } else {
                         stats.inc_dirs();
                     }
-                } else {
-                    // Process regular file (or device, etc.)
+                } else if file_type.is_file() {
+                    // Process regular file
                     debug!("Processing file: {:?}", path);
                     match fstat::stat_file(&path) {
                         Ok(file_meta) => {
@@ -153,6 +168,33 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         }
                         Err(e) => {
                             error!("Failed to stat file {:?}: {}", path, e);
+                            stats.inc_failed_files();
+                        }
+                    }
+                } else {
+                    // Handle special files (block devices, character devices, FIFOs, sockets)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::FileTypeExt;
+                        if file_type.is_block_device() {
+                            if scan_option.meta_option.skip_block_devices {
+                                debug!("Skipping block device: {:?}", path);
+                                continue;
+                            }
+                        }
+                    }
+
+                    // For other special files, try to stat them but don't fail if unsupported
+                    debug!("Processing special file: {:?} (type: {:?})", path, file_type);
+                    match fstat::stat_file(&path) {
+                        Ok(file_meta) => {
+                            let file_size = file_meta.size;
+                            dir_result.files.push(file_meta);
+                            stats.add_file_size(file_size);
+                            stats.inc_files();
+                        }
+                        Err(e) => {
+                            warn!("Failed to stat special file {:?}: {} (skipping)", path, e);
                             stats.inc_failed_files();
                         }
                     }
