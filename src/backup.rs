@@ -10,7 +10,7 @@ use crate::backup::{
         aggregate::AggregateConfig,
     };
 
-mod fcb;
+pub(crate) mod fcb;
 mod bio;
 mod stats;
 pub mod sharded_processor;
@@ -20,6 +20,10 @@ pub mod aggregate;
 pub mod aggregate_index;
 pub mod aggregate_engine;
 pub mod aggregate_restore;
+
+// Async I/O pipeline (used for NFS targets / sources)
+#[cfg(feature = "nfs")]
+pub mod aio;
 
 pub struct BackupOption {
     /// source location path prefix
@@ -45,6 +49,11 @@ pub struct BackupOption {
 
     /// Aggregate backup configuration
     pub aggregate_config : AggregateConfig,
+
+    /// NFS target location.  When `Some`, the AIO pipeline writes to NFS
+    /// instead of the local filesystem.  Requires the `nfs` feature.
+    #[cfg(feature = "nfs")]
+    pub nfs_target: Option<crate::nfs::NfsLocation>,
 }
 
 
@@ -96,6 +105,8 @@ impl BackupOption {
             enable_delete_phase : false,
             enable_mtime_phase : false,
             aggregate_config : AggregateConfig::default(),
+            #[cfg(feature = "nfs")]
+            nfs_target: None,
         }
     }
     
@@ -140,6 +151,15 @@ impl BackupOption {
         self.aggregate_config.file_threshold = threshold;
         self
     }
+
+    /// Set an NFS target location.  When set, the AIO pipeline is used and
+    /// files are written to the NFS server instead of the local filesystem.
+    /// Requires the `nfs` Cargo feature.
+    #[cfg(feature = "nfs")]
+    pub fn nfs_target(mut self, loc: crate::nfs::NfsLocation) -> Self {
+        self.nfs_target = Some(loc);
+        self
+    }
 }
 
 struct SharedState {
@@ -178,6 +198,123 @@ impl BackupTask {
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
         let terminate_indicator_inner = Arc::clone(&terminate_indicator);
+
+        // Capture the NFS target location (if any) before moving `self.option`.
+        #[cfg(feature = "nfs")]
+        let nfs_target = self.option.nfs_target.clone();
+
+        // When an NFS target is configured, run the entire pipeline on the
+        // AIO (async) path and skip the BIO pipeline.
+        #[cfg(feature = "nfs")]
+        if let Some(ref loc) = nfs_target {
+            let loc_clone = loc.clone();
+            let ctrl_dir2 = ctrl_dir.clone();
+            let source_dir_base2 = source_dir_base.clone();
+            let meta_dir2 = meta_dir.clone();
+            let control_file2 = control_file.clone();
+            let stats2 = Arc::clone(&stats);
+            let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
+
+            let terminate_handle = thread::spawn(move || {
+                // Build a dedicated Tokio runtime for the NFS async pipeline.
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("bifrost-nfs")
+                    .build()
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("NFS: failed to build async runtime: {e}");
+                        terminate_indicator_inner2.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                rt.block_on(async {
+                    // Build the NFS connection pool.
+                    let pool = match crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("NFS: failed to connect: {e}");
+                            return;
+                        }
+                    };
+
+                    info!("NFS: connected to {} (wtmax={})", loc_clone.host, pool.server_wtmax);
+
+                    // --- Copy phase ---
+                    crate::backup::aio::copy::run_aio_copy_pipeline(
+                        control_file2,
+                        meta_dir2,
+                        source_dir_base2.clone(),
+                        Arc::clone(&pool),
+                        Arc::clone(&stats2),
+                    ).await;
+
+                    // Shared caches for the post-copy phases.
+                    let dir_cache = crate::nfs::aio::reader::new_file_handle_cache();
+                    let dir_cache2 = crate::nfs::aio::writer::new_dir_handle_cache();
+
+                    // --- Hardlink phase ---
+                    if enable_hardlink_phase {
+                        info!("NFS: starting hardlink phase...");
+                        let hl_stats = crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
+                            &ctrl_dir2,
+                            &source_dir_base2,
+                            Arc::clone(&pool),
+                            Arc::clone(&dir_cache),
+                            Arc::clone(&dir_cache2),
+                        ).await;
+                        info!(
+                            "NFS hardlink phase complete: {} created, {} failed",
+                            hl_stats.hardlinks_created, hl_stats.hardlinks_failed
+                        );
+                    }
+
+                    // --- Delete phase ---
+                    if enable_delete_phase {
+                        info!("NFS: starting delete phase...");
+                        let del_stats = crate::nfs::aio::delete::run_nfs_delete_phase(
+                            &ctrl_dir2,
+                            &source_dir_base2,
+                            Arc::clone(&pool),
+                            Arc::clone(&dir_cache),
+                        ).await;
+                        info!(
+                            "NFS delete phase complete: {} files, {} dirs deleted, {} failed",
+                            del_stats.files_deleted, del_stats.dirs_deleted, del_stats.entries_failed
+                        );
+                    }
+
+                    // --- Mtime phase ---
+                    if enable_mtime_phase {
+                        info!("NFS: starting mtime phase...");
+                        let mt_stats = crate::nfs::aio::mtime::run_nfs_mtime_phase(
+                            &ctrl_dir2,
+                            &source_dir_base2,
+                            Arc::clone(&pool),
+                            Arc::clone(&dir_cache),
+                        ).await;
+                        info!(
+                            "NFS mtime phase complete: {} dirs restored, {} failed",
+                            mt_stats.dirs_restored, mt_stats.dirs_failed
+                        );
+                    }
+                });
+
+                terminate_indicator_inner2.store(true, Ordering::Relaxed);
+            });
+
+            return Ok(RunningBackup {
+                option: self.option,
+                stats,
+                hardlink_stats: None,
+                delete_stats: None,
+                mtime_stats: None,
+                terminate_handle,
+                terminate_indicator,
+            });
+        }
 
         // Set up aggregate engine if enabled
         let aggregate_engine = if enable_aggregation {
@@ -457,6 +594,11 @@ pub struct RestoreOption {
     pub restore_hardlinks: bool,
     /// Whether to restore mtime attributes
     pub restore_mtime: bool,
+    /// NFS target location.  When `Some`, the AIO pipeline writes restored
+    /// files to the NFS server instead of the local filesystem.
+    /// Requires the `nfs` Cargo feature.
+    #[cfg(feature = "nfs")]
+    pub nfs_target: Option<crate::nfs::NfsLocation>,
 }
 
 impl RestoreOption {
@@ -478,6 +620,8 @@ impl RestoreOption {
             worker_count: 4,
             restore_hardlinks: false,
             restore_mtime: true,
+            #[cfg(feature = "nfs")]
+            nfs_target: None,
         }
     }
 
@@ -502,6 +646,15 @@ impl RestoreOption {
     /// Enables or disables mtime restoration.
     pub fn restore_mtime(mut self, enable: bool) -> Self {
         self.restore_mtime = enable;
+        self
+    }
+
+    /// Set an NFS target location.  When set, the AIO pipeline is used and
+    /// restored files are written to the NFS server instead of the local
+    /// filesystem.  Requires the `nfs` Cargo feature.
+    #[cfg(feature = "nfs")]
+    pub fn nfs_target(mut self, loc: crate::nfs::NfsLocation) -> Self {
+        self.nfs_target = Some(loc);
         self
     }
 }

@@ -35,13 +35,29 @@ struct Cli {
 enum Commands {
     /// Create a backup copy
     Backup {
-        /// Source data directory to backup
-        #[arg(long, short = 'd', required = true, value_name = "DIR")]
-        data: PathBuf,
+        /// Source data directory to backup (local path).
+        /// Mutually exclusive with --data-nfs.
+        #[arg(long, short = 'd', value_name = "DIR",
+              conflicts_with = "data_nfs")]
+        data: Option<PathBuf>,
 
-        /// Target directory where the copy will be created (will create COPY_* folder)
-        #[arg(long, short = 't', required = true, value_name = "DIR")]
-        target: PathBuf,
+        /// Source NFS export to backup (NFS URL, e.g. nfs://127.0.0.1/opt/dataset).
+        /// Mutually exclusive with --data.
+        #[arg(long, value_name = "NFS_URL",
+              conflicts_with = "data")]
+        data_nfs: Option<String>,
+
+        /// Target directory where the copy will be created (local path, creates COPY_* folder).
+        /// Mutually exclusive with --target-nfs.
+        #[arg(long, short = 't', value_name = "DIR",
+              conflicts_with = "target_nfs")]
+        target: Option<PathBuf>,
+
+        /// Target NFS export where the copy will be created (NFS URL, e.g. nfs://127.0.0.1/opt/backup).
+        /// Mutually exclusive with --target.
+        #[arg(long, value_name = "NFS_URL",
+              conflicts_with = "target")]
+        target_nfs: Option<String>,
 
         /// Backup format: common or aggregated
         #[arg(long, short = 'f', value_enum, default_value = "common")]
@@ -79,6 +95,10 @@ enum Commands {
         #[arg(long, short = 'w', default_value = "4", value_name = "COUNT")]
         workers: usize,
 
+        /// Number of parallel NFS connections (used when --data-nfs or --target-nfs is set)
+        #[arg(long, default_value = "4", value_name = "COUNT")]
+        nfs_connections: usize,
+
         /// Verbose logging
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
@@ -90,9 +110,17 @@ enum Commands {
         #[arg(long, short = 'c', required = true, value_name = "DIR")]
         copy: PathBuf,
 
-        /// Target restore directory
-        #[arg(long, short = 't', required = true, value_name = "DIR")]
-        target: PathBuf,
+        /// Target restore directory (local path).
+        /// Mutually exclusive with --target-nfs.
+        #[arg(long, short = 't', value_name = "DIR",
+              conflicts_with = "target_nfs")]
+        target: Option<PathBuf>,
+
+        /// Target NFS export for restore (NFS URL, e.g. nfs://127.0.0.1/opt/restore).
+        /// Mutually exclusive with --target.
+        #[arg(long, value_name = "NFS_URL",
+              conflicts_with = "target")]
+        target_nfs: Option<String>,
 
         /// Restore policy: replace, skip, or keep-newer
         #[arg(long, short = 'p', value_enum, default_value = "replace")]
@@ -113,6 +141,10 @@ enum Commands {
         /// Restore modification times
         #[arg(long, action = clap::ArgAction::SetTrue, default_value = "true")]
         mtime: bool,
+
+        /// Number of parallel NFS connections (used when --target-nfs is set)
+        #[arg(long, default_value = "4", value_name = "COUNT")]
+        nfs_connections: usize,
 
         /// Verbose logging
         #[arg(short, long, action = clap::ArgAction::Count)]
@@ -461,6 +493,8 @@ fn execute_backup_subtask(
     blob_size: u64,
     threshold: u64,
     log_file: PathBuf,
+    #[cfg(feature = "nfs")]
+    nfs_target: Option<bifrost::nfs::NfsLocation>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Detailed subtask output goes to the per-subtask log file only.
     // The terminal receives only the final summary line printed by the caller.
@@ -498,6 +532,13 @@ fn execute_backup_subtask(
             .aggregate_max_blob_size(max_blob_size)
             .aggregate_file_threshold(aggregate_threshold);
         writeln!(log_writer, "[{}] Aggregation enabled: blob_size={}MB, threshold={}KB", subtask_id, blob_size, threshold)?;
+    }
+
+    // Configure NFS target if provided
+    #[cfg(feature = "nfs")]
+    if let Some(loc) = nfs_target {
+        writeln!(log_writer, "[{}] NFS target: {}:{}", subtask_id, loc.host, loc.export)?;
+        backup_option = backup_option.nfs_target(loc);
     }
 
     let backup_task: backup::BackupTask = backup_option.into();
@@ -542,10 +583,22 @@ fn execute_backup_subtask(
     Ok(())
 }
 
+/// Resolve and validate the NFS source/target URL.
+/// Returns `Ok(NfsLocation)` or an error string.
+#[cfg(feature = "nfs")]
+fn parse_nfs_url(url: &str, connections: usize) -> Result<bifrost::nfs::NfsLocation, Box<dyn std::error::Error>> {
+    let loc = bifrost::nfs::NfsLocation::from_url(url)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
+        .connection_count(connections);
+    Ok(loc)
+}
+
 /// Execute backup command
 fn cmd_backup(
-    data: PathBuf,
-    target: PathBuf,
+    data: Option<PathBuf>,
+    data_nfs: Option<String>,
+    target: Option<PathBuf>,
+    target_nfs: Option<String>,
     format: BackupFormat,
     incremental_base: Option<PathBuf>,
     jobs: usize,
@@ -555,8 +608,61 @@ fn cmd_backup(
     delete: bool,
     mtime: bool,
     workers: usize,
+    nfs_connections: usize,
     verbose: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Exactly one of --data / --data-nfs must be provided
+    if data.is_none() && data_nfs.is_none() {
+        return Err("Either --data (local path) or --data-nfs (NFS URL) must be provided".into());
+    }
+
+    // Exactly one of --target / --target-nfs must be provided
+    if target.is_none() && target_nfs.is_none() {
+        return Err("Either --target (local path) or --target-nfs (NFS URL) must be provided".into());
+    }
+
+    // Parse NFS source location if requested
+    #[cfg(feature = "nfs")]
+    let nfs_source: Option<bifrost::nfs::NfsLocation> = match &data_nfs {
+        Some(url) => Some(parse_nfs_url(url, nfs_connections)?),
+        None => None,
+    };
+    #[cfg(not(feature = "nfs"))]
+    if data_nfs.is_some() {
+        return Err("NFS source requested but binary was built without the `nfs` feature.\n\
+                    Rebuild with: cargo build --features nfs".into());
+    }
+
+    // Parse NFS target location if requested
+    #[cfg(feature = "nfs")]
+    let nfs_target_loc: Option<bifrost::nfs::NfsLocation> = match &target_nfs {
+        Some(url) => Some(parse_nfs_url(url, nfs_connections)?),
+        None => None,
+    };
+    #[cfg(not(feature = "nfs"))]
+    if target_nfs.is_some() {
+        return Err("NFS target requested but binary was built without the `nfs` feature.\n\
+                    Rebuild with: cargo build --features nfs".into());
+    }
+
+    // The local source path for scanning and the display string
+    // When source is NFS, scanning uses NfsScanner; we still need a PathBuf placeholder
+    // for BackupOption (source_dir_base is used to strip path prefixes from FCBs).
+    let source_display = data_nfs.as_deref().unwrap_or_else(|| {
+        data.as_ref().map(|p| p.to_str().unwrap_or("")).unwrap_or("")
+    });
+
+    // For a local source, the real source dir; for NFS source, a placeholder (unused in AIO path)
+    let source_dir: PathBuf = data.clone().unwrap_or_else(|| PathBuf::from("/"));
+
+    // Determine the local target root (for copy folder placement)
+    // When target is NFS, we still create a local temp directory for the copy structure
+    // (manifest, metadata, control files), but the actual data files go to NFS.
+    let local_target: PathBuf = target.clone().unwrap_or_else(|| {
+        // NFS target: store copy metadata under /tmp/bifrost_copies by default
+        PathBuf::from("/tmp/bifrost_copies")
+    });
+
     // Validate format/incremental combination
     if incremental_base.is_some() && matches!(format, BackupFormat::Common) {
         return Err("Incremental backup is only supported with aggregated format".into());
@@ -572,13 +678,13 @@ fn cmd_backup(
 
     // Build copy folder name: COPY_{format}_{type}_{uuid}
     let copy_folder_name = format!("COPY_{}_{}_{}", format_abbr(format), copy_type_str, copy_uuid);
-    let copy_path = target.join(&copy_folder_name);
+    let copy_path = local_target.join(&copy_folder_name);
 
     // Create backup copy structure
     let copy = BackupCopy::new(copy_path.clone(), copy_uuid.clone());
 
     println!("Creating {} backup copy at: {}", copy_type_str, copy_path.display());
-    println!("Source: {}", data.display());
+    println!("Source: {}", source_display);
     println!("Format: {:?}", format);
     println!("Copy UUID: {}", copy_uuid);
 
@@ -619,39 +725,102 @@ fn cmd_backup(
 
     // Step 1: Scan the source
     writeln!(scan_log, "[SCAN] Starting scan for copy {}", copy_uuid)?;
-    writeln!(scan_log, "[SCAN] Source: {}", data.display())?;
+    writeln!(scan_log, "[SCAN] Source: {}", source_display)?;
     println!("\n[1/3] Scanning source directory...");
-    let scan_option = ScanOption::new(
-        scan_ctrl_dir.clone(),
-        scan_meta_dir.clone(),
-    )
-    .worker_count(workers)
-    .writer_count(1)
-    .prev_meta_dir(prev_meta_dir);
 
-    let mut scanner = Scanner::new(scan_option);
-    scanner.enqueue_path(data.clone())?;
+    #[cfg(feature = "nfs")]
+    if let Some(ref nfs_loc) = nfs_source {
+        // NFS source: run NfsScanner inside a Tokio runtime, feed results into
+        // the standard metadata writers.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-nfs-scan")
+            .build()?;
 
-    let running_scan = scanner.start()?;
+        let nfs_loc_clone = nfs_loc.clone();
+        let scan_option = ScanOption::new(scan_ctrl_dir.clone(), scan_meta_dir.clone())
+            .worker_count(workers)
+            .writer_count(1)
+            .prev_meta_dir(prev_meta_dir.clone());
 
-    loop {
-        let stats = running_scan.stats();
-        print!("\r  Files: {}, Dirs: {}, Size: {:.2} MB", 
-            stats.tot_files, stats.tot_dirs, stats.tot_size as f64 / (1024.0 * 1024.0));
-        std::io::Write::flush(&mut std::io::stdout())?;
+        let (tot_files, tot_dirs) = rt.block_on(
+            bifrost::scanner::run_nfs_scan(&nfs_loc_clone, scan_option)
+        ).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-        if running_scan.complete() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(500));
+        writeln!(scan_log, "[SCAN] NFS scan complete: {} files, {} dirs", tot_files, tot_dirs)?;
+        println!("  NFS scan complete: {} files, {} dirs", tot_files, tot_dirs);
     }
-    println!();
 
-    let scan_stats = running_scan.stats();
-    running_scan.wait();
+    #[cfg(feature = "nfs")]
+    if nfs_source.is_none() {
+        // Local source path
+        let scan_option = ScanOption::new(
+            scan_ctrl_dir.clone(),
+            scan_meta_dir.clone(),
+        )
+        .worker_count(workers)
+        .writer_count(1)
+        .prev_meta_dir(prev_meta_dir);
 
-    writeln!(scan_log, "[SCAN] Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs)?;
-    println!("  Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs);
+        let mut scanner = Scanner::new(scan_option);
+        scanner.enqueue_path(source_dir.clone())?;
+
+        let running_scan = scanner.start()?;
+
+        loop {
+            let stats = running_scan.stats();
+            print!("\r  Files: {}, Dirs: {}, Size: {:.2} MB",
+                stats.tot_files, stats.tot_dirs, stats.tot_size as f64 / (1024.0 * 1024.0));
+            std::io::Write::flush(&mut std::io::stdout())?;
+
+            if running_scan.complete() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        println!();
+
+        let scan_stats = running_scan.stats();
+        running_scan.wait();
+
+        writeln!(scan_log, "[SCAN] Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs)?;
+        println!("  Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs);
+    }
+
+    #[cfg(not(feature = "nfs"))]
+    {
+        let scan_option = ScanOption::new(
+            scan_ctrl_dir.clone(),
+            scan_meta_dir.clone(),
+        )
+        .worker_count(workers)
+        .writer_count(1)
+        .prev_meta_dir(prev_meta_dir);
+
+        let mut scanner = Scanner::new(scan_option);
+        scanner.enqueue_path(source_dir.clone())?;
+
+        let running_scan = scanner.start()?;
+
+        loop {
+            let stats = running_scan.stats();
+            print!("\r  Files: {}, Dirs: {}, Size: {:.2} MB",
+                stats.tot_files, stats.tot_dirs, stats.tot_size as f64 / (1024.0 * 1024.0));
+            std::io::Write::flush(&mut std::io::stdout())?;
+
+            if running_scan.complete() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        println!();
+
+        let scan_stats = running_scan.stats();
+        running_scan.wait();
+
+        writeln!(scan_log, "[SCAN] Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs)?;
+        println!("  Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs);
+    }
     
     // Update scan status: remove RUNNING, create DONE
     copy.remove_status_file(&format!("SCAN_{}.RUNNING", copy_uuid))?;
@@ -699,7 +868,7 @@ fn cmd_backup(
         scheduler.start_task();
 
         let subtask_id_clone = subtask_id.clone();
-        let source_dir = data.clone();
+        let source_dir_clone = source_dir.clone();
         let copy_d_repo = copy.d_repo.clone();
         let copy_m_repo = copy.m_repo.clone();
         let copy_c_repo = copy.c_repo.clone();
@@ -707,6 +876,8 @@ fn cmd_backup(
         let ctrl_file_clone = ctrl_file.clone();
         let format_clone = format;
         let priority_clone = priority;
+        #[cfg(feature = "nfs")]
+        let nfs_target_clone = nfs_target_loc.clone();
 
         // Enable phases based on command-line flags and format
         // For aggregated format, only copy phase is used (hardlink/delete/mtime are ignored)
@@ -727,7 +898,7 @@ fn cmd_backup(
             
             let result = execute_backup_subtask(
                 subtask_id_clone.clone(),
-                source_dir,
+                source_dir_clone,
                 &thread_copy,
                 ctrl_file_clone,
                 format_clone,
@@ -738,6 +909,8 @@ fn cmd_backup(
                 blob_size,
                 threshold,
                 log_file,
+                #[cfg(feature = "nfs")]
+                nfs_target_clone,
             );
 
             let success = result.is_ok();
@@ -790,7 +963,7 @@ fn cmd_backup(
         copy_uuid: copy_uuid.clone(),
         copy_type: copy_type_str.to_lowercase(),
         format: format_to_string(format),
-        source_path: data.to_string_lossy().to_string(),
+        source_path: source_display.to_string(),
         created_at: chrono::Local::now().to_rfc3339(),
         base_copy: incremental_base.map(|p| p.to_string_lossy().to_string()),
         subtasks: subtask_infos,
@@ -821,16 +994,42 @@ fn cmd_backup(
 /// Execute restore command
 fn cmd_restore(
     copy_path: PathBuf,
-    target: PathBuf,
+    target: Option<PathBuf>,
+    target_nfs: Option<String>,
     policy: RestorePolicy,
     jobs: usize,
     workers: usize,
     hardlinks: bool,
     mtime: bool,
+    nfs_connections: usize,
     verbose: u8,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Exactly one of --target / --target-nfs must be provided
+    if target.is_none() && target_nfs.is_none() {
+        return Err("Either --target (local path) or --target-nfs (NFS URL) must be provided".into());
+    }
+
+    // Parse NFS target location if requested
+    #[cfg(feature = "nfs")]
+    let nfs_target_loc: Option<bifrost::nfs::NfsLocation> = match &target_nfs {
+        Some(url) => Some(parse_nfs_url(url, nfs_connections)?),
+        None => None,
+    };
+    #[cfg(not(feature = "nfs"))]
+    if target_nfs.is_some() {
+        return Err("NFS target requested but binary was built without the `nfs` feature.\n\
+                    Rebuild with: cargo build --features nfs".into());
+    }
+
+    // Local target path; when NFS target is used, a placeholder dir holds no data files.
+    let local_target: PathBuf = target.clone().unwrap_or_else(|| PathBuf::from("/tmp/bifrost_restore_placeholder"));
+
+    let target_display = target_nfs.as_deref().unwrap_or_else(|| {
+        target.as_ref().map(|p| p.to_str().unwrap_or("")).unwrap_or("")
+    });
+
     println!("Restoring from backup copy: {}", copy_path.display());
-    println!("Target: {}", target.display());
+    println!("Target: {}", target_display);
     println!("Policy: {:?}", policy);
 
     // Read manifest first to get UUID
@@ -866,7 +1065,7 @@ fn cmd_restore(
     }
 
     // Create target directory
-    std::fs::create_dir_all(&target)?;
+    std::fs::create_dir_all(&local_target)?;
 
     // Find control files for restore
     // Restore processes all 4 phases: copy, hardlink, delete, mtime
@@ -899,9 +1098,11 @@ fn cmd_restore(
         let copy_m_repo = copy.m_repo.clone();
         let copy_c_repo = copy.c_repo.clone();
         let copy_uuid_clone = copy.copy_uuid.clone();
-        let target_dir = target.clone();
+        let target_dir = local_target.clone();
         let ctrl_file_clone = ctrl_file.clone();
         let policy_clone = policy;
+        #[cfg(feature = "nfs")]
+        let nfs_target_clone = nfs_target_loc.clone();
 
         let handle = thread::spawn(move || {
             // Reconstruct BackupCopy for this thread
@@ -918,6 +1119,8 @@ fn cmd_restore(
                 hardlinks,
                 mtime,
                 verbose,
+                #[cfg(feature = "nfs")]
+                nfs_target_clone,
             );
 
             if let Err(ref e) = result {
@@ -957,7 +1160,7 @@ fn cmd_restore(
     println!("Restore Summary");
     println!("{}", "=".repeat(60));
     println!("Source: {}", copy_path.display());
-    println!("Target: {}", target.display());
+    println!("Target: {}", target_display);
     println!("Subtasks: {} completed, {} failed", completed, failed);
 
     if failed > 0 {
@@ -979,6 +1182,8 @@ fn execute_restore_subtask(
     _hardlinks: bool,
     _mtime: bool,
     _verbose: u8,
+    #[cfg(feature = "nfs")]
+    nfs_target: Option<bifrost::nfs::NfsLocation>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[{}] Starting restore subtask", subtask_id);
     println!("[{}] Control file: {}", subtask_id, control_file.display());
@@ -987,7 +1192,7 @@ fn execute_restore_subtask(
     // Meta files are in M_REPO/meta/, control files are in C_REPO/ctrl/
     let meta_dir = copy.m_repo.join("meta");
     let ctrl_dir = copy.c_repo.join("ctrl");
-    let restore_option = RestoreOption::new(
+    let mut restore_option = RestoreOption::new(
         copy.d_repo.clone(),
         target_dir,
         meta_dir,
@@ -998,6 +1203,13 @@ fn execute_restore_subtask(
     .worker_count(workers)
     .restore_hardlinks(false) // TODO: Implement hardlink restore
     .restore_mtime(true);
+
+    // Configure NFS target if provided
+    #[cfg(feature = "nfs")]
+    if let Some(loc) = nfs_target {
+        println!("[{}] NFS target: {}:{}", subtask_id, loc.host, loc.export);
+        restore_option = restore_option.nfs_target(loc);
+    }
 
     let restore_task = backup::RestoreTask::new(restore_option);
 
@@ -1087,7 +1299,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Backup {
             data,
+            data_nfs,
             target,
+            target_nfs,
             format,
             incremental_base,
             jobs,
@@ -1097,13 +1311,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             delete,
             mtime,
             workers,
+            nfs_connections,
             verbose,
         } => {
             // For backup, we need to initialize logger after creating copy structure
             // So we pass verbose to cmd_backup and let it initialize the logger
             cmd_backup(
                 data,
+                data_nfs,
                 target,
+                target_nfs,
                 format,
                 incremental_base,
                 jobs,
@@ -1113,17 +1330,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 delete,
                 mtime,
                 workers,
+                nfs_connections,
                 verbose,
             )
         }
         Commands::Restore {
             copy,
             target,
+            target_nfs,
             policy,
             jobs,
             workers,
             hardlinks,
             mtime,
+            nfs_connections,
             verbose,
         } => {
             // Initialize global logger for restore (no file logging needed)
@@ -1131,11 +1351,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cmd_restore(
                 copy,
                 target,
+                target_nfs,
                 policy.into(),
                 jobs,
                 workers,
                 hardlinks,
                 mtime,
+                nfs_connections,
                 verbose,
             )
         }

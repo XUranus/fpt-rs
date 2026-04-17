@@ -20,7 +20,7 @@ struct Args {
     #[arg(long, short = 's', required = true, value_name = "DIR")]
     source_dir: PathBuf,
 
-    /// Target base directory for backup output
+    /// Target base directory for backup output (local FS; ignored when --nfs-target-host is set)
     #[arg(long, short = 't', required = true, value_name = "DIR")]
     target_dir: PathBuf,
 
@@ -63,6 +63,27 @@ struct Args {
     /// Directory for aggregate index and blob files (default: target_dir)
     #[arg(long, value_name = "DIR")]
     aggregate_dir: Option<PathBuf>,
+
+    // ── NFS target options (require the `nfs` feature) ───────────────────
+    /// NFS target: server IP or hostname (e.g. 192.168.1.10).
+    /// When set, files are written to the NFS server via the AIO pipeline
+    /// instead of the local --target-dir.
+    /// Requires the binary to be built with --features nfs.
+    #[arg(long, value_name = "HOST", requires = "nfs_target_export")]
+    nfs_target_host: Option<String>,
+
+    /// NFS target: export path on the server (e.g. /export/backup).
+    #[arg(long, value_name = "PATH", requires = "nfs_target_host")]
+    nfs_target_export: Option<String>,
+
+    /// NFS target: sub-path within the export to use as the working root.
+    /// Defaults to the export root when not specified.
+    #[arg(long, value_name = "PATH")]
+    nfs_target_sub_path: Option<String>,
+
+    /// NFS target: number of parallel TCP connections (default: 4).
+    #[arg(long, value_name = "N", default_value = "4")]
+    nfs_target_connections: usize,
 
     /// Verbose logging
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -116,6 +137,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .aggregate_file_threshold(aggregate_threshold);
         info!("Aggregate backup enabled: max_blob_size={}MB, threshold={}KB",
               args.max_blob_size, args.aggregate_threshold);
+    }
+
+    // Configure NFS target if requested (requires the `nfs` feature)
+    #[cfg(feature = "nfs")]
+    if let Some(ref host) = args.nfs_target_host {
+        let export = args.nfs_target_export.as_deref().unwrap_or("");
+        let mut loc = bifrost::nfs::NfsLocation::new(host, export)
+            .connection_count(args.nfs_target_connections);
+        if let Some(ref sub) = args.nfs_target_sub_path {
+            loc = loc.sub_path(sub);
+        }
+        info!(
+            "NFS target: {}:{} sub_path={:?} connections={}",
+            host, export,
+            args.nfs_target_sub_path.as_deref().unwrap_or(""),
+            args.nfs_target_connections,
+        );
+        backup_option = backup_option.nfs_target(loc);
+    }
+
+    #[cfg(not(feature = "nfs"))]
+    if args.nfs_target_host.is_some() {
+        return Err("NFS target requested but binary was built without the `nfs` feature.\n\
+                    Rebuild with: cargo build --features nfs".into());
     }
     
     let backup_task: backup::BackupTask = backup_option.into();

@@ -25,6 +25,7 @@ from test_permissions import TestPermissions
 from test_empty_directories import TestEmptyDirectories
 from test_large_fileset import TestLargeFileset
 from test_aggregate import AggregateBackupTest, AggregateRestoreTest, AggregateMixedFilesTest
+from test_nfs_backup import TestNfsSourceToLocal, TestLocalSourceToNfs, TestNfsSourceToNfs
 
 
 # Define test suites
@@ -54,8 +55,16 @@ AGGREGATE_TESTS = [
     AggregateMixedFilesTest,
 ]
 
-ALL_TESTS = BASIC_TESTS + INTERMEDIATE_TESTS + ADVANCED_TESTS + SCALABILITY_TESTS + AGGREGATE_TESTS
+# NFS tests require a live NFSv3 export and binaries built with --features nfs.
+# They are excluded from ALL_TESTS so the default suite stays environment-agnostic.
+# Run them explicitly with: python test_all.py --suite nfs
+NFS_TESTS = [
+    TestNfsSourceToLocal,
+    TestLocalSourceToNfs,
+    TestNfsSourceToNfs,
+]
 
+ALL_TESTS = BASIC_TESTS + INTERMEDIATE_TESTS + ADVANCED_TESTS + SCALABILITY_TESTS + AGGREGATE_TESTS
 
 def parse_args():
     """Parse command line arguments"""
@@ -87,13 +96,19 @@ Examples:
     parser.add_argument("--keep-logs", action="store_true",
                         help="Keep logs directories even when tests pass")
     parser.add_argument("--suite", choices=["basic", "intermediate", "advanced",
-                                            "scalability", "aggregate", "all"],
+                                            "scalability", "aggregate", "nfs", "all"],
                         default="all",
-                        help="Test suite to run (default: all)")
+                        help="Test suite to run (default: all; 'nfs' requires --features nfs build)")
     parser.add_argument("--list", action="store_true",
                         help="List all available tests and exit")
     parser.add_argument("--test", action="append",
                         help="Run specific test by name (can be specified multiple times)")
+    parser.add_argument("--nfs-host",    default="127.0.0.1",
+                        help="NFS server IP/hostname for NFS suite (default: 127.0.0.1)")
+    parser.add_argument("--nfs-export",  default="/opt/dataset",
+                        help="NFS export path for NFS suite (default: /opt/dataset)")
+    parser.add_argument("--local-mount", default="/mnt/nfs",
+                        help="Local kernel-mount point of the NFS export (default: /mnt/nfs)")
 
     return parser.parse_args()
 
@@ -117,6 +132,9 @@ def get_tests_to_run(args) -> list:
             "aggregate_backup": AggregateBackupTest,
             "aggregate_restore": AggregateRestoreTest,
             "aggregate_mixed": AggregateMixedFilesTest,
+            "nfs_tc1": TestNfsSourceToLocal,
+            "nfs_tc2": TestLocalSourceToNfs,
+            "nfs_tc3": TestNfsSourceToNfs,
         }
 
         tests = []
@@ -136,6 +154,7 @@ def get_tests_to_run(args) -> list:
         "advanced": ADVANCED_TESTS,
         "scalability": SCALABILITY_TESTS,
         "aggregate": AGGREGATE_TESTS,
+        "nfs": NFS_TESTS,
         "all": ALL_TESTS,
     }
 
@@ -153,6 +172,7 @@ def list_tests():
         ("Advanced Tests", ADVANCED_TESTS),
         ("Scalability Tests", SCALABILITY_TESTS),
         ("Aggregate Tests", AGGREGATE_TESTS),
+        ("NFS Tests (requires --features nfs build + live NFS export)", NFS_TESTS),
     ]
 
     for suite_name, tests in test_suites:
@@ -211,9 +231,19 @@ def main():
         test_work_dir = base_work_dir / f"test_{i:02d}"
         test_work_dir.mkdir(exist_ok=True)
 
+        # NFS test classes accept extra kwargs for server coordinates
+        nfs_kwargs = {}
+        if test in NFS_TESTS or (isinstance(test, tuple) and test[0] in NFS_TESTS):
+            nfs_kwargs = dict(
+                nfs_host    = args.nfs_host,
+                nfs_export  = args.nfs_export,
+                local_mount = args.local_mount,
+            )
+
         # Handle test with parameters
         if isinstance(test, tuple):
             test_class, kwargs = test
+            kwargs = {**kwargs, **nfs_kwargs}
             print(f"\n[{i}/{len(tests)}] Running {test_class.__name__} with params: {kwargs}")
             result = runner.run_test(
                 test_class,
@@ -221,8 +251,11 @@ def main():
                 **kwargs
             )
         else:
-            print(f"\n[{i}/{len(tests)}] Running {test.__name__}")
-            result = runner.run_test(test, work_dir=str(test_work_dir))
+            if nfs_kwargs:
+                print(f"\n[{i}/{len(tests)}] Running {test.__name__} (NFS: {args.nfs_host}:{args.nfs_export})")
+            else:
+                print(f"\n[{i}/{len(tests)}] Running {test.__name__}")
+            result = runner.run_test(test, work_dir=str(test_work_dir), **nfs_kwargs)
 
     # Print final summary
     print("\n" + "=" * 70)

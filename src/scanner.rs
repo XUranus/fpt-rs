@@ -40,7 +40,7 @@ use crate::{
 };
 
 mod engine;
-mod models;
+pub(crate) mod models;
 pub mod metadata;
 pub mod options;
 
@@ -265,4 +265,119 @@ impl RunningScan {
     // pub fn pause(&self) { }
     // pub fn resume(&self) { }
     // pub fn abort(&self) { }
+}
+
+// ---------------------------------------------------------------------------
+// NFS scan integration
+// ---------------------------------------------------------------------------
+
+/// Run a full NFS scan and write metadata/control files to disk.
+///
+/// This is the NFS equivalent of creating a [`Scanner`], calling
+/// [`Scanner::enqueue_path`], and then [`Scanner::start`] + waiting.
+///
+/// # How it works
+///
+/// 1. A Tokio runtime drives [`crate::nfs::NfsScanner::scan`], which
+///    emits [`DirBatchScanResult`] items on a `tokio::sync::mpsc` channel.
+/// 2. A bridge task converts each item and pushes it into the shared
+///    [`BlockingQueue`] that the metadata writers drain.
+/// 3. The standard metadata writers run on OS threads (exactly as in the
+///    local-FS scanner), producing `meta_*.dat`, `fcache_*.dat`, and
+///    `dcache_*.dat` files.
+/// 4. After all items are consumed, the standard control-file generator
+///    runs and emits `copy.txt` (and optionally `hardlink.txt`, etc.).
+///
+/// Returns `(total_files, total_dirs)` on success.
+#[cfg(feature = "nfs")]
+pub async fn run_nfs_scan(
+    location: &crate::nfs::NfsLocation,
+    scan_option: ScanOption,
+) -> Result<(u64, u64), String> {
+    use crate::nfs::NfsScanner;
+    use crate::nfs::connection::NfsConnectionPool;
+    use crate::scanner::engine::{self, start_meta_writers};
+
+    // Build connection pool and obtain the root file handle.
+    let pool = NfsConnectionPool::new(location).await
+        .map_err(|e| format!("NFS connect failed: {e}"))?;
+
+    // root_fh() is a sync method on the pool
+    let root_fh = pool.root_fh();
+
+    let root_path = location.sub_path.clone();
+    let root_path = if root_path.is_empty() {
+        location.export.clone()
+    } else {
+        format!("{}/{}", location.export.trim_end_matches('/'), root_path.trim_start_matches('/'))
+    };
+
+    // Create the shared output queue and statistics.
+    let output_queue = Arc::new(BlockingQueue::<DirBatchScanResult>::new(1000));
+    let stats = Arc::new(ScanStatistics::default());
+
+    // Create a writer_count context.
+    let writer_count = scan_option.writer_count;
+    let scan_opt_arc = Arc::new(scan_option);
+
+    // Build a minimal ScanWorkerContext so we can reuse start_meta_writers.
+    let context = ScanWorkerContext {
+        scan_option: Arc::clone(&scan_opt_arc),
+        dirent_queue: Arc::new(
+            SpillQueue::new(
+                scan_opt_arc.queue_option.temp_dir.clone(),
+                scan_opt_arc.queue_option.memory_upper_bound,
+                scan_opt_arc.queue_option.memory_lower_bound,
+                scan_opt_arc.queue_option.spill_load_batch_size,
+            )
+            .map_err(|e| format!("queue init failed: {e}"))?,
+        ),
+        output_queue: Arc::clone(&output_queue),
+        stats: Arc::clone(&stats),
+    };
+
+    // Start metadata writers (they drain output_queue synchronously).
+    let writer_handles = start_meta_writers(&context, writer_count, None);
+
+    // Create an NfsScanner and a tokio mpsc channel.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
+    let nfs_scanner = NfsScanner::new(location).await
+        .map_err(|e| format!("NFS scanner init failed: {e}"))?;
+
+    // Spawn the NFS scan task.
+    let scan_handle = tokio::spawn(async move {
+        nfs_scanner.scan(root_fh, root_path, tx).await
+    });
+
+    // Bridge: forward DirBatchScanResult items from tokio mpsc → BlockingQueue.
+    let oq = Arc::clone(&output_queue);
+    let bridge_stats = Arc::clone(&stats);
+    while let Some(batch) = rx.recv().await {
+        let file_count = batch.files.len();
+        oq.push(batch);
+        for _ in 0..file_count {
+            bridge_stats.inc_files();
+        }
+        bridge_stats.inc_dirs();
+    }
+
+    // Wait for the NFS scan to complete.
+    if let Err(e) = scan_handle.await {
+        return Err(format!("NFS scan task panicked: {e:?}"));
+    }
+
+    // Signal the writers that no more items are coming.
+    output_queue.close();
+
+    // Wait for metadata writers to finish.
+    for h in writer_handles {
+        let _ = h.join();
+    }
+
+    // Generate control files (copy.txt, hardlink.txt, etc.)
+    engine::generate_control_files(&scan_opt_arc.target_dir)
+        .map_err(|e| format!("generate_control_files failed: {e}"))?;
+
+    let snap = stats.snapshot();
+    Ok((snap.tot_files, snap.tot_dirs))
 }
