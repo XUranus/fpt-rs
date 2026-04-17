@@ -363,40 +363,97 @@ class AggregateRestoreTest(BifrostTestBase):
             return False
 
     def run_restore(self):
-        """Run restore from aggregate backup."""
-        # For now, we extract files from the blob to simulate restore
-        # In a real implementation, this would use a restore command
+        """Restore files from an aggregate backup.
+
+        Aggregate backups store small files inside per-directory .AGGR_DIR/
+        subdirectories. Each .AGGR_DIR/ contains:
+          - One or more *.bifrost.blob files (concatenated raw file data)
+          - AGGREGATE_IDX.sqlite with a table (aggregate_index) that records
+            each file's name, blob name, byte offset, and byte size.
+
+        This method walks the backup directory, finds every .AGGR_DIR/, reads
+        the SQLite index, and extracts each file to restore_dir mirroring the
+        original source layout. Non-aggregated files (backed up as plain files)
+        are copied directly.
+        """
         restore_dir = self.work_dir / "restore"
         restore_dir.mkdir(exist_ok=True)
 
-        # Check for blob files and extract them
-        blob_files = list(self.backup_dir.glob("*.bifrost.blob"))
+        aggr_dirs_found = 0
+        files_extracted = 0
 
-        if blob_files:
-            # Files are aggregated in blobs - extract them
-            # For now, we just verify the blob exists and has content
-            # A full implementation would parse the blob format
-            self.log_info(f"Found {len(blob_files)} blob files - restore from blobs not yet implemented")
-            # Mark as skipped for now since restore isn't fully implemented
-            return None  # Signal that restore is not yet implemented
-        else:
-            # Copy files from backup to restore directory (non-aggregated)
-            for src_file in self.backup_dir.rglob("*"):
-                if src_file.is_file() and not src_file.suffix == ".blob":
-                    rel_path = src_file.relative_to(self.backup_dir)
-                    dst_file = restore_dir / rel_path
+        # Walk backup_dir; handle .AGGR_DIR/ subtrees and plain files separately.
+        for dirpath, dirnames, filenames in os.walk(self.backup_dir):
+            dirpath = Path(dirpath)
+
+            # Skip traversal into .AGGR_DIR itself — we handle it explicitly below.
+            dirnames[:] = [d for d in dirnames if d != ".AGGR_DIR"]
+
+            aggr_dir = dirpath / ".AGGR_DIR"
+            if aggr_dir.is_dir():
+                index_path = aggr_dir / "AGGREGATE_IDX.sqlite"
+                if not index_path.exists():
+                    self.log_info(f"Warning: .AGGR_DIR found but no index at {index_path}")
+                    continue
+
+                aggr_dirs_found += 1
+
+                # The dir_path stored in the SQLite index is the *source* directory
+                # path, but we need to know which source dir corresponds to this
+                # backup dir. Derive it from backup_dir -> source_dir mapping.
+                rel_to_backup = dirpath.relative_to(self.backup_dir)
+                source_dir_for_index = str(self.source_dir / rel_to_backup)
+
+                try:
+                    conn = sqlite3.connect(str(index_path))
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "SELECT file_name, blob_name, offset, size FROM aggregate_index"
+                    )
+                    rows = cursor.fetchall()
+                    conn.close()
+                except sqlite3.Error as e:
+                    self.log_info(f"SQLite error reading {index_path}: {e}")
+                    continue
+
+                # Extract each file recorded in this directory's index.
+                for file_name, blob_name, offset, size in rows:
+                    blob_path = aggr_dir / blob_name
+                    if not blob_path.exists():
+                        self.log_info(f"Warning: blob not found: {blob_path}")
+                        continue
+
+                    try:
+                        with open(blob_path, "rb") as bf:
+                            bf.seek(offset)
+                            data = bf.read(size)
+                    except OSError as e:
+                        self.log_info(f"Error reading blob {blob_path}: {e}")
+                        continue
+
+                    # Reconstruct the original relative path and write to restore_dir.
+                    dst_file = restore_dir / rel_to_backup / file_name
                     dst_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(src_file, dst_file)
+                    dst_file.write_bytes(data)
+                    files_extracted += 1
 
+            # Copy plain (non-aggregated) files that live directly in this dir.
+            for fname in filenames:
+                src_file = dirpath / fname
+                rel_path = src_file.relative_to(self.backup_dir)
+                dst_file = restore_dir / rel_path
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, dst_file)
+
+        self.log_info(
+            f"Restore complete: {aggr_dirs_found} aggregate dirs, "
+            f"{files_extracted} files extracted from blobs"
+        )
         return restore_dir
 
     def verify_restore(self, restore_dir):
         """Verify restored files match originals."""
         self.log_info("Verifying restore...")
-
-        # If restore_dir is None, restore from blobs is not yet implemented
-        if restore_dir is None:
-            return True, "Restore from blobs not yet implemented - skipping verification"
 
         errors = []
         files_checked = 0
