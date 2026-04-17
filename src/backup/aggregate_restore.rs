@@ -1,7 +1,7 @@
 //! # Aggregate Restore Engine
 //!
 //! This module implements the unaggregation logic for restore operations.
-//! It reads blob files from .blobs/ subdirectories and extracts individual
+//! It reads blob files from .AGGR_DIR/ subdirectories and extracts individual
 //! files based on per-directory SQLite indexes.
 
 use std::collections::HashMap;
@@ -25,39 +25,36 @@ use crate::backup::SharedState;
 struct DirRestoreInfo {
     /// Path to the source directory
     source_dir: PathBuf,
-    /// Path to the .blobs subdirectory
-    blobs_dir: PathBuf,
-    /// Path to the SQLite index
-    index_path: PathBuf,
+    /// Path to the .AGGR_DIR subdirectory
+    aggr_dir: PathBuf,
     /// The index (opened on first use)
     index: Option<AggregateIndex>,
 }
 
 impl DirRestoreInfo {
     fn new(source_dir: PathBuf) -> Self {
-        let blobs_dir = source_dir.join(".blobs");
-        let index_path = source_dir.join(".aggregate_index.sqlite");
+        let aggr_dir = source_dir.join(".AGGR_DIR");
         
         Self {
             source_dir,
-            blobs_dir,
-            index_path,
+            aggr_dir,
             index: None,
         }
     }
     
     fn has_index(&self) -> bool {
-        self.index_path.exists()
+        self.aggr_dir.join("AGGREGATE_IDX.sqlite").exists()
     }
     
     fn get_or_open_index(&mut self) -> Result<&AggregateIndex, AggregateRestoreError> {
         if self.index.is_none() {
-            if !self.index_path.exists() {
+            let index_path = self.aggr_dir.join("AGGREGATE_IDX.sqlite");
+            if !index_path.exists() {
                 return Err(AggregateRestoreError::Other(
-                    format!("Index not found: {}", self.index_path.display())
+                    format!("Index not found: {}", index_path.display())
                 ));
             }
-            self.index = Some(AggregateIndex::open(&self.index_path)?);
+            self.index = Some(AggregateIndex::open(&index_path)?);
         }
         Ok(self.index.as_ref().unwrap())
     }
@@ -106,26 +103,24 @@ impl AggregateRestoreEngine {
     /// Gets or creates directory restore info for a source directory
     fn get_dir_info(&self, source_dir: &str) -> Option<DirRestoreInfo> {
         let mut dir_info_map = self.dir_info.lock().unwrap();
-        
+
         if let Some(info) = dir_info_map.get(source_dir) {
             // Clone the basic info (without the open index)
             return Some(DirRestoreInfo {
                 source_dir: info.source_dir.clone(),
-                blobs_dir: info.blobs_dir.clone(),
-                index_path: info.index_path.clone(),
+                aggr_dir: info.aggr_dir.clone(),
                 index: None, // Will be opened on demand
             });
         }
-        
+
         // Create new dir info
         let source_path = Path::new(source_dir);
         let dir_info = DirRestoreInfo::new(source_path.to_path_buf());
-        
+
         if dir_info.has_index() {
             let result = Some(DirRestoreInfo {
                 source_dir: dir_info.source_dir.clone(),
-                blobs_dir: dir_info.blobs_dir.clone(),
-                index_path: dir_info.index_path.clone(),
+                aggr_dir: dir_info.aggr_dir.clone(),
                 index: None,
             });
             dir_info_map.insert(source_dir.to_string(), dir_info);
@@ -163,9 +158,9 @@ impl AggregateRestoreEngine {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, AggregateRestoreError> {
-        // Get the blobs directory for this directory
-        let blobs_dir = Path::new(dir_path).join(".blobs");
-        let blob_path = blobs_dir.join(blob_name);
+        // Get the .AGGR_DIR directory for this directory
+        let aggr_dir = Path::new(dir_path).join(".AGGR_DIR");
+        let blob_path = aggr_dir.join(blob_name);
         let blob_path_str = blob_path.to_string_lossy().to_string();
         
         // Check cache first

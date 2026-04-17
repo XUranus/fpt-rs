@@ -8,14 +8,14 @@
 //! - Task-specific logging
 
 use std::{
-    collections::HashMap,
+    io::{self, Write},
     path::{Path, PathBuf},
-    sync::{Arc, atomic::{AtomicUsize, Ordering}, Mutex},
+    sync::{Arc, atomic::{AtomicUsize, Ordering}},
     thread,
     time::Duration,
 };
 use clap::{Parser, Subcommand, ValueEnum};
-use log::{info, warn, error, LevelFilter};
+use log::{info, error, LevelFilter};
 use uuid::Uuid;
 
 use bifrost::scanner::{Scanner, options::ScanOption};
@@ -39,7 +39,7 @@ enum Commands {
         #[arg(long, short = 'd', required = true, value_name = "DIR")]
         data: PathBuf,
 
-        /// Target backup copy directory (will create D/ and M/ repos)
+        /// Target directory where the copy will be created (will create COPY_* folder)
         #[arg(long, short = 't', required = true, value_name = "DIR")]
         target: PathBuf,
 
@@ -86,7 +86,7 @@ enum Commands {
 
     /// Restore from a backup copy
     Restore {
-        /// Source backup copy directory (containing D/ and M/ repos)
+        /// Source backup copy directory (containing manifest.json and D_REPO, M_REPO, C_REPO)
         #[arg(long, short = 'c', required = true, value_name = "DIR")]
         copy: PathBuf,
 
@@ -143,24 +143,76 @@ impl From<RestorePolicyArg> for RestorePolicy {
     }
 }
 
-/// Backup Copy structure containing D repo and M repo
+/// Copy type for naming
+#[derive(Debug, Clone, Copy)]
+enum CopyType {
+    Full,
+    Incremental,
+}
+
+impl CopyType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            CopyType::Full => "FULL",
+            CopyType::Incremental => "INC",
+        }
+    }
+}
+
+/// Format abbreviation for naming
+fn format_abbr(format: BackupFormat) -> &'static str {
+    match format {
+        BackupFormat::Common => "COMMON",
+        BackupFormat::Aggregated => "AGGR",
+    }
+}
+
+/// Backup Copy structure containing D_REPO, M_REPO, and C_REPO
 struct BackupCopy {
     copy_path: PathBuf,
+    copy_uuid: String,
     d_repo: PathBuf,  // Data repository
     m_repo: PathBuf,  // Metadata repository
+    c_repo: PathBuf,  // Control/logs repository
 }
 
 impl BackupCopy {
-    fn new(copy_path: PathBuf) -> Self {
-        let d_repo = copy_path.join("D");
-        let m_repo = copy_path.join("M");
-        Self { copy_path, d_repo, m_repo }
+    fn new(copy_path: PathBuf, copy_uuid: String) -> Self {
+        let d_repo = copy_path.join("D_REPO");
+        let m_repo = copy_path.join("M_REPO");
+        let c_repo = copy_path.join("C_REPO");
+        Self { copy_path, copy_uuid, d_repo, m_repo, c_repo }
     }
 
     fn create_dirs(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.d_repo)?;
         std::fs::create_dir_all(&self.m_repo)?;
+        std::fs::create_dir_all(&self.c_repo)?;
+        std::fs::create_dir_all(&self.c_repo.join("ctrl"))?;
+        std::fs::create_dir_all(&self.c_repo.join("logs"))?;
+        std::fs::create_dir_all(&self.c_repo.join("status"))?;
         Ok(())
+    }
+
+    /// Create a status file for tracking task state
+    fn create_status_file(&self, name: &str) -> std::io::Result<()> {
+        let status_path = self.c_repo.join("status").join(name);
+        std::fs::File::create(status_path)?;
+        Ok(())
+    }
+
+    /// Remove a status file
+    fn remove_status_file(&self, name: &str) -> std::io::Result<()> {
+        let status_path = self.c_repo.join("status").join(name);
+        if status_path.exists() {
+            std::fs::remove_file(status_path)?;
+        }
+        Ok(())
+    }
+
+    /// Check if a status file exists
+    fn has_status_file(&self, name: &str) -> bool {
+        self.c_repo.join("status").join(name).exists()
     }
 
     fn exists(&self) -> bool {
@@ -168,13 +220,13 @@ impl BackupCopy {
     }
 
     fn write_manifest(&self, manifest: &BackupManifest) -> std::io::Result<()> {
-        let manifest_path = self.m_repo.join("manifest.json");
+        let manifest_path = self.copy_path.join("manifest.json");
         let content = serde_json::to_string_pretty(manifest)?;
         std::fs::write(manifest_path, content)
     }
 
     fn read_manifest(&self) -> Option<BackupManifest> {
-        let manifest_path = self.m_repo.join("manifest.json");
+        let manifest_path = self.copy_path.join("manifest.json");
         if manifest_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&manifest_path) {
                 if let Ok(manifest) = serde_json::from_str(&content) {
@@ -184,12 +236,20 @@ impl BackupCopy {
         }
         None
     }
+
+    /// Get relative path from copy root for a given path
+    fn relative_path(&self, path: &Path) -> PathBuf {
+        path.strip_prefix(&self.copy_path)
+            .unwrap_or(path)
+            .to_path_buf()
+    }
 }
 
-/// Backup manifest stored in M repo
+/// Backup manifest stored at copy root
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct BackupManifest {
     version: String,
+    copy_uuid: String,
     copy_type: String,  // "full" or "incremental"
     format: String,     // "common" or "aggregated"
     source_path: String,
@@ -201,17 +261,14 @@ struct BackupManifest {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SubtaskInfo {
     id: String,
-    control_file: String,
-    status: String,
-    log_file: String,
+    control_file: String,  // Relative path or filename only
+    log_file: String,      // Relative path or filename only
 }
 
 /// Task scheduler for managing concurrent subtasks
 struct TaskScheduler {
     max_concurrent: usize,
     running: Arc<AtomicUsize>,
-    completed: Arc<AtomicUsize>,
-    failed: Arc<AtomicUsize>,
 }
 
 impl TaskScheduler {
@@ -219,8 +276,6 @@ impl TaskScheduler {
         Self {
             max_concurrent,
             running: Arc::new(AtomicUsize::new(0)),
-            completed: Arc::new(AtomicUsize::new(0)),
-            failed: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -232,40 +287,33 @@ impl TaskScheduler {
         self.running.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn complete_task(&self, success: bool) {
+    fn complete_task(&self) {
         self.running.fetch_sub(1, Ordering::Relaxed);
-        if success {
-            self.completed.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.failed.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn stats(&self) -> SchedulerStats {
-        SchedulerStats {
-            running: self.running.load(Ordering::Relaxed),
-            completed: self.completed.load(Ordering::Relaxed),
-            failed: self.failed.load(Ordering::Relaxed),
-        }
     }
 }
 
-#[derive(Debug)]
-struct SchedulerStats {
-    running: usize,
-    completed: usize,
-    failed: usize,
-}
-
-/// Initialize global logging
+/// Initialize global logging to stdout only (for early initialization)
 fn init_global_logger(verbose: u8) -> Result<(), fern::InitError> {
+    init_global_logger_with_file(verbose, None)
+}
+
+/// Initialize global logging.
+///
+/// When a log file is provided (i.e. during backup/restore), detailed output
+/// (INFO and above) is written exclusively to that file. Only WARN and ERROR
+/// messages are also echoed to stdout, to keep the terminal clean while
+/// progress and summary information is printed via explicit `println!` calls.
+///
+/// When no log file is given (e.g. for quick CLI sub-commands), all output
+/// goes to stdout at the requested verbosity level as before.
+fn init_global_logger_with_file(verbose: u8, log_file: Option<&Path>) -> Result<(), fern::InitError> {
     let log_level = match verbose {
         0 => LevelFilter::Info,
         1 => LevelFilter::Debug,
         _ => LevelFilter::Trace,
     };
 
-    fern::Dispatch::new()
+    let formatter = fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
                 "{} [{}] {} - {}",
@@ -274,11 +322,36 @@ fn init_global_logger(verbose: u8) -> Result<(), fern::InitError> {
                 record.target(),
                 message
             ))
-        })
-        .level(log_level)
-        .chain(std::io::stdout())
-        .apply()?;
+        });
 
+    let dispatch = if let Some(log_path) = log_file {
+        // Backup/restore mode: detailed logs go to the file, only warnings and
+        // errors are printed to stdout so the terminal stays readable.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .map_err(|e| fern::InitError::Io(e))?;
+
+        let stdout_dispatch = fern::Dispatch::new()
+            .level(LevelFilter::Warn)   // stdout: WARN and ERROR only
+            .chain(std::io::stdout());
+
+        let file_dispatch = fern::Dispatch::new()
+            .level(log_level)           // file: INFO/DEBUG/TRACE as requested
+            .chain(file);
+
+        formatter
+            .chain(stdout_dispatch)
+            .chain(file_dispatch)
+    } else {
+        // No log file: send everything to stdout (used by non-backup sub-commands).
+        formatter
+            .level(log_level)
+            .chain(std::io::stdout())
+    };
+
+    dispatch.apply()?;
     Ok(())
 }
 
@@ -387,18 +460,23 @@ fn execute_backup_subtask(
     enable_mtime: bool,
     blob_size: u64,
     threshold: u64,
-    _log_file: PathBuf,
-    _verbose: u8,
+    log_file: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Note: Logging is handled globally, subtask logs to stdout with prefix
-    println!("[{}] Starting backup subtask", subtask_id);
-    println!("[{}] Control file: {}", subtask_id, control_file.display());
-    println!("[{}] Format: {:?}", subtask_id, format);
+    // Detailed subtask output goes to the per-subtask log file only.
+    // The terminal receives only the final summary line printed by the caller.
+    let mut log_writer = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)?;
+
+    writeln!(log_writer, "[{}] Starting backup subtask", subtask_id)?;
+    writeln!(log_writer, "[{}] Control file: {}", subtask_id, control_file.display())?;
+    writeln!(log_writer, "[{}] Format: {:?}", subtask_id, format)?;
 
     // Create backup option
-    // Meta files are in M/meta/, control files are in M/ctrl/
+    // Meta files are in M_REPO/meta/, control files are in C_REPO/
     let meta_dir = copy.m_repo.join("meta");
-    let ctrl_dir = copy.m_repo.join("ctrl");
+    let ctrl_dir = copy.c_repo.clone();
 
     let mut backup_option = BackupOption::new(
         source_dir.clone(),
@@ -419,24 +497,25 @@ fn execute_backup_subtask(
             .enable_aggregation(true)
             .aggregate_max_blob_size(max_blob_size)
             .aggregate_file_threshold(aggregate_threshold);
-        println!("[{}] Aggregation enabled: blob_size={}MB, threshold={}KB", subtask_id, blob_size, threshold);
+        writeln!(log_writer, "[{}] Aggregation enabled: blob_size={}MB, threshold={}KB", subtask_id, blob_size, threshold)?;
     }
 
     let backup_task: backup::BackupTask = backup_option.into();
 
     let running_backup = backup_task.start()?;
 
-    // Monitor progress
+    // Poll until done; write periodic progress to the log file only.
     loop {
         let stats = running_backup.stats();
-        println!(
+        writeln!(
+            log_writer,
             "[{}] Progress: {} files ({} bytes), {} dirs, {} failed",
             subtask_id,
             stats.files_copied,
             stats.bytes_copied,
             stats.dirs_created,
             stats.files_failed
-        );
+        )?;
 
         if running_backup.complete() {
             break;
@@ -447,13 +526,14 @@ fn execute_backup_subtask(
     let final_stats = running_backup.stats();
     running_backup.wait()?;
 
-    println!(
+    writeln!(
+        log_writer,
         "[{}] Subtask completed: {} files ({} MB), {} dirs",
         subtask_id,
         final_stats.files_copied,
         final_stats.bytes_copied / (1024 * 1024),
         final_stats.dirs_created
-    );
+    )?;
 
     if final_stats.files_failed > 0 {
         return Err(format!("Subtask {} failed: {} files failed", subtask_id, final_stats.files_failed).into());
@@ -482,29 +562,53 @@ fn cmd_backup(
         return Err("Incremental backup is only supported with aggregated format".into());
     }
 
-    // Create backup copy structure
-    let copy = BackupCopy::new(target.clone());
+    // Generate copy UUID
+    let copy_uuid = Uuid::new_v4().to_string();
 
-    // Check if this is a new copy or incremental
+    // Determine copy type
     let is_incremental = incremental_base.is_some();
-    let copy_type = if is_incremental { "incremental" } else { "full" };
+    let copy_type = if is_incremental { CopyType::Incremental } else { CopyType::Full };
+    let copy_type_str = copy_type.as_str();
 
-    println!("Creating {} backup copy at: {}", copy_type, target.display());
+    // Build copy folder name: COPY_{format}_{type}_{uuid}
+    let copy_folder_name = format!("COPY_{}_{}_{}", format_abbr(format), copy_type_str, copy_uuid);
+    let copy_path = target.join(&copy_folder_name);
+
+    // Create backup copy structure
+    let copy = BackupCopy::new(copy_path.clone(), copy_uuid.clone());
+
+    println!("Creating {} backup copy at: {}", copy_type_str, copy_path.display());
     println!("Source: {}", data.display());
     println!("Format: {:?}", format);
+    println!("Copy UUID: {}", copy_uuid);
 
     // Create directories
     copy.create_dirs()?;
 
-    // Create temp scan directories within M repo
-    let scan_ctrl_dir = copy.m_repo.join("ctrl");
+    // Initialize global logger to write to both stdout and C_REPO/logs/backup.log
+    let main_log_path = copy.c_repo.join("logs").join("backup.log");
+    init_global_logger_with_file(verbose, Some(&main_log_path))?;
+    info!("Starting backup copy {}", copy_uuid);
+
+    // Create SCAN.RUNNING status file
+    copy.create_status_file(&format!("SCAN_{}.RUNNING", copy_uuid))?;
+
+    // Create scan log file (for scan-specific output, file only)
+    let scan_log_path = copy.c_repo.join("logs").join("scan.log");
+    let mut scan_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&scan_log_path)?;
+
+    // Create temp scan directories within M_REPO
+    let scan_ctrl_dir = copy.c_repo.join("ctrl");
     let scan_meta_dir = copy.m_repo.join("meta");
     std::fs::create_dir_all(&scan_ctrl_dir)?;
     std::fs::create_dir_all(&scan_meta_dir)?;
 
     // Determine previous meta for incremental scan
     let prev_meta_dir = if let Some(ref base) = incremental_base {
-        let base_copy = BackupCopy::new(base.clone());
+        let base_copy = BackupCopy::new(base.clone(), String::new());
         if !base_copy.exists() {
             return Err(format!("Base copy does not exist: {}", base.display()).into());
         }
@@ -514,6 +618,8 @@ fn cmd_backup(
     };
 
     // Step 1: Scan the source
+    writeln!(scan_log, "[SCAN] Starting scan for copy {}", copy_uuid)?;
+    writeln!(scan_log, "[SCAN] Source: {}", data.display())?;
     println!("\n[1/3] Scanning source directory...");
     let scan_option = ScanOption::new(
         scan_ctrl_dir.clone(),
@@ -544,7 +650,12 @@ fn cmd_backup(
     let scan_stats = running_scan.stats();
     running_scan.wait();
 
+    writeln!(scan_log, "[SCAN] Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs)?;
     println!("  Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs);
+    
+    // Update scan status: remove RUNNING, create DONE
+    copy.remove_status_file(&format!("SCAN_{}.RUNNING", copy_uuid))?;
+    copy.create_status_file(&format!("SCAN_{}.DONE", copy_uuid))?;
 
     // Step 2: Find control files and schedule backup subtasks
     println!("\n[2/3] Scheduling backup subtasks...");
@@ -556,16 +667,27 @@ fn cmd_backup(
     let mut subtask_infos = Vec::new();
 
     for (ctrl_file, priority) in control_files {
+        // Each subtask gets its own UUID
         let subtask_id = Uuid::new_v4().to_string();
-        let log_file = copy.m_repo.join(format!("{}.log", subtask_id));
+        
+        // Log file goes to C_REPO/logs/ with subtask UUID as filename
+        let log_file_name = format!("{}.log", subtask_id);
+        let log_file = copy.c_repo.join("logs").join(&log_file_name);
+
+        // Control file relative path (just the filename, stored in C_REPO/ctrl/)
+        let ctrl_file_name = ctrl_file.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown.txt".to_string());
 
         let info = SubtaskInfo {
             id: subtask_id.clone(),
-            control_file: ctrl_file.to_string_lossy().to_string(),
-            status: "pending".to_string(),
-            log_file: log_file.to_string_lossy().to_string(),
+            control_file: format!("C_REPO/ctrl/{}", ctrl_file_name),
+            log_file: format!("C_REPO/logs/{}", log_file_name),
         };
         subtask_infos.push(info);
+
+        // Create SUBTASK_{uuid}.RUNNING status file
+        copy.create_status_file(&format!("SUBTASK_{}.RUNNING", subtask_id))?;
 
         println!("  Subtask {}: {:?} -> {}", subtask_id, priority, ctrl_file.display());
 
@@ -580,9 +702,10 @@ fn cmd_backup(
         let source_dir = data.clone();
         let copy_d_repo = copy.d_repo.clone();
         let copy_m_repo = copy.m_repo.clone();
+        let copy_c_repo = copy.c_repo.clone();
+        let copy_uuid_clone = copy_uuid.clone();
         let ctrl_file_clone = ctrl_file.clone();
         let format_clone = format;
-        let log_file_clone = log_file.clone();
         let priority_clone = priority;
 
         // Enable phases based on command-line flags and format
@@ -598,10 +721,14 @@ fn cmd_backup(
         }
 
         let handle = thread::spawn(move || {
+            // Reconstruct BackupCopy for this thread
+            let thread_copy_path = copy_d_repo.parent().unwrap().to_path_buf();
+            let thread_copy = BackupCopy::new(thread_copy_path, copy_uuid_clone);
+            
             let result = execute_backup_subtask(
                 subtask_id_clone.clone(),
                 source_dir,
-                &BackupCopy { copy_path: copy_d_repo.parent().unwrap().to_path_buf(), d_repo: copy_d_repo, m_repo: copy_m_repo },
+                &thread_copy,
                 ctrl_file_clone,
                 format_clone,
                 workers,
@@ -610,13 +737,20 @@ fn cmd_backup(
                 enable_mtime_phase,
                 blob_size,
                 threshold,
-                log_file_clone,
-                verbose,
+                log_file,
             );
 
             let success = result.is_ok();
             if let Err(ref e) = result {
                 eprintln!("[{}] Subtask failed: {}", subtask_id_clone, e);
+            }
+
+            // Update status files based on result
+            let _ = thread_copy.remove_status_file(&format!("SUBTASK_{}.RUNNING", subtask_id_clone));
+            if success {
+                let _ = thread_copy.create_status_file(&format!("SUBTASK_{}.DONE", subtask_id_clone));
+            } else {
+                let _ = thread_copy.create_status_file(&format!("SUBTASK_{}.FAILED", subtask_id_clone));
             }
 
             success
@@ -639,10 +773,13 @@ fn cmd_backup(
             Ok(false) => {
                 failed += 1;
                 println!("  ✗ Subtask {} failed", subtask_id);
+                // Create FAILED status file (in case thread didn't)
+                let _ = copy.create_status_file(&format!("SUBTASK_{}.FAILED", subtask_id));
             }
             Err(e) => {
                 failed += 1;
                 println!("  ✗ Subtask {} panicked: {:?}", subtask_id, e);
+                let _ = copy.create_status_file(&format!("SUBTASK_{}.FAILED", subtask_id));
             }
         }
     }
@@ -650,7 +787,8 @@ fn cmd_backup(
     // Step 4: Write manifest
     let manifest = BackupManifest {
         version: "1.0".to_string(),
-        copy_type: copy_type.to_string(),
+        copy_uuid: copy_uuid.clone(),
+        copy_type: copy_type_str.to_lowercase(),
         format: format_to_string(format),
         source_path: data.to_string_lossy().to_string(),
         created_at: chrono::Local::now().to_rfc3339(),
@@ -664,14 +802,15 @@ fn cmd_backup(
     println!("\n{}", "=".repeat(60));
     println!("Backup Summary");
     println!("{}", "=".repeat(60));
-    println!("Copy type: {}", copy_type);
+    println!("Copy UUID: {}", copy_uuid);
+    println!("Copy type: {}", copy_type_str);
     println!("Format: {:?}", format);
-    println!("Target: {}", target.display());
+    println!("Target: {}", copy_path.display());
     println!("Subtasks: {} completed, {} failed", completed, failed);
-    println!("Manifest: {}", copy.m_repo.join("manifest.json").display());
+    println!("Manifest: {}", copy.copy_path.join("manifest.json").display());
 
     if failed > 0 {
-        println!("\nWarning: Some subtasks failed. Check log files in {} for details.", copy.m_repo.display());
+        println!("\nWarning: Some subtasks failed. Check log files in {}/ for details.", copy.c_repo.display());
         return Err("Backup completed with failures".into());
     }
 
@@ -694,17 +833,25 @@ fn cmd_restore(
     println!("Target: {}", target.display());
     println!("Policy: {:?}", policy);
 
-    let copy = BackupCopy::new(copy_path.clone());
+    // Read manifest first to get UUID
+    let manifest_path = copy_path.join("manifest.json");
+    if !manifest_path.exists() {
+        return Err(format!("Backup manifest not found: {}", manifest_path.display()).into());
+    }
+
+    let manifest_content = std::fs::read_to_string(&manifest_path)?;
+    let manifest: BackupManifest = serde_json::from_str(&manifest_content)
+        .map_err(|e| format!("Failed to parse manifest: {}", e))?;
+
+    let copy_uuid = manifest.copy_uuid.clone();
+    let copy = BackupCopy::new(copy_path.clone(), copy_uuid);
 
     if !copy.exists() {
         return Err(format!("Backup copy does not exist: {}", copy_path.display()).into());
     }
 
-    // Read manifest
-    let manifest = copy.read_manifest()
-        .ok_or("Failed to read backup manifest")?;
-
     println!("\nBackup info:");
+    println!("  Copy UUID: {}", manifest.copy_uuid);
     println!("  Type: {}", manifest.copy_type);
     println!("  Format: {}", manifest.format);
     println!("  Created: {}", manifest.created_at);
@@ -723,7 +870,7 @@ fn cmd_restore(
 
     // Find control files for restore
     // Restore processes all 4 phases: copy, hardlink, delete, mtime
-    let ctrl_dir = copy.m_repo.join("ctrl");
+    let ctrl_dir = copy.c_repo.join("ctrl");
     let control_files = find_restore_control_files(&ctrl_dir);
 
     if control_files.is_empty() {
@@ -736,8 +883,8 @@ fn cmd_restore(
     let mut subtask_handles = Vec::new();
 
     for (ctrl_file, priority) in control_files {
+        // Each restore subtask gets its own UUID
         let subtask_id = Uuid::new_v4().to_string();
-        let log_file = target.join(format!(".restore_{}.log", subtask_id));
 
         println!("  Subtask {}: {:?} -> {}", subtask_id, priority, ctrl_file.display());
 
@@ -750,23 +897,26 @@ fn cmd_restore(
         let subtask_id_clone = subtask_id.clone();
         let copy_d_repo = copy.d_repo.clone();
         let copy_m_repo = copy.m_repo.clone();
+        let copy_c_repo = copy.c_repo.clone();
+        let copy_uuid_clone = copy.copy_uuid.clone();
         let target_dir = target.clone();
         let ctrl_file_clone = ctrl_file.clone();
         let policy_clone = policy;
-        let log_file_clone = log_file.clone();
 
         let handle = thread::spawn(move || {
+            // Reconstruct BackupCopy for this thread
+            let thread_copy_path = copy_d_repo.parent().unwrap().to_path_buf();
+            let thread_copy = BackupCopy::new(thread_copy_path, copy_uuid_clone);
+            
             let result = execute_restore_subtask(
                 subtask_id_clone.clone(),
-                copy_d_repo,
-                copy_m_repo,
+                thread_copy,
                 target_dir,
                 ctrl_file_clone,
                 policy_clone,
                 workers,
                 hardlinks,
                 mtime,
-                log_file_clone,
                 verbose,
             );
 
@@ -821,28 +971,26 @@ fn cmd_restore(
 /// Execute a single restore subtask
 fn execute_restore_subtask(
     subtask_id: String,
-    source_dir: PathBuf,
-    meta_dir: PathBuf,
+    copy: BackupCopy,
     target_dir: PathBuf,
     control_file: PathBuf,
     policy: RestorePolicy,
     workers: usize,
     _hardlinks: bool,
     _mtime: bool,
-    _log_file: PathBuf,
     _verbose: u8,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("[{}] Starting restore subtask", subtask_id);
     println!("[{}] Control file: {}", subtask_id, control_file.display());
 
     // Create restore option
-    // Meta files are in M/meta/, control files are in M/ctrl/
-    let meta_dir_full = meta_dir.join("meta");
-    let ctrl_dir = meta_dir.join("ctrl");
+    // Meta files are in M_REPO/meta/, control files are in C_REPO/ctrl/
+    let meta_dir = copy.m_repo.join("meta");
+    let ctrl_dir = copy.c_repo.join("ctrl");
     let restore_option = RestoreOption::new(
-        source_dir,
+        copy.d_repo.clone(),
         target_dir,
-        meta_dir_full,
+        meta_dir,
         ctrl_dir,
         control_file,
     )
@@ -898,8 +1046,41 @@ fn format_to_string(format: BackupFormat) -> String {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize global logger
-    init_global_logger(0)?;
+    // === File Descriptor Limit Initialization ===
+    //
+    // Bifrost's aggregate backup engine opens many file descriptors simultaneously:
+    //   - Source file handles held open by reader I/O threads while FCBs are in-flight
+    //   - Target blob files being written
+    //   - SQLite database connections (one per-operation, but they overlap under concurrency)
+    //   - Standard fds (stdin/stdout/stderr), log file, metadata files, etc.
+    //
+    // Linux's default soft limit is 1024 fds per process. When backing up large datasets
+    // with many small files across many directories, this limit is easily exceeded, causing
+    // EMFILE ("Too many open files", os error 24) errors.
+    //
+    // A process is always allowed to raise its own soft limit up to the hard limit without
+    // any special privileges. On typical Linux systems the hard limit is 524288 (512K).
+    // We raise the soft limit to the hard limit here, at process startup, before any I/O
+    // threads are created, so the full fd budget is available throughout the run.
+    #[cfg(unix)]
+    {
+        use nix::sys::resource::{getrlimit, setrlimit, Resource};
+        match getrlimit(Resource::RLIMIT_NOFILE) {
+            Ok((soft, hard)) => {
+                if soft < hard {
+                    if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, hard, hard) {
+                        eprintln!("Warning: failed to raise fd limit from {} to {}: {}", soft, hard, e);
+                    }
+                    // soft == hard after this point; no further action needed
+                }
+                // If soft == hard already, the limit is already maximized
+            }
+            Err(e) => {
+                // Non-fatal: backup will proceed but may hit fd exhaustion on large datasets
+                eprintln!("Warning: failed to query fd limit: {}", e);
+            }
+        }
+    }
 
     let cli = Cli::parse();
 
@@ -918,6 +1099,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             verbose,
         } => {
+            // For backup, we need to initialize logger after creating copy structure
+            // So we pass verbose to cmd_backup and let it initialize the logger
             cmd_backup(
                 data,
                 target,
@@ -943,6 +1126,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mtime,
             verbose,
         } => {
+            // Initialize global logger for restore (no file logging needed)
+            init_global_logger(verbose)?;
             cmd_restore(
                 copy,
                 target,

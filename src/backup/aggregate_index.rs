@@ -53,25 +53,31 @@ impl AggregateIndex {
             std::fs::create_dir_all(parent)?;
         }
         
+        // Initialize the database schema (opens and closes connection)
+        #[cfg(feature = "sqlite")]
+        {
+            let conn = rusqlite::Connection::open(&db_path)?;
+            conn.execute_batch(INDEX_SCHEMA)?;
+            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+            // Connection is dropped here, closing it
+        }
+        
         let index = Self { 
             db_path,
             memory_index: Mutex::new(HashMap::new()),
         };
         
-        #[cfg(feature = "sqlite")]
-        index.init_schema()?;
-        
         info!("Aggregate index opened at {:?}", index.db_path);
         Ok(index)
     }
-
-    /// Initializes the database schema.
+    
+    /// Opens a connection to the SQLite database.
+    /// Note: We open/close connections per operation to avoid file descriptor exhaustion
+    /// when many directories are being processed concurrently.
     #[cfg(feature = "sqlite")]
-    fn init_schema(&self) -> Result<(), AggregateIndexError> {
+    fn open_connection(&self) -> Result<rusqlite::Connection, AggregateIndexError> {
         let conn = rusqlite::Connection::open(&self.db_path)?;
-        conn.execute_batch(INDEX_SCHEMA)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-        Ok(())
+        Ok(conn)
     }
 
     /// Adds a blob's metadata to the index.
@@ -106,27 +112,31 @@ impl AggregateIndex {
     fn add_blob_sqlite(&self, blob_meta: &AggregateBlobMeta) -> Result<(), AggregateIndexError> {
         use rusqlite::params;
         
-        let conn = rusqlite::Connection::open(&self.db_path)?;
-        let mut stmt = conn.prepare(
-            "INSERT INTO aggregate_index 
-             (file_name, dir_path, blob_name, offset, size, ctime, mtime, mode, xattrs, acl)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
-        )?;
+        let mut conn = self.open_connection()?;
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO aggregate_index 
+                 (file_name, dir_path, blob_name, offset, size, ctime, mtime, mode, xattrs, acl)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+            )?;
 
-        for entry in &blob_meta.files {
-            stmt.execute(params![
-                &entry.file_name,
-                &blob_meta.dir_path,
-                &blob_meta.blob_name,
-                entry.offset as i64,
-                entry.size as i64,
-                entry.ctime as i64,
-                entry.mtime as i64,
-                entry.mode as i64,
-                entry.xattrs.as_ref().map(|s| s.as_str()),
-                entry.acl.as_ref().map(|s| s.as_str()),
-            ])?;
+            for entry in &blob_meta.files {
+                stmt.execute(params![
+                    &entry.file_name,
+                    &blob_meta.dir_path,
+                    &blob_meta.blob_name,
+                    entry.offset as i64,
+                    entry.size as i64,
+                    entry.ctime as i64,
+                    entry.mtime as i64,
+                    entry.mode as i64,
+                    entry.xattrs.as_ref().map(|s| s.as_str()),
+                    entry.acl.as_ref().map(|s| s.as_str()),
+                ])?;
+            }
         }
+        tx.commit()?;
 
         Ok(())
     }
@@ -157,7 +167,7 @@ impl AggregateIndex {
     fn query_file_sqlite(&self, file_name: &str, dir_path: &str) -> Result<Option<AggregateRestoreInfo>, AggregateIndexError> {
         use rusqlite::params;
         
-        let conn = rusqlite::Connection::open(&self.db_path)?;
+        let conn = self.open_connection()?;
         let mut stmt = conn.prepare(
             "SELECT blob_name, offset, size, mtime, mode, xattrs, acl 
              FROM aggregate_index 
@@ -224,7 +234,7 @@ impl AggregateIndex {
     fn get_blob_files_sqlite(&self, blob_name: &str) -> Result<Vec<AggregateFileEntry>, AggregateIndexError> {
         use rusqlite::params;
         
-        let conn = rusqlite::Connection::open(&self.db_path)?;
+        let conn = self.open_connection()?;
         let mut stmt = conn.prepare(
             "SELECT file_name, offset, size, ctime, mtime, mode, xattrs, acl 
              FROM aggregate_index 
@@ -266,7 +276,7 @@ impl AggregateIndex {
         {
             use rusqlite::params;
             
-            let conn = rusqlite::Connection::open(&self.db_path)?;
+            let conn = self.open_connection()?;
             let mut stmt = conn.prepare(
                 "SELECT 1 FROM aggregate_index WHERE file_name = ?1 AND dir_path = ?2 LIMIT 1"
             )?;
@@ -291,7 +301,7 @@ impl AggregateIndex {
     pub fn delete_blob_entries(&self, blob_name: &str) -> Result<usize, AggregateIndexError> {
         use rusqlite::params;
         
-        let conn = rusqlite::Connection::open(&self.db_path)?;
+        let conn = self.open_connection()?;
         let count = conn.execute(
             "DELETE FROM aggregate_index WHERE blob_name = ?1",
             params![blob_name]
@@ -312,7 +322,7 @@ impl AggregateIndex {
         
         #[cfg(feature = "sqlite")]
         {
-            let conn = rusqlite::Connection::open(&self.db_path)?;
+            let conn = self.open_connection()?;
             
             let total_files: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM aggregate_index",

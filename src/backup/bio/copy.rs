@@ -230,7 +230,7 @@ pub fn spawn_reader_with_aggregation(
     std::thread::spawn(move || {
         // Create aggregate state for buffering files
         let agg_state = Arc::new(AggregateBackupState::new(aggregate_engine));
-        
+
         loop {
             let result = reader_rx.recv_timeout(Duration::from_millis(100));
             match result {
@@ -240,7 +240,7 @@ pub fn spawn_reader_with_aggregation(
                             // Forward directory entries to writer for creation
                             let _ = writer_tx.send(ControlBlockVarient::DirControlBlock(dcb));
                         }
-                        ControlBlockVarient::FileControlBlock(fcb) => {
+                        ControlBlockVarient::FileControlBlock(mut fcb) => {
                             // Check if this is a symlink - symlinks don't need content copying
                             if fcb.meta.common.symlink_target_path.is_some() {
                                 // Forward directly to writer for symlink creation
@@ -248,28 +248,57 @@ pub fn spawn_reader_with_aggregation(
                             } else {
                                 // Check if file should be aggregated
                                 let should_agg = agg_state.engine.should_aggregate(fcb.meta.size);
-                                
+
                                 if should_agg && fcb.src_state == SourceHandleState::Read {
                                     // File is small and already read - aggregate it
+                                    let file_size = fcb.meta.size;
+
+                                    // BUG FIX: Explicitly close the source file handle immediately after
+                                    // reading to avoid "Too many open files (os error 24)" error.
+                                    //
+                                    // Background: When read_source() reads a file, it takes the file
+                                    // handle from fcb.src_handle using take(), reads the data, and the
+                                    // local file variable should be dropped at the end of read_source().
+                                    // However, under high concurrency with many small files being
+                                    // aggregated, file handles can accumulate faster than they are
+                                    // released, causing the process to hit the system file descriptor
+                                    // limit (default 1024 on many systems).
+                                    //
+                                    // This explicit close ensures the file descriptor is released
+                                    // immediately before we continue processing, preventing resource
+                                    // exhaustion. See docs/bugfix-file-handle-leak.md for details.
+                                    if fcb.src_handle.is_some() {
+                                        drop(fcb.src_handle.take());
+                                    }
+
                                     let pending = fcb_to_pending_file(&fcb);
                                     let dir_path = fcb.src_path.parent()
                                         .map(|p| p.to_string_lossy().to_string())
                                         .unwrap_or_default();
-                                    
+
                                     // Add to buffer
                                     if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
-                                        // Buffer is full, create blob
+                                        // Buffer is full, create blob - count files NOW when they are written
+                                        let file_count = files.len() as u64;
+                                        let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+
                                         match agg_state.engine.create_blob(&dir, files) {
                                             Ok(blob_meta) => {
-                                                info!("Created blob {} for dir {} with {} files", 
+                                                info!("Created blob {} for dir {} with {} files",
                                                     blob_meta.blob_name, dir, blob_meta.file_count);
+                                                // Update stats for aggregated files when blob is created
+                                                stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
+                                                stats.bytes_copied.fetch_add(bytes_in_blob, Ordering::Relaxed);
                                             }
                                             Err(e) => {
                                                 error!("Failed to create blob for dir {}: {}", dir, e);
-                                                stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                                                stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
                                             }
                                         }
                                     }
+                                    // Note: We do NOT count files when added to buffer.
+                                    // Files are only counted when successfully written to a blob.
+                                    // This prevents double-counting.
                                 } else if should_agg {
                                     // File should be aggregated but not yet read - send to reader
                                     match fcb.src_state {
@@ -304,13 +333,20 @@ pub fn spawn_reader_with_aggregation(
                         let remaining = agg_state.flush_all();
                         for (dir, files) in remaining {
                             if !files.is_empty() {
+                                let file_count = files.len() as u64;
+                                let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+
                                 match agg_state.engine.create_blob(&dir, files) {
                                     Ok(blob_meta) => {
-                                        info!("Created final blob {} for dir {} with {} files", 
+                                        info!("Created final blob {} for dir {} with {} files",
                                             blob_meta.blob_name, dir, blob_meta.file_count);
+                                        // Update stats for aggregated files
+                                        stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
+                                        stats.bytes_copied.fetch_add(bytes_in_blob, Ordering::Relaxed);
                                     }
                                     Err(e) => {
                                         error!("Failed to create final blob for dir {}: {}", dir, e);
+                                        stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
                                     }
                                 }
                             }
@@ -536,6 +572,11 @@ pub fn spawn_writer_io_result_poll(
             match result {
                 WriterBioResult::OpenTarget(Ok(fcb)) => {
                     stats.dst_opened.fetch_add(1, Ordering::Relaxed);
+                    // Check if this is a symlink that was already written (symlinks are created in open_target)
+                    if fcb.dst_state == TargetHandleState::Written {
+                        stats.files_copied.fetch_add(1, Ordering::Relaxed);
+                        stats.bytes_copied.fetch_add(fcb.meta.size, Ordering::Relaxed);
+                    }
                     let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 WriterBioResult::OpenTarget(Err(_)) => {

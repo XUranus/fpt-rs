@@ -6,7 +6,7 @@
 //!
 //! Design:
 //! - Each directory has its own SQLite index (0 or 1 per directory)
-//! - Aggregated files are stored in .blobs/ subdirectory within each directory
+//! - Aggregated files are stored in .AGGR_DIR/ subdirectory within each directory
 //! - This provides better scalability for large file sets
 
 use std::collections::HashMap;
@@ -34,33 +34,30 @@ use crate::backup::SharedState;
 struct DirAggregateInfo {
     /// Path to the directory in target
     target_dir: PathBuf,
-    /// Path to the .blobs subdirectory
-    blobs_dir: PathBuf,
-    /// Path to the SQLite index
-    index_path: PathBuf,
+    /// Path to the .AGGR_DIR subdirectory
+    aggr_dir: PathBuf,
     /// The index (opened on first use)
     index: Option<AggregateIndex>,
 }
 
 impl DirAggregateInfo {
     fn new(target_dir: PathBuf) -> Result<Self, AggregateEngineError> {
-        let blobs_dir = target_dir.join(".blobs");
-        let index_path = target_dir.join(".aggregate_index.sqlite");
+        let aggr_dir = target_dir.join(".AGGR_DIR");
         
-        // Create .blobs directory
-        std::fs::create_dir_all(&blobs_dir)?;
+        // Create .AGGR_DIR directory
+        std::fs::create_dir_all(&aggr_dir)?;
         
         Ok(Self {
             target_dir,
-            blobs_dir,
-            index_path,
+            aggr_dir,
             index: None,
         })
     }
     
     fn get_or_open_index(&mut self) -> Result<&AggregateIndex, AggregateEngineError> {
         if self.index.is_none() {
-            self.index = Some(AggregateIndex::open(&self.index_path)?);
+            let index_path = self.aggr_dir.join("AGGREGATE_IDX.sqlite");
+            self.index = Some(AggregateIndex::open(&index_path)?);
         }
         Ok(self.index.as_ref().unwrap())
     }
@@ -140,7 +137,7 @@ impl AggregateBackupEngine {
         
         // Generate unique blob name using Snowflake algorithm
         let blob_name = self.id_generator.generate_blob_name();
-        let blob_path = dir_info.blobs_dir.join(&blob_name);
+        let blob_path = dir_info.aggr_dir.join(&blob_name);
 
         let mut blob_file = File::create(&blob_path)?;
         let mut entries = Vec::new();
@@ -375,15 +372,25 @@ pub fn spawn_aggregate_coordinator(
                                     // Add to buffer
                                     if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
                                         // Buffer is full, create blob
+                                        let file_count = files.len() as u64;
+                                        let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+                                        
                                         match agg_state.engine.create_blob(&dir, files) {
                                             Ok(blob_meta) => {
                                                 debug!("Created blob {} for dir {}", blob_meta.blob_name, dir);
+                                                // Update stats for aggregated files
+                                                backup_stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
+                                                backup_stats.bytes_copied.fetch_add(bytes_in_blob, Ordering::Relaxed);
                                             }
                                             Err(e) => {
                                                 error!("Failed to create blob for dir {}: {}", dir, e);
-                                                backup_stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                                                backup_stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
                                             }
                                         }
+                                    } else {
+                                        // File was added to buffer, update stats
+                                        backup_stats.files_copied.fetch_add(1, Ordering::Relaxed);
+                                        backup_stats.bytes_copied.fetch_add(fcb.meta.size, Ordering::Relaxed);
                                     }
                                 } else {
                                     // File not yet read, forward to reader
@@ -421,12 +428,19 @@ pub fn spawn_aggregate_coordinator(
         let remaining = agg_state.flush_all();
         for (dir, files) in remaining {
             if !files.is_empty() {
+                let file_count = files.len() as u64;
+                let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+                
                 match agg_state.engine.create_blob(&dir, files) {
                     Ok(blob_meta) => {
                         debug!("Created final blob {} for dir {}", blob_meta.blob_name, dir);
+                        // Update stats for aggregated files
+                        backup_stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
+                        backup_stats.bytes_copied.fetch_add(bytes_in_blob, Ordering::Relaxed);
                     }
                     Err(e) => {
                         error!("Failed to create final blob for dir {}: {}", dir, e);
+                        backup_stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
                     }
                 }
             }
