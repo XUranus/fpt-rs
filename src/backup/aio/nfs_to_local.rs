@@ -28,9 +28,10 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::backup::fcb::{ControlBlockVarient, FileControlBlock};
 use crate::backup::stats::BackupStats;
+use crate::backup::aio::entry::{EntryMapping, produce_entries};
+use crate::backup::aio::local_fs::write_local_file;
 use crate::nfs::aio::reader::{FileHandleCache, new_file_handle_cache, nfs_read_task};
 use crate::nfs::connection::NfsConnectionPool;
-use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 
 /// Maximum number of concurrent NFS-read+local-write tasks in flight.
 const MAX_CONCURRENT_TASKS: usize = 16;
@@ -66,9 +67,9 @@ pub async fn run_aio_nfs_to_local_pipeline(
 
     let producer_handle = {
         let entry_tx = entry_tx.clone();
-        let nfs_source_base2 = nfs_source_base.clone();
+        let mapping = EntryMapping::remote_to_local(nfs_source_base.clone());
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, nfs_source_base2, entry_tx);
+            produce_entries(control_file, meta_dir, mapping, entry_tx, "NFS→local entry producer");
         })
     };
     drop(entry_tx);
@@ -175,120 +176,4 @@ pub async fn run_aio_nfs_to_local_pipeline(
         stats.dirs_created.load(Ordering::Relaxed),
         stats.files_failed.load(Ordering::Relaxed),
     );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Write a byte buffer to a local file, creating parent directories as needed.
-fn write_local_file(path: &PathBuf, buf: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {:?}: {e}", parent))?;
-    }
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| format!("create {:?}: {e}", path))?;
-    file.write_all(buf)
-        .map_err(|e| format!("write {:?}: {e}", path))?;
-    Ok(())
-}
-
-/// Produce `ControlBlockVarient` items from a control file and send them on `tx`.
-/// Mirrors `produce_entries` in `local_to_nfs.rs` but uses `nfs_source_base` as the
-/// prefix for computing both relative target paths and NFS-relative src paths
-/// (for use with LOOKUP RPCs from the pool's effective root_fh).
-fn produce_entries(
-    control_file: PathBuf,
-    meta_dir: PathBuf,
-    nfs_source_base: PathBuf,
-    tx: mpsc::Sender<ControlBlockVarient>,
-) {
-    use crate::backup::fcb::DirControlBlock;
-
-    let meta_repo = match MetaRepoReader::new(meta_dir) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("NFS→local entry producer: cannot open meta repo: {e}");
-            return;
-        }
-    };
-
-    let reader = match ControlFileReader::open(control_file) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("NFS→local entry producer: cannot open control file: {e}");
-            return;
-        }
-    };
-
-    let mut dirpath = PathBuf::new();
-    let mut entry_count: usize = 0;
-
-    for entry_result in reader {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                error!("NFS→local entry producer: read error: {e}");
-                continue;
-            }
-        };
-
-        let item = match entry {
-            ControlEntry::Dir(dentry) => {
-                let dmeta = match meta_repo.get_dmeta((dentry.meta_fid, dentry.meta_offset)) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("NFS→local entry producer: get_dmeta error: {e}");
-                        continue;
-                    }
-                };
-                let mut dcb = DirControlBlock::from(dmeta);
-                dcb.src_path = PathBuf::from(&dentry.path);
-                dcb.dst_path = make_relative(&nfs_source_base, &dentry.path);
-                dirpath = PathBuf::from(dentry.path);
-                ControlBlockVarient::DirControlBlock(dcb)
-            }
-            ControlEntry::File(fentry) => {
-                let fmeta = match meta_repo.get_fmeta((fentry.meta_fid, fentry.meta_offset)) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("NFS→local entry producer: get_fmeta error: {e}");
-                        continue;
-                    }
-                };
-                let mut fcb = FileControlBlock::from(fmeta);
-                // src_path must be relative to the pool's effective root_fh for LOOKUP RPCs.
-                // Since root_fh now points to the sub_path directory (not the export root),
-                // we strip nfs_source_base (export/sub_path) instead of just nfs_export.
-                let abs_dir = PathBuf::from(&dirpath);
-                let nfs_rel_dir = make_relative(&nfs_source_base, &abs_dir.to_string_lossy());
-                fcb.src_path = nfs_rel_dir.join(&fentry.name);
-                // dst_path is relative to the local target base.
-                fcb.dst_path =
-                    make_relative(&nfs_source_base, &dirpath.to_string_lossy()).join(&fentry.name);
-                ControlBlockVarient::FileControlBlock(fcb)
-            }
-        };
-
-        if tx.blocking_send(item).is_err() {
-            break;
-        }
-        entry_count += 1;
-    }
-
-    info!("NFS→local entry producer: done, {entry_count} entries produced");
-}
-
-/// Strip `base` prefix from `path` and return a relative `PathBuf`.
-fn make_relative(base: &PathBuf, path: &str) -> PathBuf {
-    let p = PathBuf::from(path);
-    if let Ok(rel) = p.strip_prefix(base) {
-        rel.to_path_buf()
-    } else if p.is_absolute() {
-        p.file_name().map(PathBuf::from).unwrap_or(p)
-    } else {
-        p
-    }
 }

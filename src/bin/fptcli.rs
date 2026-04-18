@@ -35,12 +35,14 @@ enum Commands {
     /// Create a backup copy
     Backup {
         /// Source data path. Local paths look like `/opt/dataset`; NFS paths
-        /// look like `nfs://127.0.0.1/opt/dataset?sub=/ds1`.
+        /// look like `nfs://127.0.0.1/opt/dataset?sub=/ds1`; SMB paths look
+        /// like `smb://127.0.0.1/share/root?username=u&password=p`.
         #[arg(long, short = 'd', value_name = "PATH_OR_URL", required = true)]
         data: String,
 
         /// Target path where the copy will be created. Local paths look like
-        /// `/backup`; NFS paths look like `nfs://127.0.0.1/opt/backup?sub=/out`.
+        /// `/backup`; NFS paths look like `nfs://127.0.0.1/opt/backup?sub=/out`;
+        /// SMB paths look like `smb://127.0.0.1/share/root?username=u&password=p`.
         #[arg(long, short = 't', value_name = "PATH_OR_URL", required = true)]
         target: String,
 
@@ -215,6 +217,20 @@ fn parse_data_location(spec: &str, connections: usize, uid: Option<u32>, gid: Op
         {
             let _ = (connections, uid, gid);
             Err("NFS support not compiled in. Rebuild with --features nfs".into())
+        }
+    } else if spec.starts_with("smb://") || spec.starts_with(r"smb:\\") {
+        #[cfg(feature = "smb")]
+        {
+            let _ = (connections, uid, gid);
+            Ok(DataLocation::smb(
+                bifrost::smb::SmbLocation::from_url(spec)
+                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+            ))
+        }
+        #[cfg(not(feature = "smb"))]
+        {
+            let _ = (connections, uid, gid);
+            Err("SMB support not compiled in. Rebuild with --features smb".into())
         }
     } else {
         let _ = (connections, uid, gid);

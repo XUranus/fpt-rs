@@ -28,14 +28,15 @@ use log::{debug, error, info};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::backup::fcb::{
-    ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState,
+    ControlBlockVarient, SourceHandleState,
 };
 use crate::backup::stats::BackupStats;
+use crate::backup::aio::entry::{EntryMapping, produce_entries};
+use crate::backup::aio::local_fs::read_local_file;
 use crate::nfs::aio::writer::{
     DirHandleCache, NfsWriterResult, get_or_create_dir, new_dir_handle_cache, nfs_write_task,
 };
 use crate::nfs::connection::NfsConnectionPool;
-use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 
 /// Maximum number of concurrent NFS write tasks in flight.
 const MAX_CONCURRENT_WRITE_TASKS: usize = 16;
@@ -71,10 +72,12 @@ pub async fn run_local_to_nfs_copy_pipeline(
     // Spawn entry producer in a blocking thread.
     let producer_handle = {
         let entry_tx = entry_tx.clone();
-        let source_dir_base2 = source_dir_base.clone();
-        let target_prefix2 = target_prefix.clone();
+        let mapping = EntryMapping::local_to_prefixed_target(
+            source_dir_base.clone(),
+            PathBuf::from(target_prefix.clone()),
+        );
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, source_dir_base2, &target_prefix2, entry_tx);
+            produce_entries(control_file, meta_dir, mapping, entry_tx, "AIO entry producer");
         })
     };
     // Drop our clone so the channel closes when the producer is done.
@@ -184,111 +187,4 @@ pub async fn run_local_to_nfs_copy_pipeline(
         stats.dirs_created.load(Ordering::Relaxed),
         stats.files_failed.load(Ordering::Relaxed),
     );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Read the entire content of a local source file into a `Vec<u8>`.
-/// Called from `spawn_blocking` to avoid blocking the Tokio executor.
-fn read_local_file(path: &PathBuf, expected_size: u64) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| format!("open {path:?}: {e}"))?;
-    let cap = (expected_size as usize).min(64 * 1024 * 1024); // 64 MiB cap
-    let mut buf = Vec::with_capacity(cap);
-    file.read_to_end(&mut buf)
-        .map_err(|e| format!("read {path:?}: {e}"))?;
-    Ok(buf)
-}
-
-/// Produce `ControlBlockVarient` items from a control file and send them on `tx`.
-/// This is a blocking function run via `spawn_blocking`.
-fn produce_entries(
-    control_file: PathBuf,
-    meta_dir: PathBuf,
-    source_dir_base: PathBuf,
-    target_prefix: &str,
-    tx: mpsc::Sender<ControlBlockVarient>,
-) {
-    let meta_repo = match MetaRepoReader::new(meta_dir) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("AIO entry producer: cannot open meta repo: {e}");
-            return;
-        }
-    };
-
-    let reader = match ControlFileReader::open(control_file) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("AIO entry producer: cannot open control file: {e}");
-            return;
-        }
-    };
-
-    let target_prefix_buf = PathBuf::from(target_prefix);
-    let mut dirpath = PathBuf::new();
-
-    for entry_result in reader {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                error!("AIO entry producer: read error: {e}");
-                continue;
-            }
-        };
-
-        let item = match entry {
-            ControlEntry::Dir(dentry) => {
-                let dmeta = match meta_repo.get_dmeta((dentry.meta_fid, dentry.meta_offset)) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("AIO entry producer: get_dmeta error: {e}");
-                        continue;
-                    }
-                };
-                let mut dcb = DirControlBlock::from(dmeta);
-                dcb.src_path = PathBuf::from(&dentry.path);
-                let rel_path = make_relative(&source_dir_base, &dentry.path);
-                dcb.dst_path = target_prefix_buf.join(&rel_path);
-                dirpath = PathBuf::from(dentry.path);
-                ControlBlockVarient::DirControlBlock(dcb)
-            }
-            ControlEntry::File(fentry) => {
-                let fmeta = match meta_repo.get_fmeta((fentry.meta_fid, fentry.meta_offset)) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("AIO entry producer: get_fmeta error: {e}");
-                        continue;
-                    }
-                };
-                let mut fcb = FileControlBlock::from(fmeta);
-                fcb.src_path = dirpath.join(&fentry.name);
-                let rel_path = make_relative(&source_dir_base, &dirpath.to_string_lossy())
-                    .join(&fentry.name);
-                fcb.dst_path = target_prefix_buf.join(rel_path);
-                ControlBlockVarient::FileControlBlock(fcb)
-            }
-        };
-
-        if tx.blocking_send(item).is_err() {
-            break; // Receiver dropped; pipeline cancelled.
-        }
-    }
-
-    info!("AIO entry producer: done");
-}
-
-/// Strip the `base` prefix from `path` and return a relative `PathBuf`.
-fn make_relative(base: &PathBuf, path: &str) -> PathBuf {
-    let p = PathBuf::from(path);
-    if let Ok(rel) = p.strip_prefix(base) {
-        rel.to_path_buf()
-    } else if p.is_absolute() {
-        p.file_name().map(PathBuf::from).unwrap_or(p)
-    } else {
-        p
-    }
 }

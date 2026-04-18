@@ -10,7 +10,7 @@ use std::path::PathBuf;
 // DataLocation
 // ---------------------------------------------------------------------------
 
-/// Where the user's data lives — either a local path or an NFSv3 export.
+/// Where the user's data lives — local path, NFS export, or SMB share.
 ///
 /// Used for both source and target sides of a backup or restore job.
 #[derive(Debug, Clone)]
@@ -21,6 +21,10 @@ pub enum DataLocation {
     /// NFSv3 export accessed via direct RPC (no kernel mount required).
     #[cfg(feature = "nfs")]
     Nfs(crate::nfs::NfsLocation),
+
+    /// SMB share accessed via an async SMB client.
+    #[cfg(feature = "smb")]
+    Smb(crate::smb::SmbLocation),
 }
 
 impl DataLocation {
@@ -33,6 +37,12 @@ impl DataLocation {
     #[cfg(feature = "nfs")]
     pub fn nfs(loc: crate::nfs::NfsLocation) -> Self {
         DataLocation::Nfs(loc)
+    }
+
+    /// Construct an `Smb` location from an [`SmbLocation`].
+    #[cfg(feature = "smb")]
+    pub fn smb(loc: crate::smb::SmbLocation) -> Self {
+        DataLocation::Smb(loc)
     }
 
     /// Parse an NFS URL (`nfs://host/export[?sub=path]`) into a `DataLocation`.
@@ -51,6 +61,20 @@ impl DataLocation {
         }
     }
 
+    /// Parse an SMB URL (`smb://host/share[/sub]?username=u&password=p`) into a `DataLocation`.
+    pub fn from_smb_url(url: &str) -> Result<Self, String> {
+        #[cfg(feature = "smb")]
+        {
+            let loc = crate::smb::SmbLocation::from_url(url)?;
+            Ok(DataLocation::Smb(loc))
+        }
+        #[cfg(not(feature = "smb"))]
+        {
+            let _ = url;
+            Err("SMB support is not compiled in — rebuild with `--features smb`".to_string())
+        }
+    }
+
     /// Return `true` if this location is a local filesystem path.
     pub fn is_local(&self) -> bool {
         matches!(self, DataLocation::Local(_))
@@ -64,12 +88,22 @@ impl DataLocation {
         false
     }
 
+    /// Return `true` if this location is an SMB share.
+    pub fn is_smb(&self) -> bool {
+        #[cfg(feature = "smb")]
+        return matches!(self, DataLocation::Smb(_));
+        #[cfg(not(feature = "smb"))]
+        false
+    }
+
     /// Return the local `PathBuf`, or `None` if this is an NFS location.
     pub fn local_path(&self) -> Option<&PathBuf> {
         match self {
             DataLocation::Local(p) => Some(p),
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(_) => None,
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => None,
         }
     }
 
@@ -79,6 +113,19 @@ impl DataLocation {
         match self {
             DataLocation::Nfs(l) => Some(l),
             DataLocation::Local(_) => None,
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => None,
+        }
+    }
+
+    /// Return the [`SmbLocation`], or `None` if this is a non-SMB location.
+    #[cfg(feature = "smb")]
+    pub fn smb_location(&self) -> Option<&crate::smb::SmbLocation> {
+        match self {
+            DataLocation::Smb(l) => Some(l),
+            DataLocation::Local(_) => None,
+            #[cfg(feature = "nfs")]
+            DataLocation::Nfs(_) => None,
         }
     }
 
@@ -94,6 +141,8 @@ impl DataLocation {
                     format!("nfs://{}{}/{}", l.host, l.export, l.sub_path.trim_start_matches('/'))
                 }
             }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(l) => l.display_string(),
         }
     }
     /// Return the effective root path for path-stripping purposes.
@@ -112,6 +161,8 @@ impl DataLocation {
                     PathBuf::from(&l.export).join(l.sub_path.trim_start_matches('/'))
                 }
             }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(l) => l.synthetic_root(),
         }
     }
 }

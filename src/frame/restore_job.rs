@@ -122,6 +122,16 @@ impl BackupRestoreJob for FileRestoreJob {
                     .map_err(RestoreJobError::Io)?;
                 staging
             }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => {
+                std::fs::create_dir_all(&cfg.temp_config.temp_base)
+                    .map_err(RestoreJobError::Io)?;
+                let staging = cfg.temp_config.temp_base
+                    .join(format!("RESTORE_{}", Uuid::new_v4()));
+                std::fs::create_dir_all(&staging)
+                    .map_err(RestoreJobError::Io)?;
+                staging
+            }
         };
 
         let repo = RepoLayout::from_existing(local_copy_root.clone());

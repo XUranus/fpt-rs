@@ -27,14 +27,14 @@ use std::sync::atomic::Ordering;
 use log::{debug, error, info};
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::backup::fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock};
+use crate::backup::fcb::ControlBlockVarient;
 use crate::backup::stats::BackupStats;
+use crate::backup::aio::entry::{EntryMapping, produce_entries};
 use crate::nfs::aio::reader::{FileHandleCache, new_file_handle_cache, nfs_read_task};
 use crate::nfs::aio::writer::{
     DirHandleCache, NfsWriterResult, get_or_create_dir, new_dir_handle_cache, nfs_write_task,
 };
 use crate::nfs::connection::NfsConnectionPool;
-use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 
 /// Maximum number of concurrent NFS read+write tasks in flight.
 const MAX_CONCURRENT_TASKS: usize = 16;
@@ -77,16 +77,12 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
 
     let producer_handle = {
         let entry_tx = entry_tx.clone();
-        let nfs_source_base2 = nfs_source_base.clone();
-        let target_prefix2 = target_prefix.clone();
+        let mapping = EntryMapping::remote_to_prefixed_target(
+            nfs_source_base.clone(),
+            PathBuf::from(target_prefix.clone()),
+        );
         tokio::task::spawn_blocking(move || {
-            produce_entries(
-                control_file,
-                meta_dir,
-                nfs_source_base2,
-                &target_prefix2,
-                entry_tx,
-            );
+            produce_entries(control_file, meta_dir, mapping, entry_tx, "NFS→NFS entry producer");
         })
     };
     drop(entry_tx);
@@ -205,107 +201,4 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
         stats.dirs_created.load(Ordering::Relaxed),
         stats.files_failed.load(Ordering::Relaxed),
     );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Produce `ControlBlockVarient` items from a control file and send them on `tx`.
-///
-/// For NFS→NFS:
-/// - `src_path` is made relative to `nfs_source_base` for NFS LOOKUP RPCs.
-/// - `dst_path` is the relative path prepended with `target_prefix` so files
-///   are written under the correct copy structure on the NFS target.
-fn produce_entries(
-    control_file: PathBuf,
-    meta_dir: PathBuf,
-    nfs_source_base: PathBuf,
-    target_prefix: &str,
-    tx: mpsc::Sender<ControlBlockVarient>,
-) {
-    let meta_repo = match MetaRepoReader::new(meta_dir) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("NFS→NFS entry producer: cannot open meta repo: {e}");
-            return;
-        }
-    };
-
-    let reader = match ControlFileReader::open(control_file) {
-        Ok(r) => r,
-        Err(e) => {
-            error!("NFS→NFS entry producer: cannot open control file: {e}");
-            return;
-        }
-    };
-
-    let target_prefix_buf = PathBuf::from(target_prefix);
-    let mut dirpath = PathBuf::new();
-    let mut entry_count: usize = 0;
-
-    for entry_result in reader {
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                error!("NFS→NFS entry producer: read error: {e}");
-                continue;
-            }
-        };
-
-        let item = match entry {
-            ControlEntry::Dir(dentry) => {
-                let dmeta = match meta_repo.get_dmeta((dentry.meta_fid, dentry.meta_offset)) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("NFS→NFS entry producer: get_dmeta error: {e}");
-                        continue;
-                    }
-                };
-                let mut dcb = DirControlBlock::from(dmeta);
-                let rel_path = make_relative(&nfs_source_base, &dentry.path);
-                dcb.src_path = rel_path.clone();
-                dcb.dst_path = target_prefix_buf.join(&rel_path);
-                dirpath = PathBuf::from(dentry.path);
-                ControlBlockVarient::DirControlBlock(dcb)
-            }
-            ControlEntry::File(fentry) => {
-                let fmeta = match meta_repo.get_fmeta((fentry.meta_fid, fentry.meta_offset)) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!("NFS→NFS entry producer: get_fmeta error: {e}");
-                        continue;
-                    }
-                };
-                let mut fcb = FileControlBlock::from(fmeta);
-                let abs_dir = PathBuf::from(&dirpath);
-                let rel_dir = make_relative(&nfs_source_base, &abs_dir.to_string_lossy());
-                fcb.src_path = rel_dir.join(&fentry.name);
-                // Prepend target_prefix so files go under COPY_.../D_REPO/
-                fcb.dst_path = target_prefix_buf.join(fcb.src_path.to_str().unwrap_or(""));
-                ControlBlockVarient::FileControlBlock(fcb)
-            }
-        };
-
-        if tx.blocking_send(item).is_err() {
-            break;
-        }
-        entry_count += 1;
-    }
-
-    info!(
-        "NFS→NFS entry producer: done, {entry_count} entries produced"
-    );
-}
-
-/// Strip `base` prefix from `path` and return a relative `PathBuf`.
-fn make_relative(base: &PathBuf, path: &str) -> PathBuf {
-    let p = PathBuf::from(path);
-    if let Ok(rel) = p.strip_prefix(base) {
-        rel.to_path_buf()
-    } else if p.is_absolute() {
-        p.file_name().map(PathBuf::from).unwrap_or(p)
-    } else {
-        p
-    }
 }

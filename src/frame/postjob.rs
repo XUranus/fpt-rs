@@ -40,6 +40,8 @@ pub enum PostJobError {
     /// NFS upload of repo files failed.
     #[cfg(feature = "nfs")]
     NfsUpload(String),
+    /// Transport exists but the post-job uploader is not wired yet.
+    Unsupported(String),
 }
 
 impl std::fmt::Display for PostJobError {
@@ -49,6 +51,7 @@ impl std::fmt::Display for PostJobError {
             PostJobError::ManifestWrite(s) => write!(f, "manifest write error: {s}"),
             #[cfg(feature = "nfs")]
             PostJobError::NfsUpload(s)     => write!(f, "NFS upload error: {s}"),
+            PostJobError::Unsupported(s)   => write!(f, "unsupported: {s}"),
         }
     }
 }
@@ -176,6 +179,12 @@ impl<'a> BackupPostJob<'a> {
                     ).await
                 }).map_err(PostJobError::NfsUpload)?;
                 log::info!("Post-job: NFS upload complete");
+            }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => {
+                return Err(PostJobError::Unsupported(
+                    "SMB post-job upload is not implemented yet".to_string(),
+                ));
             }
         }
         log::info!("Post-job: done");

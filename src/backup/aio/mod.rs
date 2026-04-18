@@ -23,6 +23,9 @@ use crate::nfs::aio::writer::new_dir_handle_cache;
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::NfsLocation;
 
+mod entry;
+mod local_fs;
+
 pub mod local_to_nfs;
 pub mod nfs_to_local;
 pub mod nfs_to_nfs;

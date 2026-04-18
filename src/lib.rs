@@ -7,3 +7,6 @@ pub mod logging;
 
 #[cfg(feature = "nfs")]
 pub mod nfs;
+
+#[cfg(feature = "smb")]
+pub mod smb;

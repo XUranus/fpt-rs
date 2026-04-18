@@ -35,6 +35,11 @@ pub enum ScanError {
     /// NFS scan failure (feature-gated).
     #[cfg(feature = "nfs")]
     NfsScan(crate::frame::scanner_impls::NfsScanError),
+    /// SMB scan failure (feature-gated).
+    #[cfg(feature = "smb")]
+    SmbScan(crate::frame::scanner_impls::SmbScanError),
+    /// Transport exists in the location layer but is not wired yet.
+    Unsupported(String),
     /// Generic I/O error.
     Io(std::io::Error),
 }
@@ -45,6 +50,9 @@ impl std::fmt::Display for ScanError {
             ScanError::LocalScan(e)   => write!(f, "local scan: {e}"),
             #[cfg(feature = "nfs")]
             ScanError::NfsScan(e)     => write!(f, "NFS scan: {e}"),
+            #[cfg(feature = "smb")]
+            ScanError::SmbScan(e)     => write!(f, "SMB scan: {e}"),
+            ScanError::Unsupported(s) => write!(f, "unsupported: {s}"),
             ScanError::Io(e)          => write!(f, "I/O error: {e}"),
         }
     }
@@ -59,6 +67,16 @@ impl From<crate::frame::scanner_impls::LocalScanError> for ScanError {
 #[cfg(feature = "nfs")]
 impl From<crate::frame::scanner_impls::NfsScanError> for ScanError {
     fn from(e: crate::frame::scanner_impls::NfsScanError) -> Self { ScanError::NfsScan(e) }
+}
+
+#[cfg(feature = "smb")]
+impl From<crate::frame::scanner_impls::SmbScanError> for ScanError {
+    fn from(e: crate::frame::scanner_impls::SmbScanError) -> Self {
+        match e {
+            crate::frame::scanner_impls::SmbScanError::Unsupported(s) => ScanError::Unsupported(s),
+            other => ScanError::SmbScan(other),
+        }
+    }
 }
 
 impl From<crate::scanner::ScanError> for ScanError {
@@ -142,12 +160,28 @@ impl<'a> ScanJob<'a> {
         Ok(scanner.scan()?)
     }
 
+    /// Run the scan via an [`SmbFileScanner`] (currently connectivity check + unsupported marker).
+    #[cfg(feature = "smb")]
+    pub fn run_smb(&self) -> Result<ScanStats, ScanError> {
+        use crate::frame::scanner_impls::SmbFileScanner;
+
+        let smb_loc = self.source
+            .smb_location()
+            .expect("run_smb called on non-SMB source")
+            .clone();
+
+        let scanner = SmbFileScanner::new(smb_loc, self.scanner_config());
+        Ok(scanner.scan()?)
+    }
+
     /// Run the scan, automatically choosing the implementation based on [`DataLocation`].
     pub fn run(&self) -> Result<ScanStats, ScanError> {
         match self.source {
             DataLocation::Local(_) => self.run_local(),
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(_)   => self.run_nfs(),
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_)   => self.run_smb(),
         }
     }
 }

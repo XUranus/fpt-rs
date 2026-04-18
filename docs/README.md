@@ -9,8 +9,9 @@ Start here if you are new to the repository:
 1. [bifrost.md](bifrost.md) for the current architecture overview.
 2. [fptcli.md](fptcli.md) for user-facing backup and restore usage.
 3. [nfs.md](nfs.md) if you are touching NFS-backed scan/backup paths.
-4. [aggregate.md](aggregate.md), [incremental.md](incremental.md), and [ctrlfile.md](ctrlfile.md) for format and pipeline details.
-5. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
+4. [smb.md](smb.md) for the SMB transport design and rollout plan.
+5. [aggregate.md](aggregate.md), [incremental.md](incremental.md), and [ctrlfile.md](ctrlfile.md) for format and pipeline details.
+6. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
 
 Reference docs:
 

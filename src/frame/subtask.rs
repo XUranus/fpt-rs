@@ -140,6 +140,10 @@ pub fn run_backup_subtask(
                 .run()
                 .map_err(map_backup_err)
         }
+        #[cfg(feature = "smb")]
+        _ if config.backup_source.is_smb() || config.backup_target.is_smb() => {
+            Err(SubtaskError::Engine("SMB backup is not implemented yet".to_string()))
+        }
         #[cfg(not(feature = "nfs"))]
         _ => {
             Err(SubtaskError::Engine("NFS support not compiled in".to_string()))
@@ -177,6 +181,10 @@ pub fn run_restore_subtask(
             NfsFileRestore::new(restore_cfg, nfs_loc.clone())
                 .run()
                 .map_err(map_restore_err)
+        }
+        #[cfg(feature = "smb")]
+        DataLocation::Smb(_) => {
+            Err(SubtaskError::Engine("SMB restore is not implemented yet".to_string()))
         }
     }
 }

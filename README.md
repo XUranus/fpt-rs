@@ -147,6 +147,7 @@ Important docs:
 - [docs/fptcli.md](docs/fptcli.md): `fptcli` backup and restore usage
 - [docs/bifrost.md](docs/bifrost.md): architecture overview
 - [docs/nfs.md](docs/nfs.md): NFS support and module layout
+- [docs/smb.md](docs/smb.md): SMB feasibility, design, and rollout plan
 - [docs/aggregate.md](docs/aggregate.md): aggregated backup format
 - [docs/ctrlfile.md](docs/ctrlfile.md): control-file formats
 - [docs/logging.md](docs/logging.md): routed logging behavior

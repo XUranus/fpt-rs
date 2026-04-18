@@ -31,6 +31,11 @@ pub enum PrereqError {
     /// Connectivity to the NFS server failed.
     #[cfg(feature = "nfs")]
     NfsConnect(crate::nfs::NfsError),
+    /// Connectivity or authentication to the SMB server failed.
+    #[cfg(feature = "smb")]
+    SmbConnect(String),
+    /// Transport exists but the required prereq flow is not wired yet.
+    Unsupported(String),
     /// Generic I/O failure.
     Io(io::Error),
 }
@@ -43,6 +48,9 @@ impl std::fmt::Display for PrereqError {
             PrereqError::InvalidCopyDir(s)  => write!(f, "invalid copy directory: {s}"),
             #[cfg(feature = "nfs")]
             PrereqError::NfsConnect(e)      => write!(f, "NFS connection failed: {e}"),
+            #[cfg(feature = "smb")]
+            PrereqError::SmbConnect(s)      => write!(f, "SMB connection failed: {s}"),
+            PrereqError::Unsupported(s)     => write!(f, "unsupported: {s}"),
             PrereqError::Io(e)              => write!(f, "I/O error: {e}"),
         }
     }
@@ -116,6 +124,22 @@ impl<'a> BackupPrereqJob<'a> {
                     Ok::<(), PrereqError>(())
                 })?;
             }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(ref loc) => {
+                log::info!("Prereq: verifying SMB source connectivity to {}", loc.display_string());
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(PrereqError::Io)?;
+                let loc_clone = loc.clone();
+                rt.block_on(async {
+                    loc_clone
+                        .verify_root_access()
+                        .await
+                        .map_err(PrereqError::SmbConnect)
+                })?;
+                log::info!("Prereq: SMB source reachable ({})", loc.display_string());
+            }
             _ => {}
         }
         log::info!("Prereq: all checks passed");
@@ -180,6 +204,12 @@ impl<'a> RestorePrereqJob<'a> {
                 // For now we return Ok; the actual NFS fetch will be
                 // implemented in the async variant run_async().
                 log::warn!("Prereq (restore): NFS copy source — M_REPO/C_REPO pre-fetch not yet implemented");
+            }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => {
+                return Err(PrereqError::Unsupported(
+                    "SMB restore copy-source staging is not implemented yet".to_string(),
+                ));
             }
         }
         log::info!("Prereq (restore): all checks passed");

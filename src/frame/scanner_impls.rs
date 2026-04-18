@@ -4,6 +4,7 @@
 //! |------|--------|----------|
 //! | [`LocalFileScanner`] | Local filesystem path | Blocking threads, `std::fs` |
 //! | [`NfsFileScanner`]   | NFSv3 export          | Tokio tasks, `nfs3_client` READDIRPLUS |
+//! | [`SmbFileScanner`]   | SMB share             | Tokio tasks, `smb-rs` async client |
 //!
 //! Both types write metadata and control files to the **local** M_REPO /
 //! C_REPO directories supplied in [`ScannerConfig`].
@@ -156,6 +157,8 @@ impl FileScanner for LocalFileScanner {
 
 #[cfg(feature = "nfs")]
 pub use nfs_impl::{NfsFileScanner, NfsScanError};
+#[cfg(feature = "smb")]
+pub use smb_impl::{SmbFileScanner, SmbScanError};
 
 #[cfg(feature = "nfs")]
 mod nfs_impl {
@@ -217,6 +220,67 @@ mod nfs_impl {
                 total_files:      tot_files,
                 total_dirs:       tot_dirs,
                 total_size_bytes: tot_size,
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SmbFileScanner
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "smb")]
+mod smb_impl {
+    use super::*;
+    use crate::smb::SmbLocation;
+
+    #[derive(Debug)]
+    pub enum SmbScanError {
+        Connect(String),
+        Runtime(std::io::Error),
+        Unsupported(String),
+    }
+
+    impl fmt::Display for SmbScanError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                SmbScanError::Connect(s) => write!(f, "SMB scan connection error: {s}"),
+                SmbScanError::Runtime(e) => write!(f, "runtime error: {e}"),
+                SmbScanError::Unsupported(s) => write!(f, "unsupported: {s}"),
+            }
+        }
+    }
+
+    impl std::error::Error for SmbScanError {}
+
+    /// Validates access to an SMB source and reserves the scanner slot for the
+    /// upcoming SMB traversal implementation.
+    pub struct SmbFileScanner {
+        pub source: SmbLocation,
+        pub config: ScannerConfig,
+    }
+
+    impl SmbFileScanner {
+        pub fn new(source: SmbLocation, config: ScannerConfig) -> Self {
+            Self { source, config }
+        }
+    }
+
+    impl FileScanner for SmbFileScanner {
+        type Error = SmbScanError;
+
+        fn scan(&self) -> Result<ScanStats, SmbScanError> {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(SmbScanError::Runtime)?;
+
+            let source = self.source.clone();
+            rt.block_on(async move {
+                source.verify_root_access().await.map_err(SmbScanError::Connect)?;
+                Err(SmbScanError::Unsupported(
+                    "SMB directory traversal is not implemented yet".to_string(),
+                ))
             })
         }
     }

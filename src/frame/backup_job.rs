@@ -152,6 +152,12 @@ impl BackupRestoreJob for FileBackupJob {
                     .map_err(BackupJobError::Io)?;
                 cfg.temp_config.temp_base.clone()
             }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => {
+                std::fs::create_dir_all(&cfg.temp_config.temp_base)
+                    .map_err(BackupJobError::Io)?;
+                cfg.temp_config.temp_base.clone()
+            }
         };
 
         let repo = RepoLayout::new(&repo_base, &cfg.format_tag, &cfg.type_tag);
