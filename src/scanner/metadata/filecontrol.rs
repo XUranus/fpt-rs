@@ -296,6 +296,40 @@ impl ControlFileReader {
 
         Ok(Self { freader, header })
     }
+
+    /// Splits the next control-file line into a fixed number of prefix fields and the raw tail.
+    ///
+    /// The tail keeps embedded spaces intact so filenames and paths can be reconstructed using
+    /// the explicit length field written by `ControlFileWriter`.
+    fn split_prefix_fields<'a>(line: &'a str, field_count: usize) -> io::Result<(Vec<&'a str>, &'a str)> {
+        let bytes = line.as_bytes();
+        let mut fields = Vec::with_capacity(field_count);
+        let mut idx = 0;
+
+        while fields.len() < field_count {
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            if idx >= bytes.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Invalid line format: insufficient tokens",
+                ));
+            }
+
+            let start = idx;
+            while idx < bytes.len() && !bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            fields.push(&line[start..idx]);
+        }
+
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+
+        Ok((fields, &line[idx..]))
+    }
 }
 
 impl Iterator for ControlFileReader {
@@ -313,14 +347,10 @@ impl Iterator for ControlFileReader {
                         continue; // Skip empty lines and comments
                     }
 
-                    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-                    // F requires at least 7 tokens, D requires at least 7
-                    if tokens.len() < 7 {
-                        return Some(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Invalid line format: insufficient tokens",
-                        )));
-                    }
+                    let (tokens, tail) = match Self::split_prefix_fields(trimmed, 6) {
+                        Ok(parts) => parts,
+                        Err(err) => return Some(Err(err)),
+                    };
 
                     let kind = tokens[0];
                     let diff_code = tokens[1];
@@ -343,8 +373,13 @@ impl Iterator for ControlFileReader {
                                     return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
                                 }
                             };
-                            let path = tokens[6];
-                            // Optional: validate path_len == path.len()
+                            if tail.len() < path_len as usize {
+                                return Some(Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "File path shorter than declared length",
+                                )));
+                            }
+                            let path = &tail[..path_len as usize];
                             let diff = match FileDiff::from_str(diff_code) {
                                 Some(d) => d,
                                 None => {
@@ -374,7 +409,13 @@ impl Iterator for ControlFileReader {
                                     return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
                                 }
                             };
-                            let path = tokens[6];
+                            if tail.len() < path_len as usize {
+                                return Some(Err(io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "Directory path shorter than declared length",
+                                )));
+                            }
+                            let path = &tail[..path_len as usize];
                             let diff = match DirDiff::from_str(diff_code) {
                                 Some(d) => d,
                                 None => {
@@ -401,5 +442,52 @@ impl Iterator for ControlFileReader {
                 Err(e) => return Some(Err(e)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn control_file_reader_preserves_spaces_in_paths() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("bifrost_ctrl_{unique}.txt"));
+
+        let mut writer = ControlFileWriter::new(&path).unwrap();
+        writer.write_dir(&DirControlEntry {
+            path: "/tmp/source dir".to_string(),
+            diff: DirDiff::MetaModified,
+            meta_fid: 1,
+            meta_offset: 2,
+            files_count: 3,
+        }).unwrap();
+        writer.write_file(&FileControlEntry {
+            name: "file with spaces.txt".to_string(),
+            diff: FileDiff::New,
+            meta_fid: 4,
+            meta_offset: 5,
+        }).unwrap();
+        writer.finish().unwrap();
+
+        let entries: Vec<_> = ControlFileReader::open(&path)
+            .unwrap()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+
+        assert!(matches!(
+            &entries[0],
+            ControlEntry::Dir(DirControlEntry { path, .. }) if path == "/tmp/source dir"
+        ));
+        assert!(matches!(
+            &entries[1],
+            ControlEntry::File(FileControlEntry { name, .. }) if name == "file with spaces.txt"
+        ));
+
+        let _ = std::fs::remove_file(path);
     }
 }

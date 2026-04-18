@@ -200,10 +200,19 @@ impl IncrementalDiff {
                     }
                 }
                 DiffItem::Both(prev_entry, curr_entry) => {
-                    if prev_entry.hash != curr_entry.hash {
-                        // Directory modified - diff its files
-                        stats.modified_dirs += 1;
-                        if let Ok(dmeta) = curr_meta_reader.get_dmeta(curr_entry.meta_loc) {
+                    if let Ok(dmeta) = curr_meta_reader.get_dmeta(curr_entry.meta_loc) {
+                        let file_diff = self.diff_directory_files(
+                            prev_entry,
+                            curr_entry,
+                            &dmeta.path,
+                            prev_meta_reader.as_ref(),
+                            &curr_meta_reader,
+                        )?;
+                        let dir_meta_changed = prev_entry.hash != curr_entry.hash
+                            || prev_entry.files_count != curr_entry.files_count;
+
+                        if dir_meta_changed || file_diff.has_changes() {
+                            stats.modified_dirs += 1;
                             let dctrl_entry = DirControlEntry {
                                 path: dmeta.path.clone(),
                                 diff: DirDiff::MetaModified,
@@ -212,18 +221,17 @@ impl IncrementalDiff {
                                 files_count: curr_entry.files_count,
                             };
                             copy_writer.write_dir(&dctrl_entry)?;
-                            
-                            // Diff files in this directory
-                            self.diff_directory_files(
-                                prev_entry,
-                                curr_entry,
-                                &dmeta.path,
-                                prev_meta_reader.as_ref(),
-                                &curr_meta_reader,
-                                &mut copy_writer,
-                                &mut delete_writer,
-                                &mut stats,
-                            )?;
+
+                            for entry in file_diff.file_entries {
+                                copy_writer.write_file(&entry)?;
+                            }
+                            for entry in file_diff.delete_entries {
+                                let _ = delete_writer.write_entry(&entry);
+                            }
+
+                            stats.new_files += file_diff.new_files;
+                            stats.modified_files += file_diff.modified_files;
+                            stats.deleted_files += file_diff.deleted_files;
                         }
                     }
                     // If unchanged, skip entirely
@@ -327,69 +335,61 @@ impl IncrementalDiff {
         prev_dir_entry: &DirCacheEntry,
         curr_dir_entry: &DirCacheEntry,
         dir_path: &str,
-        prev_meta_reader: Option<&MetaRepoReader>,
-        curr_meta_reader: &MetaRepoReader,
-        copy_writer: &mut ControlFileWriter,
-        delete_writer: &mut DeleteControlFileWriter,
-        stats: &mut DiffStats,
-    ) -> io::Result<()> {
+        _prev_meta_reader: Option<&MetaRepoReader>,
+        _curr_meta_reader: &MetaRepoReader,
+    ) -> io::Result<DirectoryFileDiff> {
         // Load previous files for this directory
         let prev_files = self.load_directory_files(prev_dir_entry, true);
         // Load current files for this directory
         let curr_files = self.load_directory_files(curr_dir_entry, false);
-        
-        // Perform heap-based diff on files
-        let file_diffs = Self::heap_diff(&prev_files, &curr_files, |e: &(FileCacheEntry, String)| e.0.id);
-        
-        for file_diff in file_diffs {
-            match file_diff {
-                DiffItem::LeftOnly((prev_entry, file_name)) => {
-                    // Deleted file
-                    stats.deleted_files += 1;
-                    let full_path = format!("{}/{}", dir_path, file_name);
-                    let delete_entry = DeleteEntry {
-                        entry_type: DeleteEntryType::File,
-                        path: full_path,
-                    };
-                    let _ = delete_writer.write_entry(&delete_entry);
-                }
-                DiffItem::RightOnly((curr_entry, file_name)) => {
-                    // New file
-                    stats.new_files += 1;
-                    let fctrl_entry = FileControlEntry {
-                        name: file_name,
-                        diff: FileDiff::New,
-                        meta_fid: curr_entry.meta_loc.0,
-                        meta_offset: curr_entry.meta_loc.1,
-                    };
-                    copy_writer.write_file(&fctrl_entry)?;
-                }
-                DiffItem::Both((prev_entry, _), (curr_entry, file_name)) => {
+
+        let mut diff = DirectoryFileDiff::default();
+
+        for (file_name, prev_entry) in &prev_files {
+            match curr_files.get(file_name) {
+                Some(curr_entry) => {
                     if prev_entry.hash != curr_entry.hash {
-                        // Modified file
-                        stats.modified_files += 1;
-                        let fctrl_entry = FileControlEntry {
-                            name: file_name,
+                        diff.modified_files += 1;
+                        diff.file_entries.push(FileControlEntry {
+                            name: file_name.clone(),
                             diff: FileDiff::DataModified,
                             meta_fid: curr_entry.meta_loc.0,
                             meta_offset: curr_entry.meta_loc.1,
-                        };
-                        copy_writer.write_file(&fctrl_entry)?;
+                        });
                     }
+                }
+                None => {
+                    diff.deleted_files += 1;
+                    diff.delete_entries.push(DeleteEntry {
+                        entry_type: DeleteEntryType::File,
+                        path: format!("{}/{}", dir_path, file_name),
+                    });
                 }
             }
         }
-        
-        Ok(())
+
+        for (file_name, curr_entry) in &curr_files {
+            if !prev_files.contains_key(file_name) {
+                diff.new_files += 1;
+                diff.file_entries.push(FileControlEntry {
+                    name: file_name.clone(),
+                    diff: FileDiff::New,
+                    meta_fid: curr_entry.meta_loc.0,
+                    meta_offset: curr_entry.meta_loc.1,
+                });
+            }
+        }
+
+        Ok(diff)
     }
 
-    /// Load files for a specific directory, returning (FileCacheEntry, file_name) pairs
+    /// Load files for a specific directory, keyed by file name.
     fn load_directory_files(
         &self,
         dir_entry: &DirCacheEntry,
         is_prev: bool,
-    ) -> Vec<(FileCacheEntry, String)> {
-        let mut result = Vec::new();
+    ) -> BTreeMap<String, FileCacheEntry> {
+        let mut result = BTreeMap::new();
         
         let meta_dir = if is_prev {
             self.prev_meta_dir.as_ref().map(|p| p.as_path()).unwrap_or(&self.curr_meta_dir)
@@ -413,13 +413,11 @@ impl IncrementalDiff {
             if let Ok(fcache_entry) = reader.read_object(start_idx + i) {
                 // Get the filename from metadata
                 if let Ok(fmeta) = meta_reader.get_fmeta(fcache_entry.meta_loc) {
-                    result.push((fcache_entry, fmeta.common.name));
+                    result.insert(fmeta.common.name, fcache_entry);
                 }
             }
         }
-        
-        // Sort by inode for heap diff
-        result.sort_by_key(|(e, _)| e.id);
+
         result
     }
 }
@@ -450,6 +448,21 @@ pub struct DiffStats {
     pub modified_files: u64,
     /// Number of deleted files
     pub deleted_files: u64,
+}
+
+#[derive(Debug, Default)]
+struct DirectoryFileDiff {
+    file_entries: Vec<FileControlEntry>,
+    delete_entries: Vec<DeleteEntry>,
+    new_files: u64,
+    modified_files: u64,
+    deleted_files: u64,
+}
+
+impl DirectoryFileDiff {
+    fn has_changes(&self) -> bool {
+        self.new_files > 0 || self.modified_files > 0 || self.deleted_files > 0
+    }
 }
 
 /// Generates incremental control files by comparing previous and current scans.
