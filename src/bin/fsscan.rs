@@ -6,7 +6,7 @@
 // This tool exercises the scanning phase in isolation (no backup/restore).
 // For the full integrated workflow, use `fptcli backup`.
 
-use std::{path::PathBuf, thread, time::Duration};
+use std::path::PathBuf;
 use clap::Parser;
 
 use bifrost::frame::{
@@ -130,6 +130,10 @@ struct Args {
     /// Log file path (append mode; logs also go to stdout)
     #[arg(long, value_name = "FILE")]
     log_file: Option<PathBuf>,
+
+    /// Scan entries and print summary stats only; skip metadata/cache/control-file generation.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    stats_only: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -149,7 +153,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scanner_config = ScannerConfig::new(args.ctrl_dir.clone(), args.meta_dir.clone())
         .worker_count(args.workers)
         .writer_count(args.writers)
-        .prev_meta_dir(args.prev_meta_dir.clone());
+        .prev_meta_dir(args.prev_meta_dir.clone())
+        .stats_only(args.stats_only);
 
     // ── NFS scan branch ───────────────────────────────────────────────────────
     #[cfg(feature = "nfs")]

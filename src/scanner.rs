@@ -185,7 +185,11 @@ impl Scanner {
 
         // Start worker threads
         let traversal_handles = bio::traversal::start_workers(&self.context, worker_count);
-        let writer_handles = engine::start_meta_writers(&self.context, writer_count, hardlink_index.clone());
+        let writer_handles = if self.context.scan_option.stats_only {
+            engine::start_stats_consumers(&self.context, writer_count.max(1))
+        } else {
+            engine::start_meta_writers(&self.context, writer_count, hardlink_index.clone())
+        };
 
         // Spawn termination/coordinator thread
         let terminate_indicator = Arc::new(AtomicBool::new(false));
@@ -212,22 +216,24 @@ impl Scanner {
                 }
             }
 
-            // Generate final control files
-            if let Err(e) = engine::generate_control_files(&scan_option.target_dir) {
-                error!("Failed to generate control files: {}", e);
-            }
+            if !scan_option.stats_only {
+                // Generate final control files
+                if let Err(e) = engine::generate_control_files(&scan_option.target_dir) {
+                    error!("Failed to generate control files: {}", e);
+                }
 
-            // Write hardlink control file if hardlink scanning was enabled
-            if scan_hardlinks {
-                if let Some(index) = hardlink_index_clone {
-                    if let Ok(idx) = index.lock() {
-                        let hardlink_ctrl_path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
-                        if let Err(e) = idx.write_to_file(&hardlink_ctrl_path) {
-                            error!("Failed to write hardlink control file: {}", e);
-                        } else {
-                            info!("Hardlink control file written to {:?}", hardlink_ctrl_path);
-                            info!("Found {} hardlink groups with {} total files", 
-                                idx.group_count(), idx.total_file_count());
+                // Write hardlink control file if hardlink scanning was enabled
+                if scan_hardlinks {
+                    if let Some(index) = hardlink_index_clone {
+                        if let Ok(idx) = index.lock() {
+                            let hardlink_ctrl_path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
+                            if let Err(e) = idx.write_to_file(&hardlink_ctrl_path) {
+                                error!("Failed to write hardlink control file: {}", e);
+                            } else {
+                                info!("Hardlink control file written to {:?}", hardlink_ctrl_path);
+                                info!("Found {} hardlink groups with {} total files", 
+                                    idx.group_count(), idx.total_file_count());
+                            }
                         }
                     }
                 }
@@ -296,7 +302,7 @@ pub async fn run_nfs_scan(
 ) -> Result<(u64, u64, u64), String> {
     use crate::nfs::NfsScanner;
     use crate::nfs::connection::NfsConnectionPool;
-    use crate::scanner::engine::{self, start_meta_writers};
+    use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
 
     // Build connection pool and obtain the root file handle.
     let pool = NfsConnectionPool::new(location).await
@@ -342,7 +348,11 @@ pub async fn run_nfs_scan(
     };
 
     // Start metadata writers (they drain output_queue synchronously).
-    let writer_handles = start_meta_writers(&context, writer_count, None);
+    let writer_handles = if scan_opt_arc.stats_only {
+        start_stats_consumers(&context, writer_count.max(1))
+    } else {
+        start_meta_writers(&context, writer_count, None)
+    };
 
     // Create an NfsScanner and a tokio mpsc channel.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
@@ -381,9 +391,11 @@ pub async fn run_nfs_scan(
         let _ = h.join();
     }
 
-    // Generate control files (copy.txt, hardlink.txt, etc.)
-    engine::generate_control_files(&scan_opt_arc.target_dir)
-        .map_err(|e| format!("generate_control_files failed: {e}"))?;
+    if !scan_opt_arc.stats_only {
+        // Generate control files (copy.txt, hardlink.txt, etc.)
+        engine::generate_control_files(&scan_opt_arc.target_dir)
+            .map_err(|e| format!("generate_control_files failed: {e}"))?;
+    }
 
     let snap = stats.snapshot();
     Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))

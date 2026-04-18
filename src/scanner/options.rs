@@ -46,6 +46,9 @@ pub struct ScanOption {
 
     /// Configuration for sharded control files.
     pub shard_option: ShardOption,
+
+    /// When true, only collect scan statistics and skip on-disk outputs.
+    pub stats_only: bool,
 }
 
 /// Output directory configuration.
@@ -204,6 +207,7 @@ impl Default for ScanOption {
                 spill_load_batch_size: 20_000,
             },
             shard_option: ShardOption::default(),
+            stats_only: false,
         }
     }
 }
@@ -352,6 +356,12 @@ impl ScanOption {
     /// Sets the file threshold for aggregation (files smaller than this are aggregated).
     pub fn aggregate_file_threshold(mut self, threshold: u64) -> Self {
         self.meta_option.aggregate_file_threshold = threshold;
+        self
+    }
+
+    /// Enables stats-only scanning.
+    pub fn stats_only(mut self, enabled: bool) -> Self {
+        self.stats_only = enabled;
         self
     }
 }

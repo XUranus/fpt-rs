@@ -60,6 +60,23 @@ pub fn start_meta_writers(
     writer_handles
 }
 
+pub fn start_stats_consumers(
+    context: &ScanWorkerContext,
+    consumer_count: usize,
+) -> Vec<thread::JoinHandle<()>> {
+    let mut consumer_handles = Vec::with_capacity(consumer_count);
+
+    for _ in 0..consumer_count {
+        let output_queue = Arc::clone(&context.output_queue);
+        let handle = std::thread::spawn(move || {
+            while output_queue.pop().is_some() {}
+        });
+        consumer_handles.push(handle);
+    }
+
+    consumer_handles
+}
+
 
 fn process_scan_result(
     dir_scan_result: DirBatchScanResult,

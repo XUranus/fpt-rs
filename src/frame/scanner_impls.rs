@@ -31,6 +31,8 @@ pub struct ScannerConfig {
     pub writer_count: usize,
     /// Previous metadata directory for incremental scanning.
     pub prev_meta_dir: Option<PathBuf>,
+    /// When true, only collect scan statistics and skip on-disk outputs.
+    pub stats_only: bool,
 }
 
 impl Default for ScannerConfig {
@@ -41,6 +43,7 @@ impl Default for ScannerConfig {
             worker_count:  4,
             writer_count:  1,
             prev_meta_dir: None,
+            stats_only: false,
         }
     }
 }
@@ -57,12 +60,14 @@ impl ScannerConfig {
     pub fn worker_count(mut self, n: usize) -> Self { self.worker_count = n; self }
     pub fn writer_count(mut self, n: usize) -> Self { self.writer_count = n; self }
     pub fn prev_meta_dir(mut self, p: Option<PathBuf>) -> Self { self.prev_meta_dir = p; self }
+    pub fn stats_only(mut self, enabled: bool) -> Self { self.stats_only = enabled; self }
 
     /// Build a [`ScanOption`] from this config.
     pub(crate) fn to_scan_option(&self) -> ScanOption {
         let mut opt = ScanOption::new(self.ctrl_dir.clone(), self.meta_dir.clone())
             .worker_count(self.worker_count)
-            .writer_count(self.writer_count);
+            .writer_count(self.writer_count)
+            .stats_only(self.stats_only);
         if let Some(ref prev) = self.prev_meta_dir {
             opt = opt.prev_meta_dir(Some(prev.clone()));
         }
