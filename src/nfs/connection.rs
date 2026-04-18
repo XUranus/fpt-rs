@@ -35,7 +35,13 @@ pub struct NfsConnectionPool {
     connections: Vec<Mutex<PooledConnection>>,
     /// Round-robin index for `acquire()`.
     next: AtomicUsize,
-    /// Root file handle obtained at mount time (common to all connections).
+    /// Effective root file handle.
+    ///
+    /// If the `NfsLocation` has a non-empty `sub_path`, this is the handle of
+    /// the subdirectory resolved via LOOKUP RPCs from the export root.
+    /// Otherwise it is the export root handle itself.  All downstream code
+    /// (AIO pipelines, post-job uploads) should use this as the starting point
+    /// for path resolution.
     root_fh: nfs_fh3,
     /// Server-reported maximum read transfer size (from `fsinfo`).
     pub server_rtmax: u32,
@@ -102,10 +108,53 @@ impl NfsConnectionPool {
             }
         }
 
+        // Resolve sub_path: if the location specifies a sub_path, walk from
+        // the export root to obtain the effective root file handle.
+        let export_fh = root_fh_opt.unwrap();
+        let root_fh = if location.sub_path.is_empty() {
+            export_fh
+        } else {
+            let sub_path = location.sub_path.trim_start_matches('/');
+            log::info!(
+                "NFS connection pool: resolving sub_path '{}' from export root",
+                sub_path
+            );
+            let mut current_fh = export_fh;
+            for component in sub_path.split('/').filter(|s| !s.is_empty()) {
+                let mut guard = connections[0].lock().await;
+                let res = guard
+                    .lookup(&nfs3_client::nfs3_types::nfs3::LOOKUP3args {
+                        what: nfs3_client::nfs3_types::nfs3::diropargs3 {
+                            dir: current_fh.clone(),
+                            name: nfs3_client::nfs3_types::nfs3::filename3::from(component.as_bytes()),
+                        },
+                    })
+                    .await;
+                drop(guard);
+                match res {
+                    Ok(nfs3_client::nfs3_types::nfs3::Nfs3Result::Ok(ok)) => {
+                        log::debug!("NFS LOOKUP: {} → FH resolved", component);
+                        current_fh = ok.object;
+                    }
+                    Ok(nfs3_client::nfs3_types::nfs3::Nfs3Result::Err((stat, _))) => {
+                        return Err(NfsError::Nfs(
+                            stat,
+                            format!("LOOKUP '{}' in sub_path '{}'", component, sub_path),
+                        ));
+                    }
+                    Err(e) => {
+                        return Err(NfsError::Transport(e));
+                    }
+                }
+            }
+            log::info!("NFS connection pool: sub_path resolved successfully");
+            current_fh
+        };
+
         Ok(Arc::new(Self {
             connections,
             next: AtomicUsize::new(0),
-            root_fh: root_fh_opt.unwrap(),
+            root_fh,
             server_rtmax,
             server_wtmax,
         }))

@@ -48,11 +48,15 @@ const MAX_CONCURRENT_WRITE_TASKS: usize = 16;
 /// - Files: read from `source_dir_base` (local FS) then written to the NFS
 ///   target via [`nfs_write_task`].
 ///
+/// `target_prefix` is the path within the NFS target's sub_path where D_REPO
+/// data should be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
+///
 /// Blocks (via Tokio's async machinery) until all entries are processed.
 pub async fn run_aio_copy_pipeline(
     control_file: PathBuf,
     meta_dir: PathBuf,
     source_dir_base: PathBuf,
+    target_prefix: String,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
@@ -68,8 +72,10 @@ pub async fn run_aio_copy_pipeline(
     // Spawn entry producer in a blocking thread.
     let producer_handle = {
         let entry_tx = entry_tx.clone();
+        let source_dir_base2 = source_dir_base.clone();
+        let target_prefix2 = target_prefix.clone();
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, source_dir_base, entry_tx);
+            produce_entries(control_file, meta_dir, source_dir_base2, &target_prefix2, entry_tx);
         })
     };
     // Drop our clone so the channel closes when the producer is done.
@@ -204,6 +210,7 @@ fn produce_entries(
     control_file: PathBuf,
     meta_dir: PathBuf,
     source_dir_base: PathBuf,
+    target_prefix: &str,
     tx: mpsc::Sender<ControlBlockVarient>,
 ) {
     let meta_repo = match MetaRepoReader::new(meta_dir) {
@@ -222,6 +229,7 @@ fn produce_entries(
         }
     };
 
+    let target_prefix_buf = PathBuf::from(target_prefix);
     let mut dirpath = PathBuf::new();
 
     for entry_result in reader {
@@ -244,7 +252,8 @@ fn produce_entries(
                 };
                 let mut dcb = DirControlBlock::from(dmeta);
                 dcb.src_path = PathBuf::from(&dentry.path);
-                dcb.dst_path = make_relative(&source_dir_base, &dentry.path);
+                let rel_path = make_relative(&source_dir_base, &dentry.path);
+                dcb.dst_path = target_prefix_buf.join(&rel_path);
                 dirpath = PathBuf::from(dentry.path);
                 ControlBlockVarient::DirControlBlock(dcb)
             }
@@ -258,8 +267,9 @@ fn produce_entries(
                 };
                 let mut fcb = FileControlBlock::from(fmeta);
                 fcb.src_path = dirpath.join(&fentry.name);
-                fcb.dst_path =
-                    make_relative(&source_dir_base, &dirpath.to_string_lossy()).join(&fentry.name);
+                let rel_path = make_relative(&source_dir_base, &dirpath.to_string_lossy())
+                    .join(&fentry.name);
+                fcb.dst_path = target_prefix_buf.join(rel_path);
                 ControlBlockVarient::FileControlBlock(fcb)
             }
         };

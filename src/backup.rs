@@ -59,6 +59,13 @@ pub struct BackupOption {
     /// instead of the local filesystem.  Requires the `nfs` feature.
     #[cfg(feature = "nfs")]
     pub nfs_source: Option<crate::nfs::NfsLocation>,
+
+    /// Relative path within the NFS target where D_REPO data should be written.
+    /// e.g. `COPY_COMMON_FULL_xxx/D_REPO`. The NFS pool's root_fh points to the
+    /// target's configured sub_path; this prefix is prepended to each dst_path
+    /// to place files under the correct copy structure.
+    #[cfg(feature = "nfs")]
+    pub nfs_target_d_repo_path: Option<String>,
 }
 
 
@@ -114,6 +121,8 @@ impl BackupOption {
             nfs_target: None,
             #[cfg(feature = "nfs")]
             nfs_source: None,
+            #[cfg(feature = "nfs")]
+            nfs_target_d_repo_path: None,
         }
     }
     
@@ -176,6 +185,15 @@ impl BackupOption {
         self.nfs_source = Some(loc);
         self
     }
+
+    /// Set the relative path within the NFS target where D_REPO data should
+    /// be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
+    /// Requires the `nfs` Cargo feature.
+    #[cfg(feature = "nfs")]
+    pub fn nfs_target_d_repo_path(mut self, path: String) -> Self {
+        self.nfs_target_d_repo_path = Some(path);
+        self
+    }
 }
 
 struct SharedState {
@@ -220,9 +238,86 @@ impl BackupTask {
         let nfs_target = self.option.nfs_target.clone();
         #[cfg(feature = "nfs")]
         let nfs_source = self.option.nfs_source.clone();
+        #[cfg(feature = "nfs")]
+        let nfs_target_d_repo_path = self.option.nfs_target_d_repo_path.clone();
 
-        // When an NFS target is configured, run the entire pipeline on the
-        // AIO (async) path and skip the BIO pipeline.
+        // When both NFS source AND NFS target are configured, run the
+        // dual-pool NFS→NFS AIO pipeline.
+        #[cfg(feature = "nfs")]
+        if let (Some(ref src_loc), Some(ref tgt_loc)) = (&nfs_source, &nfs_target) {
+            let src_loc_clone = src_loc.clone();
+            let tgt_loc_clone = tgt_loc.clone();
+            let source_dir_base2 = source_dir_base.clone();
+            let meta_dir2 = meta_dir.clone();
+            let control_file2 = control_file.clone();
+            let stats2 = Arc::clone(&stats);
+            let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
+            let nfs_target_d_repo_path2 = nfs_target_d_repo_path.clone();
+
+            let terminate_handle = thread::spawn(move || {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("bifrost-nfs-to-nfs")
+                    .build()
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("NFS→NFS: failed to build async runtime: {e}");
+                        terminate_indicator_inner2.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                rt.block_on(async {
+                    let src_pool = match crate::nfs::connection::NfsConnectionPool::new(&src_loc_clone).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("NFS→NFS: failed to connect to source: {e}");
+                            return;
+                        }
+                    };
+
+                    let tgt_pool = match crate::nfs::connection::NfsConnectionPool::new(&tgt_loc_clone).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("NFS→NFS: failed to connect to target: {e}");
+                            return;
+                        }
+                    };
+
+                    info!(
+                        "NFS→NFS: connected source {} (rtmax={}), target {} (wtmax={})",
+                        src_loc_clone.host, src_pool.server_rtmax,
+                        tgt_loc_clone.host, tgt_pool.server_wtmax
+                    );
+
+                    crate::backup::aio::nfs_to_nfs::run_aio_nfs_to_nfs_pipeline(
+                        control_file2,
+                        meta_dir2,
+                        source_dir_base2,
+                        nfs_target_d_repo_path2.unwrap_or_default(),
+                        src_pool,
+                        tgt_pool,
+                        Arc::clone(&stats2),
+                    ).await;
+                });
+
+                terminate_indicator_inner2.store(true, Ordering::Relaxed);
+            });
+
+            return Ok(RunningBackup {
+                option: self.option,
+                stats,
+                hardlink_stats: None,
+                delete_stats: None,
+                mtime_stats: None,
+                terminate_handle,
+                terminate_indicator,
+            });
+        }
+
+        // When an NFS target is configured (local source → NFS target),
+        // run the entire pipeline on the AIO (async) path and skip the BIO pipeline.
         #[cfg(feature = "nfs")]
         if let Some(ref loc) = nfs_target {
             let loc_clone = loc.clone();
@@ -232,6 +327,7 @@ impl BackupTask {
             let control_file2 = control_file.clone();
             let stats2 = Arc::clone(&stats);
             let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
+            let nfs_target_d_repo_path2 = nfs_target_d_repo_path.clone();
 
             let terminate_handle = thread::spawn(move || {
                 // Build a dedicated Tokio runtime for the NFS async pipeline.
@@ -265,6 +361,7 @@ impl BackupTask {
                         control_file2,
                         meta_dir2,
                         source_dir_base2.clone(),
+                        nfs_target_d_repo_path2.unwrap_or_default(),
                         Arc::clone(&pool),
                         Arc::clone(&stats2),
                     ).await;
@@ -343,7 +440,6 @@ impl BackupTask {
             let control_file2 = control_file.clone();
             let target_dir_base2 = target_dir_base.clone();
             let source_dir_base2 = source_dir_base.clone();
-            let nfs_export2 = std::path::PathBuf::from(&loc.export);
             let stats2 = Arc::clone(&stats);
             let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
 
@@ -376,7 +472,6 @@ impl BackupTask {
                         control_file2,
                         meta_dir2,
                         source_dir_base2,
-                        nfs_export2,
                         target_dir_base2,
                         Arc::clone(&pool),
                         Arc::clone(&stats2),

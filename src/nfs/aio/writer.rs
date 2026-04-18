@@ -88,7 +88,14 @@ pub async fn nfs_write_task(
                 dir: dir_fh.clone(),
                 name: filename3::from(file_name.as_bytes()),
             },
-            how: createhow3::UNCHECKED(sattr3::default()),
+            how: createhow3::UNCHECKED(sattr3 {
+                mode: set_mode3::Some(0o644),
+                uid: set_uid3::None,
+                gid: set_gid3::None,
+                size: nfs3_client::nfs3_types::nfs3::set_size3::None,
+                atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
+                mtime: set_mtime::SET_TO_SERVER_TIME,
+            }),
         })
         .await
     };
@@ -289,7 +296,14 @@ async fn mkdir_one(
                 dir: parent_fh.clone(),
                 name: filename3::from(name.as_bytes()),
             },
-            attributes: sattr3::default(),
+            attributes: sattr3 {
+                mode: set_mode3::Some(0o755),
+                uid: set_uid3::None,
+                gid: set_gid3::None,
+                size: nfs3_client::nfs3_types::nfs3::set_size3::None,
+                atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
+                mtime: set_mtime::SET_TO_SERVER_TIME,
+            },
         })
         .await?;
 
@@ -419,6 +433,7 @@ pub async fn nfs_create_and_write(
         .unwrap_or_else(|| "unnamed".to_string());
 
     // CREATE (UNCHECKED — overwrite if it exists).
+    // File mode will be set via setattr after the write completes.
     log::debug!("NFS CREATE RPC: name={file_name} path={nfs_path:?}");
     let create_res = {
         let mut conn = pool.acquire().await;
@@ -427,7 +442,14 @@ pub async fn nfs_create_and_write(
                 dir: dir_fh.clone(),
                 name: filename3::from(file_name.as_bytes()),
             },
-            how: createhow3::UNCHECKED(sattr3::default()),
+            how: createhow3::UNCHECKED(sattr3 {
+                mode: set_mode3::Some(0o644),
+                uid: set_uid3::None,
+                gid: set_gid3::None,
+                size: nfs3_client::nfs3_types::nfs3::set_size3::None,
+                atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
+                mtime: set_mtime::SET_TO_SERVER_TIME,
+            }),
         })
         .await
         .map_err(NfsError::Transport)?

@@ -1,22 +1,23 @@
-//! AIO copy pipeline: NFS source → local filesystem target.
+//! AIO copy pipeline: NFS source → NFS target.
 //!
-//! [`run_aio_nfs_to_local_pipeline`] is the counterpart of
-//! [`super::copy::run_aio_copy_pipeline`] for the case where data lives on an
-//! NFS server and must be written to a local directory.
+//! [`run_aio_nfs_to_nfs_pipeline`] reads data from an NFS source server
+//! and writes it directly to an NFS target server, bypassing local staging
+//! for D_REPO data.  M_REPO and C_REPO are still written locally during
+//! the scan phase and uploaded in the post-job phase.
 //!
 //! ## Concurrency model
 //!
 //! - An entry producer runs inside `spawn_blocking` (synchronous I/O).
-//! - Each file read is a Tokio task using [`nfs_read_task`].
-//! - The local write is done inside `spawn_blocking` after the NFS read.
+//! - Each file is read from NFS source then written to NFS target via
+//!   separate Tokio tasks using independent connection pools.
 //! - A `Semaphore` caps concurrent in-flight read+write tasks.
 //!
 //! ```text
 //! control file (blocking) → entry_tx
 //!                                 │  mpsc::channel
 //!                                 ▼
-//!                    main loop: dirs → create_dir_all (blocking)
-//!                               files → spawn(nfs_read + local_write) ─► BackupStats
+//!                    main loop: dirs → mkdir on NFS target
+//!                               files → NFS read → NFS write ─► BackupStats
 //! ```
 
 use std::path::PathBuf;
@@ -26,39 +27,50 @@ use std::sync::atomic::Ordering;
 use log::{debug, error, info};
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState};
+use crate::backup::fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock};
 use crate::backup::stats::BackupStats;
 use crate::nfs::aio::reader::{FileHandleCache, new_file_handle_cache, nfs_read_task};
+use crate::nfs::aio::writer::{
+    DirHandleCache, NfsWriterResult, get_or_create_dir, new_dir_handle_cache, nfs_write_task,
+};
 use crate::nfs::connection::NfsConnectionPool;
+use crate::nfs::NfsLocation;
 use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 
-/// Maximum number of concurrent NFS-read+local-write tasks in flight.
+/// Maximum number of concurrent NFS read+write tasks in flight.
 const MAX_CONCURRENT_TASKS: usize = 16;
 
-/// Run the NFS-source → local-target copy pipeline.
+/// Run the NFS source → NFS target copy pipeline.
 ///
 /// Reads `control_file`, resolves metadata from `meta_dir`, and for each entry:
-/// - **Directories** — created on the local target via `std::fs::create_dir_all`.
-/// - **Files** — read from the NFS server via [`nfs_read_task`], then written
-///   locally via `std::fs`.
+/// - **Directories** — created on the NFS target via `get_or_create_dir`.
+/// - **Files** — read from the NFS source server via [`nfs_read_task`], then
+///   written to the NFS target server via [`nfs_write_task`].
 ///
 /// `nfs_source_base` is the full absolute path that control-file entries are
 /// recorded under (e.g. `/opt/dataset/ds2`).  It is stripped from entry paths
-/// to produce both relative local target paths and NFS-relative src paths
-/// (for LOOKUP RPCs from the pool's effective root_fh, which already points
-/// to the sub_path directory).
-pub async fn run_aio_nfs_to_local_pipeline(
+/// to produce relative paths used for NFS source reads.
+///
+/// `target_prefix` is the path within the NFS target's sub_path where D_REPO
+/// data should be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`). It is prepended
+/// to each `dst_path` so files are created under the correct copy structure.
+pub async fn run_aio_nfs_to_nfs_pipeline(
     control_file: PathBuf,
     meta_dir: PathBuf,
     nfs_source_base: PathBuf,
-    local_target_base: PathBuf,
-    pool: Arc<NfsConnectionPool>,
+    target_prefix: String,
+    source_pool: Arc<NfsConnectionPool>,
+    target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
-    let root_fh = pool.root_fh();
-    let read_chunk = pool.server_rtmax;
+    let src_root_fh = source_pool.root_fh();
+    let src_read_chunk = source_pool.server_rtmax;
 
-    let dir_cache: FileHandleCache = new_file_handle_cache();
+    let tgt_root_fh = target_pool.root_fh();
+    let tgt_write_chunk = target_pool.server_wtmax;
+
+    let src_dir_cache: FileHandleCache = new_file_handle_cache();
+    let tgt_dir_cache: DirHandleCache = new_dir_handle_cache();
     let task_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_TASKS));
 
     // Channel: blocking entry producer → async consumer.
@@ -67,8 +79,15 @@ pub async fn run_aio_nfs_to_local_pipeline(
     let producer_handle = {
         let entry_tx = entry_tx.clone();
         let nfs_source_base2 = nfs_source_base.clone();
+        let target_prefix2 = target_prefix.clone();
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, nfs_source_base2, entry_tx);
+            produce_entries(
+                control_file,
+                meta_dir,
+                nfs_source_base2,
+                &target_prefix2,
+                entry_tx,
+            );
         })
     };
     drop(entry_tx);
@@ -78,19 +97,21 @@ pub async fn run_aio_nfs_to_local_pipeline(
     while let Some(item) = entry_rx.recv().await {
         match item {
             ControlBlockVarient::DirControlBlock(dcb) => {
-                // Create the directory on the local target.
-                let rel_path = dcb.dst_path.clone();
-                let target_dir = local_target_base.join(&rel_path);
-                debug!("NFS→local: create_dir {:?}", target_dir);
+                // Create the directory on the NFS target.
+                let dir_path = dcb.dst_path.to_string_lossy().into_owned();
+                debug!("NFS→NFS: mkdir {dir_path}");
+                let pool2 = Arc::clone(&target_pool);
+                let dir_cache2 = Arc::clone(&tgt_dir_cache);
+                let root_fh2 = tgt_root_fh.clone();
                 let stats2 = Arc::clone(&stats);
 
-                let h = tokio::task::spawn_blocking(move || {
-                    match std::fs::create_dir_all(&target_dir) {
+                let h = tokio::spawn(async move {
+                    match get_or_create_dir(&pool2, &dir_cache2, &dir_path, &root_fh2).await {
                         Ok(_) => {
                             stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(e) => {
-                            error!("NFS→local: mkdir {:?}: {e}", target_dir);
+                            error!("NFS→NFS: mkdir {dir_path}: {e}");
                             stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -101,54 +122,64 @@ pub async fn run_aio_nfs_to_local_pipeline(
             ControlBlockVarient::FileControlBlock(fcb) => {
                 if fcb.meta.common.symlink_target_path.is_some() {
                     debug!(
-                        "NFS→local: skipping symlink {:?} (not yet implemented)",
+                        "NFS→NFS: skipping symlink {:?} (not yet implemented)",
                         fcb.src_path
                     );
                     continue;
                 }
 
-                let pool2 = Arc::clone(&pool);
-                let dir_cache2 = Arc::clone(&dir_cache);
-                let root_fh2 = root_fh.clone();
+                let src_pool2 = Arc::clone(&source_pool);
+                let src_dir_cache2 = Arc::clone(&src_dir_cache);
+                let src_root_fh2 = src_root_fh.clone();
+                let tgt_pool2 = Arc::clone(&target_pool);
+                let tgt_dir_cache2 = Arc::clone(&tgt_dir_cache);
+                let tgt_root_fh2 = tgt_root_fh.clone();
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
-                let local_target_base2 = local_target_base.clone();
+                let src_read_chunk2 = src_read_chunk;
+                let tgt_write_chunk2 = tgt_write_chunk;
 
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
 
-                    // Read file from NFS.
-                    let read_result =
-                        nfs_read_task(fcb, pool2, dir_cache2, root_fh2, read_chunk).await;
+                    // Read file from NFS source.
+                    let read_result = nfs_read_task(
+                        fcb,
+                        src_pool2,
+                        src_dir_cache2,
+                        src_root_fh2,
+                        src_read_chunk2,
+                    )
+                    .await;
 
                     use crate::nfs::aio::reader::NfsReaderResult;
                     match read_result {
                         NfsReaderResult::Read(fcb) => {
-                            let dst_path = local_target_base2.join(&fcb.dst_path);
-                            let buf = fcb.buffer.clone();
-                            let file_size = fcb.meta.size;
-                            debug!("NFS→local: read {:?} -> write {:?} size={}", fcb.src_path, dst_path, file_size);
-
-                            // Write to local filesystem in a blocking task.
-                            let write_result = tokio::task::spawn_blocking(move || {
-                                write_local_file(&dst_path, &buf)
-                            })
+                            // Write file to NFS target.
+                            match nfs_write_task(
+                                fcb,
+                                tgt_pool2,
+                                tgt_dir_cache2,
+                                tgt_root_fh2,
+                                tgt_write_chunk2,
+                            )
                             .await
-                            .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
-
-                            match write_result {
-                                Ok(()) => {
+                            {
+                                NfsWriterResult::Written(done_fcb) => {
                                     stats2.files_copied.fetch_add(1, Ordering::Relaxed);
-                                    stats2.bytes_copied.fetch_add(file_size, Ordering::Relaxed);
+                                    stats2.bytes_copied.fetch_add(
+                                        done_fcb.meta.size,
+                                        Ordering::Relaxed,
+                                    );
                                 }
-                                Err(msg) => {
-                                    error!("NFS→local: write {:?}: {msg}", fcb.dst_path);
+                                NfsWriterResult::Failed(done_fcb, msg) => {
+                                    error!("NFS→NFS: write {:?}: {msg}", done_fcb.dst_path);
                                     stats2.files_failed.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
                         }
                         NfsReaderResult::Failed(fcb, msg) => {
-                            error!("NFS→local: read {:?}: {msg}", fcb.src_path);
+                            error!("NFS→NFS: read {:?}: {msg}", fcb.src_path);
                             stats2.files_failed.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -159,17 +190,17 @@ pub async fn run_aio_nfs_to_local_pipeline(
     }
 
     if let Err(e) = producer_handle.await {
-        error!("NFS→local: entry producer panicked: {e}");
+        error!("NFS→NFS: entry producer panicked: {e}");
     }
 
     for h in task_handles {
         if let Err(e) = h.await {
-            error!("NFS→local: task panicked: {e}");
+            error!("NFS→NFS: task panicked: {e}");
         }
     }
 
     info!(
-        "NFS→local pipeline complete: {} files, {} bytes, {} dirs, {} failed",
+        "NFS→NFS pipeline complete: {} files, {} bytes, {} dirs, {} failed",
         stats.files_copied.load(Ordering::Relaxed),
         stats.bytes_copied.load(Ordering::Relaxed),
         stats.dirs_created.load(Ordering::Relaxed),
@@ -181,36 +212,23 @@ pub async fn run_aio_nfs_to_local_pipeline(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Write a byte buffer to a local file, creating parent directories as needed.
-fn write_local_file(path: &PathBuf, buf: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("mkdir {:?}: {e}", parent))?;
-    }
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| format!("create {:?}: {e}", path))?;
-    file.write_all(buf)
-        .map_err(|e| format!("write {:?}: {e}", path))?;
-    Ok(())
-}
-
 /// Produce `ControlBlockVarient` items from a control file and send them on `tx`.
-/// Mirrors `produce_entries` in `copy.rs` but uses `nfs_source_base` as the
-/// prefix for computing both relative target paths and NFS-relative src paths
-/// (for use with LOOKUP RPCs from the pool's effective root_fh).
+///
+/// For NFS→NFS:
+/// - `src_path` is made relative to `nfs_source_base` for NFS LOOKUP RPCs.
+/// - `dst_path` is the relative path prepended with `target_prefix` so files
+///   are written under the correct copy structure on the NFS target.
 fn produce_entries(
     control_file: PathBuf,
     meta_dir: PathBuf,
     nfs_source_base: PathBuf,
+    target_prefix: &str,
     tx: mpsc::Sender<ControlBlockVarient>,
 ) {
-    use crate::backup::fcb::DirControlBlock;
-
     let meta_repo = match MetaRepoReader::new(meta_dir) {
         Ok(r) => r,
         Err(e) => {
-            error!("NFS→local entry producer: cannot open meta repo: {e}");
+            error!("NFS→NFS entry producer: cannot open meta repo: {e}");
             return;
         }
     };
@@ -218,11 +236,12 @@ fn produce_entries(
     let reader = match ControlFileReader::open(control_file) {
         Ok(r) => r,
         Err(e) => {
-            error!("NFS→local entry producer: cannot open control file: {e}");
+            error!("NFS→NFS entry producer: cannot open control file: {e}");
             return;
         }
     };
 
+    let target_prefix_buf = PathBuf::from(target_prefix);
     let mut dirpath = PathBuf::new();
     let mut entry_count: usize = 0;
 
@@ -230,7 +249,7 @@ fn produce_entries(
         let entry = match entry_result {
             Ok(e) => e,
             Err(e) => {
-                error!("NFS→local entry producer: read error: {e}");
+                error!("NFS→NFS entry producer: read error: {e}");
                 continue;
             }
         };
@@ -240,13 +259,14 @@ fn produce_entries(
                 let dmeta = match meta_repo.get_dmeta((dentry.meta_fid, dentry.meta_offset)) {
                     Ok(m) => m,
                     Err(e) => {
-                        error!("NFS→local entry producer: get_dmeta error: {e}");
+                        error!("NFS→NFS entry producer: get_dmeta error: {e}");
                         continue;
                     }
                 };
                 let mut dcb = DirControlBlock::from(dmeta);
-                dcb.src_path = PathBuf::from(&dentry.path);
-                dcb.dst_path = make_relative(&nfs_source_base, &dentry.path);
+                let rel_path = make_relative(&nfs_source_base, &dentry.path);
+                dcb.src_path = rel_path.clone();
+                dcb.dst_path = target_prefix_buf.join(&rel_path);
                 dirpath = PathBuf::from(dentry.path);
                 ControlBlockVarient::DirControlBlock(dcb)
             }
@@ -254,20 +274,16 @@ fn produce_entries(
                 let fmeta = match meta_repo.get_fmeta((fentry.meta_fid, fentry.meta_offset)) {
                     Ok(m) => m,
                     Err(e) => {
-                        error!("NFS→local entry producer: get_fmeta error: {e}");
+                        error!("NFS→NFS entry producer: get_fmeta error: {e}");
                         continue;
                     }
                 };
                 let mut fcb = FileControlBlock::from(fmeta);
-                // src_path must be relative to the pool's effective root_fh for LOOKUP RPCs.
-                // Since root_fh now points to the sub_path directory (not the export root),
-                // we strip nfs_source_base (export/sub_path) instead of just nfs_export.
                 let abs_dir = PathBuf::from(&dirpath);
-                let nfs_rel_dir = make_relative(&nfs_source_base, &abs_dir.to_string_lossy());
-                fcb.src_path = nfs_rel_dir.join(&fentry.name);
-                // dst_path is relative to the local target base.
-                fcb.dst_path =
-                    make_relative(&nfs_source_base, &dirpath.to_string_lossy()).join(&fentry.name);
+                let rel_dir = make_relative(&nfs_source_base, &abs_dir.to_string_lossy());
+                fcb.src_path = rel_dir.join(&fentry.name);
+                // Prepend target_prefix so files go under COPY_.../D_REPO/
+                fcb.dst_path = target_prefix_buf.join(fcb.src_path.to_str().unwrap_or(""));
                 ControlBlockVarient::FileControlBlock(fcb)
             }
         };
@@ -278,7 +294,9 @@ fn produce_entries(
         entry_count += 1;
     }
 
-    info!("NFS→local entry producer: done, {entry_count} entries produced");
+    info!(
+        "NFS→NFS entry producer: done, {entry_count} entries produced"
+    );
 }
 
 /// Strip `base` prefix from `path` and return a relative `PathBuf`.

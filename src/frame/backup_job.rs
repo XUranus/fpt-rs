@@ -6,11 +6,13 @@
 //! 1. **Prerequisite** — verify connectivity, create local repo directories.
 //! 2. **Scan** — traverse the source via [`ScanJob`] (local or NFS).
 //! 3. **Subtasks** — run each control file through [`run_backup_subtask`],
-//!    which selects [`LocalFileBackup`] or [`NfsFileBackup`] at runtime.
+//!    which selects the appropriate [`FileBackup`] impl at runtime.
 //! 4. **Post-job** — write manifest; upload M_REPO + C_REPO to NFS if needed.
 //!
-//! M_REPO, C_REPO, and logs are **always** written to the local filesystem.
-//! Only D_REPO data differs: local target → BIO, NFS target → AIO.
+//! M_REPO and C_REPO are **always** written locally and uploaded to NFS in
+//! the post-job when the target is NFS.  D_REPO data is written directly
+//! by the AIO pipeline during the subtask phase for both local→NFS and
+//! NFS→NFS backups.
 
 use std::path::PathBuf;
 use std::thread;

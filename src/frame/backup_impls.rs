@@ -141,6 +141,8 @@ impl FileBackup for LocalFileBackup {
 pub use nfs_impl::NfsFileBackup;
 #[cfg(feature = "nfs")]
 pub use nfs_impl::NfsSourceFileBackup;
+#[cfg(feature = "nfs")]
+pub use nfs_impl::NfsSourceTargetFileBackup;
 
 #[cfg(feature = "nfs")]
 mod nfs_impl {
@@ -178,7 +180,8 @@ mod nfs_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
-            .nfs_target(self.nfs_target.clone());
+            .nfs_target(self.nfs_target.clone())
+            .nfs_target_d_repo_path(extract_d_repo_relative_path(&cfg.local_target_dir));
 
             run_backup_task(option)
         }
@@ -220,11 +223,79 @@ mod nfs_impl {
             run_backup_task(option)
         }
     }
+
+    /// Backs up data from an **NFS server** source to an **NFS server** target.
+    ///
+    /// Data is read from the NFS source and written directly to the NFS target
+    /// via dual AIO pipelines (no local staging for D_REPO).  M_REPO and C_REPO
+    /// are always local.
+    pub struct NfsSourceTargetFileBackup {
+        pub config:     BackupConfig,
+        pub nfs_source: NfsLocation,
+        pub nfs_target: NfsLocation,
+    }
+
+    impl NfsSourceTargetFileBackup {
+        pub fn new(config: BackupConfig, nfs_source: NfsLocation, nfs_target: NfsLocation) -> Self {
+            Self { config, nfs_source, nfs_target }
+        }
+    }
+
+    impl FileBackup for NfsSourceTargetFileBackup {
+        type Error = BackupTaskError;
+
+        fn run(&self) -> Result<TransferStats, BackupTaskError> {
+            let cfg = &self.config;
+            let option = BackupOption::new(
+                cfg.source_dir.clone(),
+                cfg.local_target_dir.clone(),
+                cfg.meta_dir.clone(),
+                cfg.ctrl_dir.clone(),
+                cfg.control_file.clone(),
+            )
+            .enable_hardlink_phase(cfg.enable_hardlink)
+            .enable_delete_phase(cfg.enable_delete)
+            .enable_mtime_phase(cfg.enable_mtime)
+            .aggregate_config(cfg.aggregate_config.clone())
+            .nfs_source(self.nfs_source.clone())
+            .nfs_target(self.nfs_target.clone())
+            .nfs_target_d_repo_path(extract_d_repo_relative_path(&cfg.local_target_dir));
+
+            run_backup_task(option)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Shared helper
 // ---------------------------------------------------------------------------
+
+/// Extract the D_REPO relative path from a local target directory.
+///
+/// Given a path like `/tmp/work/COPY_COMMON_FULL_xxx/D_REPO`, returns
+/// `COPY_COMMON_FULL_xxx/D_REPO`.
+fn extract_d_repo_relative_path(local_target_dir: &PathBuf) -> String {
+    // Walk up from the path to find the COPY_.../D_REPO portion.
+    // The structure is: <base>/COPY_{format}_{type}_{uuid}/D_REPO
+    // We want: COPY_{format}_{type}_{uuid}/D_REPO
+    let mut components: Vec<&str> = Vec::new();
+    let mut current: &std::path::Path = local_target_dir;
+
+    // Collect at most 2 components (D_REPO and COPY_...)
+    while let Some(parent) = current.parent() {
+        if let Some(name) = current.file_name().and_then(|n| n.to_str()) {
+            components.push(name);
+            if components.len() >= 2 {
+                break;
+            }
+        }
+        current = parent;
+    }
+
+    // Reverse to get COPY_.../D_REPO order
+    components.reverse();
+    components.join("/")
+}
 
 /// Start a `BackupTask`, poll until complete, return `TransferStats`.
 fn run_backup_task(option: BackupOption) -> Result<TransferStats, BackupTaskError> {

@@ -303,25 +303,18 @@ pub async fn run_nfs_scan(
         .map_err(|e| format!("NFS connect failed: {e}"))?;
 
     // Compute the absolute path and file handle for the scan root.
-    // If sub_path is set, navigate to it via LOOKUP RPCs.
-    let (root_fh, root_path) = if location.sub_path.is_empty() {
-        (pool.root_fh(), location.export.clone())
+    // NfsConnectionPool::new already resolves sub_path via LOOKUP RPCs,
+    // so pool.root_fh() points to the sub_path directory (or the export root
+    // if sub_path is empty).
+    let root_fh = pool.root_fh();
+    let root_path = if location.sub_path.is_empty() {
+        location.export.clone()
     } else {
-        let full_path = format!(
+        format!(
             "{}/{}",
             location.export.trim_end_matches('/'),
             location.sub_path.trim_start_matches('/')
-        );
-        // Walk only the sub_path components via LOOKUP from the export root fh.
-        // resolve_path walks each component relative to root_fh, so we pass only
-        // sub_path (e.g. "ds2"), NOT the full absolute path.
-        let export_fh = pool.root_fh();
-        let sub_fh = crate::nfs::aio::reader::resolve_path(
-            &pool, &crate::nfs::aio::reader::new_file_handle_cache(),
-            &location.sub_path, &export_fh,
-        ).await
-        .map_err(|e| format!("NFS sub_path navigation failed: {e}"))?;
-        (sub_fh, full_path)
+        )
     };
 
     // Create the shared output queue and statistics.

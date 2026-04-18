@@ -3,11 +3,11 @@
 //! After all subtasks have completed, the post-job is responsible for:
 //!
 //! **Backup post-job**
-//! - When the *target* is **local**: D\_REPO data is already in place (BIO
-//!   wrote it directly). Nothing extra to do for D\_REPO.
-//! - When the *target* is **NFS**: D\_REPO was written directly via the AIO
-//!   pipeline; only M\_REPO and C\_REPO need to be uploaded.
-//! - In both cases the `manifest.json` is written to the copy root.
+//! - D_REPO data is always written directly by the AIO pipeline during the
+//!   subtask phase (both for local→NFS and NFS→NFS). No D_REPO upload here.
+//! - M_REPO and C_REPO are always written locally and uploaded to NFS when
+//!   the target is NFS. These repos contain only a few small files.
+//! - The `manifest.json` is written to the copy root.
 //!
 //! **Restore post-job**
 //! - When the restore target is **local**: data files are already at the
@@ -17,10 +17,10 @@
 //!
 //! # NFS upload
 //!
-//! Uploading M\_REPO / C\_REPO to an NFS target is done with plain
-//! synchronous reads + NFS WRITE RPCs (inside a one-off Tokio runtime so
-//! we can re-use the `nfs3_client` API without making the whole post-job
-//! async from the caller's perspective).
+//! Uploading M_REPO / C_REPO to an NFS target is done with plain synchronous
+//! reads + NFS WRITE RPCs (inside a one-off Tokio runtime so we can re-use
+//! the `nfs3_client` API without making the whole post-job async from the
+//! caller's perspective).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -65,8 +65,9 @@ impl From<io::Error> for PostJobError {
 
 /// Post-job phase for backup.
 ///
-/// Writes the manifest and, when the target is remote (NFS), copies M\_REPO
-/// and C\_REPO to the target using NFS WRITE RPCs.
+/// Writes the manifest and, when the target is NFS, copies M_REPO and C_REPO
+/// to the target using NFS WRITE RPCs.  D_REPO is always written directly
+/// by the AIO pipeline during the subtask phase and is not uploaded here.
 pub struct BackupPostJob<'a> {
     /// The target location for the *copy* (not the data source).
     pub target: &'a DataLocation,
@@ -119,7 +120,7 @@ impl<'a> BackupPostJob<'a> {
         std::fs::write(&manifest_path, &manifest_json)?;
         log::debug!("Post-job: manifest written ({} bytes)", manifest_json.len());
 
-        // 2. If target is NFS, upload M_REPO and C_REPO.
+        // 2. If target is NFS, upload D_REPO, M_REPO and C_REPO.
         match self.target {
             DataLocation::Local(target_root) => {
                 // For a local target the copy root IS the local staging area,
@@ -130,7 +131,10 @@ impl<'a> BackupPostJob<'a> {
             }
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(nfs_loc) => {
-                // Upload M_REPO and C_REPO (D_REPO was handled by AIO pipeline).
+                // Upload M_REPO and C_REPO to NFS.
+                // D_REPO is written directly by the AIO pipeline during the
+                // subtask phase (both local→NFS and NFS→NFS), so we don't
+                // upload it here.
                 log::info!("Post-job: uploading M_REPO and C_REPO to NFS target");
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()

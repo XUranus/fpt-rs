@@ -90,12 +90,12 @@ pub type SubtaskStats = TransferStats;
 /// Execute a single backup subtask using the appropriate [`FileBackup`] impl.
 ///
 /// Dispatch table:
-/// | Source  | Target  | Implementation         |
-/// |---------|---------|------------------------|
+/// | Source  | Target  | Implementation                  |
+/// |---------|---------|---------------------------------|
 /// | Local   | Local   | [`LocalFileBackup`] (BIO) |
 /// | Local   | NFS     | [`NfsFileBackup`] (AIO, local read → NFS write) |
 /// | NFS     | Local   | [`NfsSourceFileBackup`] (AIO, NFS read → local write) |
-/// | NFS     | NFS     | Not yet supported (falls back to NFS source) |
+/// | NFS     | NFS     | [`NfsSourceTargetFileBackup`] (AIO, direct NFS→NFS copy) |
 pub fn run_backup_subtask(
     config: &SubtaskConfig,
     repo:   &RepoLayout,
@@ -133,10 +133,10 @@ pub fn run_backup_subtask(
                 .map_err(map_backup_err)
         }
         #[cfg(feature = "nfs")]
-        (DataLocation::Nfs(nfs_source), DataLocation::Nfs(_nfs_target)) => {
-            // NFS→NFS: use NFS source pipeline for now (write to local D_REPO).
-            use crate::frame::backup_impls::NfsSourceFileBackup;
-            NfsSourceFileBackup::new(backup_cfg, nfs_source.clone())
+        (DataLocation::Nfs(nfs_source), DataLocation::Nfs(nfs_target)) => {
+            // NFS→NFS: direct copy via dual-pool AIO pipeline.
+            use crate::frame::backup_impls::NfsSourceTargetFileBackup;
+            NfsSourceTargetFileBackup::new(backup_cfg, nfs_source.clone(), nfs_target.clone())
                 .run()
                 .map_err(map_backup_err)
         }
