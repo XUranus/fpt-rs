@@ -1,11 +1,9 @@
-use std::{path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}, mpsc}, thread};
+use std::{path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}}, thread};
 use log::info;
 use crate::backup::{
-        bio::copy::{self, ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask},
-        bio::hardlink::{self, HardlinkStatsSnapshot},
-        bio::mtime::{self, MtimeStatsSnapshot},
-        bio::delete::{self, DeleteStatsSnapshot},
-        fcb::{ControlBlockVarient, FileControlBlock},
+        bio::hardlink::HardlinkStatsSnapshot,
+        bio::mtime::MtimeStatsSnapshot,
+        bio::delete::DeleteStatsSnapshot,
         stats::{BackupStats, BackupStatsSnapshot},
         aggregate::AggregateConfig,
     };
@@ -227,11 +225,9 @@ impl BackupTask {
         let enable_hardlink_phase = self.option.enable_hardlink_phase;
         let enable_delete_phase = self.option.enable_delete_phase;
         let enable_mtime_phase = self.option.enable_mtime_phase;
-        let enable_aggregation = self.option.aggregate_config.enabled;
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
-        let terminate_indicator_inner = Arc::clone(&terminate_indicator);
 
         // Capture the NFS target location (if any) before moving `self.option`.
         #[cfg(feature = "nfs")]
@@ -245,396 +241,120 @@ impl BackupTask {
         // dual-pool NFS→NFS AIO pipeline.
         #[cfg(feature = "nfs")]
         if let (Some(ref src_loc), Some(ref tgt_loc)) = (&nfs_source, &nfs_target) {
-            let src_loc_clone = src_loc.clone();
-            let tgt_loc_clone = tgt_loc.clone();
-            let source_dir_base2 = source_dir_base.clone();
-            let meta_dir2 = meta_dir.clone();
-            let control_file2 = control_file.clone();
-            let stats2 = Arc::clone(&stats);
-            let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
-            let nfs_target_d_repo_path2 = nfs_target_d_repo_path.clone();
+            let terminate_handle = crate::backup::aio::spawn_nfs_to_nfs_backup(
+                src_loc.clone(),
+                tgt_loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                nfs_target_d_repo_path.clone().unwrap_or_default(),
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
 
-            let terminate_handle = thread::spawn(move || {
-                let rt = match tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("bifrost-nfs-to-nfs")
-                    .build()
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("NFS→NFS: failed to build async runtime: {e}");
-                        terminate_indicator_inner2.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                };
-
-                rt.block_on(async {
-                    let src_pool = match crate::nfs::connection::NfsConnectionPool::new(&src_loc_clone).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("NFS→NFS: failed to connect to source: {e}");
-                            return;
-                        }
-                    };
-
-                    let tgt_pool = match crate::nfs::connection::NfsConnectionPool::new(&tgt_loc_clone).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("NFS→NFS: failed to connect to target: {e}");
-                            return;
-                        }
-                    };
-
-                    info!(
-                        "NFS→NFS: connected source {} (rtmax={}), target {} (wtmax={})",
-                        src_loc_clone.host, src_pool.server_rtmax,
-                        tgt_loc_clone.host, tgt_pool.server_wtmax
-                    );
-
-                    crate::backup::aio::nfs_to_nfs::run_aio_nfs_to_nfs_pipeline(
-                        control_file2,
-                        meta_dir2,
-                        source_dir_base2,
-                        nfs_target_d_repo_path2.unwrap_or_default(),
-                        src_pool,
-                        tgt_pool,
-                        Arc::clone(&stats2),
-                    ).await;
-                });
-
-                terminate_indicator_inner2.store(true, Ordering::Relaxed);
-            });
-
-            return Ok(RunningBackup {
-                option: self.option,
+            return Ok(Self::running_backup(
+                self.option,
                 stats,
-                hardlink_stats: None,
-                delete_stats: None,
-                mtime_stats: None,
                 terminate_handle,
                 terminate_indicator,
-            });
+            ));
         }
 
         // When an NFS target is configured (local source → NFS target),
         // run the entire pipeline on the AIO (async) path and skip the BIO pipeline.
         #[cfg(feature = "nfs")]
         if let Some(ref loc) = nfs_target {
-            let loc_clone = loc.clone();
-            let ctrl_dir2 = ctrl_dir.clone();
-            let source_dir_base2 = source_dir_base.clone();
-            let meta_dir2 = meta_dir.clone();
-            let control_file2 = control_file.clone();
-            let stats2 = Arc::clone(&stats);
-            let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
-            let nfs_target_d_repo_path2 = nfs_target_d_repo_path.clone();
+            let terminate_handle = crate::backup::aio::spawn_local_to_nfs_backup(
+                loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                nfs_target_d_repo_path.clone().unwrap_or_default(),
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
 
-            let terminate_handle = thread::spawn(move || {
-                // Build a dedicated Tokio runtime for the NFS async pipeline.
-                let rt = match tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("bifrost-nfs")
-                    .build()
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("NFS: failed to build async runtime: {e}");
-                        terminate_indicator_inner2.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                };
-
-                rt.block_on(async {
-                    // Build the NFS connection pool.
-                    let pool = match crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("NFS: failed to connect: {e}");
-                            return;
-                        }
-                    };
-
-                    info!("NFS: connected to {} (wtmax={})", loc_clone.host, pool.server_wtmax);
-
-                    // --- Copy phase ---
-                    crate::backup::aio::copy::run_aio_copy_pipeline(
-                        control_file2,
-                        meta_dir2,
-                        source_dir_base2.clone(),
-                        nfs_target_d_repo_path2.unwrap_or_default(),
-                        Arc::clone(&pool),
-                        Arc::clone(&stats2),
-                    ).await;
-
-                    // Shared caches for the post-copy phases.
-                    let dir_cache = crate::nfs::aio::reader::new_file_handle_cache();
-                    let dir_cache2 = crate::nfs::aio::writer::new_dir_handle_cache();
-
-                    // --- Hardlink phase ---
-                    if enable_hardlink_phase {
-                        info!("NFS: starting hardlink phase...");
-                        let hl_stats = crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
-                            &ctrl_dir2,
-                            &source_dir_base2,
-                            Arc::clone(&pool),
-                            Arc::clone(&dir_cache),
-                            Arc::clone(&dir_cache2),
-                        ).await;
-                        info!(
-                            "NFS hardlink phase complete: {} created, {} failed",
-                            hl_stats.hardlinks_created, hl_stats.hardlinks_failed
-                        );
-                    }
-
-                    // --- Delete phase ---
-                    if enable_delete_phase {
-                        info!("NFS: starting delete phase...");
-                        let del_stats = crate::nfs::aio::delete::run_nfs_delete_phase(
-                            &ctrl_dir2,
-                            &source_dir_base2,
-                            Arc::clone(&pool),
-                            Arc::clone(&dir_cache),
-                        ).await;
-                        info!(
-                            "NFS delete phase complete: {} files, {} dirs deleted, {} failed",
-                            del_stats.files_deleted, del_stats.dirs_deleted, del_stats.entries_failed
-                        );
-                    }
-
-                    // --- Mtime phase ---
-                    if enable_mtime_phase {
-                        info!("NFS: starting mtime phase...");
-                        let mt_stats = crate::nfs::aio::mtime::run_nfs_mtime_phase(
-                            &ctrl_dir2,
-                            &source_dir_base2,
-                            Arc::clone(&pool),
-                            Arc::clone(&dir_cache),
-                        ).await;
-                        info!(
-                            "NFS mtime phase complete: {} dirs restored, {} failed",
-                            mt_stats.dirs_restored, mt_stats.dirs_failed
-                        );
-                    }
-                });
-
-                terminate_indicator_inner2.store(true, Ordering::Relaxed);
-            });
-
-            return Ok(RunningBackup {
-                option: self.option,
+            return Ok(Self::running_backup(
+                self.option,
                 stats,
-                hardlink_stats: None,
-                delete_stats: None,
-                mtime_stats: None,
                 terminate_handle,
                 terminate_indicator,
-            });
+            ));
         }
 
         // When an NFS source is configured (NFS→local backup), use the
         // nfs_to_local AIO pipeline for the copy phase.
         #[cfg(feature = "nfs")]
         if let Some(ref loc) = nfs_source {
-            let loc_clone = loc.clone();
-            let meta_dir2 = meta_dir.clone();
-            let control_file2 = control_file.clone();
-            let target_dir_base2 = target_dir_base.clone();
-            let source_dir_base2 = source_dir_base.clone();
-            let stats2 = Arc::clone(&stats);
-            let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
-
-            let terminate_handle = thread::spawn(move || {
-                let rt = match tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name("bifrost-nfs-src")
-                    .build()
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("NFS source: failed to build async runtime: {e}");
-                        terminate_indicator_inner2.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                };
-
-                rt.block_on(async {
-                    let pool = match crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            eprintln!("NFS source: failed to connect: {e}");
-                            return;
-                        }
-                    };
-
-                    info!("NFS source: connected to {} (rtmax={})", loc_clone.host, pool.server_rtmax);
-
-                    crate::backup::aio::nfs_to_local::run_aio_nfs_to_local_pipeline(
-                        control_file2,
-                        meta_dir2,
-                        source_dir_base2,
-                        target_dir_base2,
-                        Arc::clone(&pool),
-                        Arc::clone(&stats2),
-                    ).await;
-                });
-
-                terminate_indicator_inner2.store(true, Ordering::Relaxed);
-            });
-
-            return Ok(RunningBackup {
-                option: self.option,
-                stats,
-                hardlink_stats: None,
-                delete_stats: None,
-                mtime_stats: None,
-                terminate_handle,
-                terminate_indicator,
-            });
-        }
-
-        // Set up aggregate engine if enabled
-        let aggregate_engine = if enable_aggregation {
-            info!("Aggregation enabled: max_blob_size={}, file_threshold={}",
-                self.option.aggregate_config.max_blob_size,
-                self.option.aggregate_config.file_threshold);
-            
-            match aggregate_engine::AggregateBackupEngine::new(
-                self.option.aggregate_config,
+            let terminate_handle = crate::backup::aio::spawn_nfs_to_local_backup(
+                loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
                 source_dir_base.clone(),
                 target_dir_base.clone(),
-            ) {
-                Ok(engine) => Some(Arc::new(engine)),
-                Err(e) => {
-                    eprintln!("Failed to create aggregate engine: {}. Continuing without aggregation.", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let (fcb_reader_tx, fcb_reader_rx) = mpsc::channel::<ControlBlockVarient>();
-        let (fcb_writer_tx, fcb_writer_rx) = mpsc::channel::<ControlBlockVarient>();
-        let (reader_io_task_tx, reader_io_task_rx) = mpsc::channel::<ReaderBioTask>();
-        let (reader_io_result_tx, reader_io_result_rx) = mpsc::channel::<ReaderBioResult>();
-        let (writer_io_task_tx, writer_io_task_rx) = mpsc::channel::<WriterBioTask>();
-        let (writer_io_result_tx, writer_io_result_rx) = mpsc::channel::<WriterBioResult>();
-
-        let reader_io_task_rx = Arc::new(Mutex::new(reader_io_task_rx));
-        let writer_io_task_rx = Arc::new( Mutex::new(writer_io_task_rx));
-    
-        let entry_producer_handle = copy::spawn_file_entry_producer(control_file, meta_dir.clone(), source_dir_base.clone(), target_dir_base.clone(), fcb_reader_tx.clone(), Arc::clone(&shared_state));
-
-        // If aggregation is enabled, use the aggregate-aware reader
-        let reader_handle = if let Some(ref engine) = aggregate_engine {
-            copy::spawn_reader_with_aggregation(
-                fcb_reader_rx, 
-                reader_io_task_tx, 
-                fcb_writer_tx.clone(), 
-                Arc::clone(&shared_state),
-                Arc::clone(engine),
-                Arc::clone(&stats)
-            )
-        } else {
-            copy::spawn_reader(fcb_reader_rx, reader_io_task_tx, fcb_writer_tx.clone(), Arc::clone(&shared_state))
-        };
-        
-        let reader_io_pool = copy::spawn_reader_io_pool(Arc::clone(&reader_io_task_rx), reader_io_result_tx, worker_count, Arc::clone(&shared_state));
-        
-        // Use aggregation-aware result poller if aggregation is enabled
-        let reader_io_result_poll = if let Some(ref engine) = aggregate_engine {
-            copy::spawn_reader_io_result_poll_with_aggregation(
-                reader_io_result_rx, 
-                fcb_reader_tx, 
-                fcb_writer_tx.clone(), 
                 Arc::clone(&stats),
-                Arc::clone(engine)
-            )
-        } else {
-            copy::spawn_reader_io_result_poll(reader_io_result_rx, fcb_reader_tx, fcb_writer_tx.clone(), Arc::clone(&stats))
-        };
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
 
-        let writer_handle = copy::spawn_writer(fcb_writer_rx, writer_io_task_tx, Arc::clone(&shared_state), Arc::clone(&stats));
-        let writer_io_pool = copy::spawn_writer_io_pool(writer_io_task_rx, writer_io_result_tx, worker_count, Arc::clone(&shared_state));
-        let writer_io_result_poll = copy::spawn_writer_io_result_poll(writer_io_result_rx, fcb_writer_tx, Arc::clone(&stats));
+            return Ok(Self::running_backup(
+                self.option,
+                stats,
+                terminate_handle,
+                terminate_indicator,
+            ));
+        }
 
-        let terminate_handle = thread::spawn(move || {
-            entry_producer_handle.join().unwrap();
-            reader_handle.join().unwrap();
-            for handle in reader_io_pool {
-                handle.join().unwrap();
-            }
-            reader_io_result_poll.join().unwrap();
+        let terminate_handle = bio::spawn_local_backup_pipeline(
+            control_file,
+            source_dir_base,
+            target_dir_base,
+            meta_dir,
+            ctrl_dir,
+            worker_count,
+            self.option.aggregate_config,
+            enable_hardlink_phase,
+            enable_delete_phase,
+            enable_mtime_phase,
+            Arc::clone(&shared_state),
+            Arc::clone(&stats),
+            Arc::clone(&terminate_indicator),
+        );
 
-            writer_handle.join().unwrap();
-            for handle in writer_io_pool {
-                handle.join().unwrap();
-            }
-            writer_io_result_poll.join().unwrap();
-            
-            // Flush any remaining aggregate buffers
-            if let Some(ref engine) = aggregate_engine {
-                info!("Flushing aggregate buffers...");
-                // The aggregate stats are tracked within the engine
-                let agg_stats = engine.stats();
-                info!("Aggregate stats: {} blobs created, {} files aggregated", 
-                    agg_stats.blobs_created, agg_stats.files_aggregated);
-            }
-            
-            // Run hardlink phase if enabled
-            if enable_hardlink_phase {
-                info!("Starting hardlink phase...");
-                match hardlink::run_hardlink_phase(&ctrl_dir, &meta_dir, &source_dir_base, &target_dir_base) {
-                    Ok(hl_stats) => {
-                        info!("Hardlink phase completed: {} created, {} failed", 
-                            hl_stats.hardlinks_created, hl_stats.hardlinks_failed);
-                    }
-                    Err(e) => {
-                        eprintln!("Hardlink phase failed: {}", e);
-                    }
-                }
-            }
-            
-            // Run delete phase if enabled (between hardlink and mtime)
-            if enable_delete_phase {
-                info!("Starting delete phase...");
-                match delete::run_delete_phase(&ctrl_dir, &source_dir_base, &target_dir_base) {
-                    Ok(del_stats) => {
-                        info!("Delete phase completed: {} files deleted, {} dirs deleted", 
-                            del_stats.files_deleted, del_stats.dirs_deleted);
-                    }
-                    Err(e) => {
-                        eprintln!("Delete phase failed: {}", e);
-                    }
-                }
-            }
-            
-            // Run mtime phase if enabled
-            if enable_mtime_phase {
-                info!("Starting mtime phase...");
-                match mtime::run_mtime_phase(&ctrl_dir, &source_dir_base, &target_dir_base) {
-                    Ok(mt_stats) => {
-                        info!("Mtime phase completed: {} restored, {} failed", 
-                            mt_stats.dirs_restored, mt_stats.dirs_failed);
-                    }
-                    Err(e) => {
-                        eprintln!("Mtime phase failed: {}", e);
-                    }
-                }
-            }
-            
-            terminate_indicator_inner.store(true, Ordering::Relaxed);
-        });
+        Ok(Self::running_backup(
+            self.option,
+            stats,
+            terminate_handle,
+            terminate_indicator,
+        ))
+    }
 
-        Ok(RunningBackup{
-            option : self.option,
+    fn running_backup(
+        option: BackupOption,
+        stats: Arc<BackupStats>,
+        terminate_handle: thread::JoinHandle<()>,
+        terminate_indicator: Arc<AtomicBool>,
+    ) -> RunningBackup {
+        RunningBackup {
+            option,
             stats,
             hardlink_stats: None,
             delete_stats: None,
             mtime_stats: None,
             terminate_handle,
-            terminate_indicator
-        })
+            terminate_indicator,
+        }
     }
 
 }

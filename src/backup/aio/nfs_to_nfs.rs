@@ -34,7 +34,6 @@ use crate::nfs::aio::writer::{
     DirHandleCache, NfsWriterResult, get_or_create_dir, new_dir_handle_cache, nfs_write_task,
 };
 use crate::nfs::connection::NfsConnectionPool;
-use crate::nfs::NfsLocation;
 use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 
 /// Maximum number of concurrent NFS read+write tasks in flight.

@@ -33,6 +33,7 @@ pub struct NfsMtimeStats {
 pub async fn run_nfs_mtime_phase(
     ctrl_dir: &Path,
     source_dir_base: &Path,
+    target_prefix: &str,
     pool: Arc<NfsConnectionPool>,
     dir_cache: FileHandleCache,
 ) -> NfsMtimeStats {
@@ -67,7 +68,7 @@ pub async fn run_nfs_mtime_phase(
         };
 
         stats.dirs_processed += 1;
-        let nfs_path = strip_base(source_dir_base, &entry.path);
+        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, &entry.path);
 
         let dir_fh = match resolve_path(&pool, &dir_cache, &nfs_path, &root_fh).await {
             Ok(fh) => fh,
@@ -127,9 +128,15 @@ pub async fn run_nfs_mtime_phase(
     stats
 }
 
-fn strip_base(base: &Path, path: &str) -> String {
-    Path::new(path)
+fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
+    let rel = Path::new(path)
         .strip_prefix(base)
-        .map(|r| r.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path.to_string())
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(path));
+    let prefixed = if target_prefix.is_empty() {
+        rel
+    } else {
+        Path::new(target_prefix).join(rel)
+    };
+    prefixed.to_string_lossy().into_owned()
 }

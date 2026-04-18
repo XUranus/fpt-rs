@@ -1,6 +1,6 @@
-//! AIO copy pipeline for NFS backup/restore.
+//! AIO copy pipeline: local filesystem source → NFS target.
 //!
-//! [`run_aio_copy_pipeline`] is the async counterpart of the BIO
+//! [`run_local_to_nfs_copy_pipeline`] is the async counterpart of the BIO
 //! `spawn_file_entry_producer` + `spawn_reader` + `spawn_writer` thread
 //! pipeline.  It reads the same control file format, processes each FCB through
 //! a local-read → NFS-write path, and updates the same [`BackupStats`] counters.
@@ -31,7 +31,6 @@ use crate::backup::fcb::{
     ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState,
 };
 use crate::backup::stats::BackupStats;
-use crate::nfs::aio::reader::new_file_handle_cache;
 use crate::nfs::aio::writer::{
     DirHandleCache, NfsWriterResult, get_or_create_dir, new_dir_handle_cache, nfs_write_task,
 };
@@ -52,7 +51,7 @@ const MAX_CONCURRENT_WRITE_TASKS: usize = 16;
 /// data should be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
 ///
 /// Blocks (via Tokio's async machinery) until all entries are processed.
-pub async fn run_aio_copy_pipeline(
+pub async fn run_local_to_nfs_copy_pipeline(
     control_file: PathBuf,
     meta_dir: PathBuf,
     source_dir_base: PathBuf,

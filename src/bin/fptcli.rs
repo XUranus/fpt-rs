@@ -34,29 +34,15 @@ struct Cli {
 enum Commands {
     /// Create a backup copy
     Backup {
-        /// Source data directory to backup (local path).
-        /// Mutually exclusive with --data-nfs.
-        #[arg(long, short = 'd', value_name = "DIR",
-              conflicts_with = "data_nfs")]
-        data: Option<PathBuf>,
+        /// Source data path. Local paths look like `/opt/dataset`; NFS paths
+        /// look like `nfs://127.0.0.1/opt/dataset?sub=/ds1`.
+        #[arg(long, short = 'd', value_name = "PATH_OR_URL", required = true)]
+        data: String,
 
-        /// Source NFS export to backup (NFS URL, e.g. nfs://127.0.0.1/opt/dataset).
-        /// Mutually exclusive with --data.
-        #[arg(long, value_name = "NFS_URL",
-              conflicts_with = "data")]
-        data_nfs: Option<String>,
-
-        /// Target directory where the copy will be created (local path, creates COPY_* folder).
-        /// Mutually exclusive with --target-nfs.
-        #[arg(long, short = 't', value_name = "DIR",
-              conflicts_with = "target_nfs")]
-        target: Option<PathBuf>,
-
-        /// Target NFS export where the copy will be created (NFS URL, e.g. nfs://127.0.0.1/opt/backup).
-        /// Mutually exclusive with --target.
-        #[arg(long, value_name = "NFS_URL",
-              conflicts_with = "target")]
-        target_nfs: Option<String>,
+        /// Target path where the copy will be created. Local paths look like
+        /// `/backup`; NFS paths look like `nfs://127.0.0.1/opt/backup?sub=/out`.
+        #[arg(long, short = 't', value_name = "PATH_OR_URL", required = true)]
+        target: String,
 
         /// Backup format: common or aggregated
         #[arg(long, short = 'f', value_enum, default_value = "common")]
@@ -94,7 +80,7 @@ enum Commands {
         #[arg(long, short = 'w', default_value = "4", value_name = "COUNT")]
         workers: usize,
 
-        /// Number of parallel NFS connections (used when --data-nfs or --target-nfs is set)
+        /// Number of parallel NFS connections (used when source or target is an NFS URL)
         #[arg(long, default_value = "4", value_name = "COUNT")]
         nfs_connections: usize,
 
@@ -121,21 +107,13 @@ enum Commands {
 
     /// Restore from a backup copy
     Restore {
-        /// Source backup copy directory (containing manifest.json and D_REPO, M_REPO, C_REPO)
-        #[arg(long, short = 'c', required = true, value_name = "DIR")]
-        copy: PathBuf,
+        /// Source backup copy path (local or NFS URL).
+        #[arg(long, short = 'c', required = true, value_name = "PATH_OR_URL")]
+        copy: String,
 
-        /// Target restore directory (local path).
-        /// Mutually exclusive with --target-nfs.
-        #[arg(long, short = 't', value_name = "DIR",
-              conflicts_with = "target_nfs")]
-        target: Option<PathBuf>,
-
-        /// Target NFS export for restore (NFS URL, e.g. nfs://127.0.0.1/opt/restore).
-        /// Mutually exclusive with --target.
-        #[arg(long, value_name = "NFS_URL",
-              conflicts_with = "target")]
-        target_nfs: Option<String>,
+        /// Target restore path (local or NFS URL).
+        #[arg(long, short = 't', value_name = "PATH_OR_URL", required = true)]
+        target: String,
 
         /// Restore policy: replace, skip, or keep-newer
         #[arg(long, short = 'p', value_enum, default_value = "replace")]
@@ -157,7 +135,7 @@ enum Commands {
         #[arg(long, action = clap::ArgAction::SetTrue, default_value = "true")]
         mtime: bool,
 
-        /// Number of parallel NFS connections (used when --target-nfs is set)
+        /// Number of parallel NFS connections (used when copy or target is an NFS URL)
         #[arg(long, default_value = "4", value_name = "COUNT")]
         nfs_connections: usize,
 
@@ -227,12 +205,27 @@ fn parse_nfs_location(url: &str, connections: usize, uid: Option<u32>, gid: Opti
     Ok(DataLocation::nfs(loc))
 }
 
+fn parse_data_location(spec: &str, connections: usize, uid: Option<u32>, gid: Option<u32>) -> Result<DataLocation, Box<dyn std::error::Error>> {
+    if spec.starts_with("nfs://") {
+        #[cfg(feature = "nfs")]
+        {
+            parse_nfs_location(spec, connections, uid, gid)
+        }
+        #[cfg(not(feature = "nfs"))]
+        {
+            let _ = (connections, uid, gid);
+            Err("NFS support not compiled in. Rebuild with --features nfs".into())
+        }
+    } else {
+        let _ = (connections, uid, gid);
+        Ok(DataLocation::local(PathBuf::from(spec)))
+    }
+}
+
 /// Execute backup command using the `frame::BackupJob` orchestrator.
 fn cmd_backup(
-    data: Option<PathBuf>,
-    data_nfs: Option<String>,
-    target: Option<PathBuf>,
-    target_nfs: Option<String>,
+    data: String,
+    target: String,
     format: BackupFormat,
     incremental_base: Option<PathBuf>,
     jobs: usize,
@@ -249,38 +242,12 @@ fn cmd_backup(
     verbose: u8,
     log_file: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Validate: exactly one source and one target
-    if data.is_none() && data_nfs.is_none() {
-        return Err("Either --data (local path) or --data-nfs (NFS URL) must be provided".into());
-    }
-    if target.is_none() && target_nfs.is_none() {
-        return Err("Either --target (local path) or --target-nfs (NFS URL) must be provided".into());
-    }
     if incremental_base.is_some() && matches!(format, BackupFormat::Common) {
         return Err("Incremental backup is only supported with aggregated format".into());
     }
 
-    // Build source DataLocation
-    let source: DataLocation = if let Some(path) = data {
-        DataLocation::local(path)
-    } else {
-        let url = data_nfs.as_deref().unwrap();
-        #[cfg(feature = "nfs")]
-        { parse_nfs_location(url, nfs_connections, nfs_uid, nfs_gid)? }
-        #[cfg(not(feature = "nfs"))]
-        { return Err("NFS support not compiled in. Rebuild with --features nfs".into()); }
-    };
-
-    // Build target DataLocation
-    let target_loc: DataLocation = if let Some(path) = target {
-        DataLocation::local(path)
-    } else {
-        let url = target_nfs.as_deref().unwrap();
-        #[cfg(feature = "nfs")]
-        { parse_nfs_location(url, nfs_connections, nfs_uid, nfs_gid)? }
-        #[cfg(not(feature = "nfs"))]
-        { return Err("NFS support not compiled in. Rebuild with --features nfs".into()); }
-    };
+    let source = parse_data_location(&data, nfs_connections, nfs_uid, nfs_gid)?;
+    let target_loc = parse_data_location(&target, nfs_connections, nfs_uid, nfs_gid)?;
 
     let is_incremental = incremental_base.is_some();
     let type_tag = if is_incremental { "INC" } else { "FULL" }.to_string();
@@ -353,9 +320,8 @@ fn cmd_backup(
 
 /// Execute restore command using the `frame::RestoreJob` orchestrator.
 fn cmd_restore(
-    copy_path: PathBuf,
-    target: Option<PathBuf>,
-    target_nfs: Option<String>,
+    copy_path: String,
+    target: String,
     policy: RestorePolicy,
     jobs: usize,
     _workers: usize,
@@ -368,24 +334,10 @@ fn cmd_restore(
     verbose: u8,
     log_file: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if target.is_none() && target_nfs.is_none() {
-        return Err("Either --target (local path) or --target-nfs (NFS URL) must be provided".into());
-    }
+    let restore_target = parse_data_location(&target, nfs_connections, nfs_uid, nfs_gid)?;
+    let copy_source = parse_data_location(&copy_path, nfs_connections, nfs_uid, nfs_gid)?;
 
-    // Build restore target DataLocation
-    let restore_target: DataLocation = if let Some(path) = target {
-        DataLocation::local(path)
-    } else {
-        let url = target_nfs.as_deref().unwrap();
-        #[cfg(feature = "nfs")]
-        { parse_nfs_location(url, nfs_connections, nfs_uid, nfs_gid)? }
-        #[cfg(not(feature = "nfs"))]
-        { return Err("NFS support not compiled in. Rebuild with --features nfs".into()); }
-    };
-
-    let copy_source = DataLocation::local(copy_path.clone());
-
-    println!("Restoring from : {}", copy_path.display());
+    println!("Restoring from : {}", copy_path);
     println!("Restore target : {}", restore_target);
     println!("Policy         : {:?}", policy);
 
@@ -467,9 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Backup {
             data,
-            data_nfs,
             target,
-            target_nfs,
             format,
             incremental_base,
             jobs,
@@ -488,9 +438,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             cmd_backup(
                 data,
-                data_nfs,
                 target,
-                target_nfs,
                 format,
                 incremental_base,
                 jobs,
@@ -511,7 +459,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Restore {
             copy,
             target,
-            target_nfs,
             policy,
             jobs,
             workers,
@@ -527,7 +474,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             cmd_restore(
                 copy,
                 target,
-                target_nfs,
                 policy.into(),
                 jobs,
                 workers,

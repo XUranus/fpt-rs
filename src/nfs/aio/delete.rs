@@ -34,6 +34,7 @@ pub struct NfsDeleteStats {
 pub async fn run_nfs_delete_phase(
     ctrl_dir: &Path,
     source_dir_base: &Path,
+    target_prefix: &str,
     pool: Arc<NfsConnectionPool>,
     dir_cache: FileHandleCache,
 ) -> NfsDeleteStats {
@@ -79,7 +80,7 @@ pub async fn run_nfs_delete_phase(
 
     // Delete files.
     for path_str in &file_paths {
-        let nfs_path = strip_base(source_dir_base, path_str);
+        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, path_str);
         match delete_file(&pool, &dir_cache, &root_fh, &nfs_path).await {
             Ok(true) => {
                 debug!("NFS deleted file {nfs_path}");
@@ -98,7 +99,7 @@ pub async fn run_nfs_delete_phase(
     // Delete directories deepest-first (reverse sort).
     dir_paths.sort_by(|a, b| b.cmp(a));
     for path_str in &dir_paths {
-        let nfs_path = strip_base(source_dir_base, path_str);
+        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, path_str);
         match delete_dir(&pool, &dir_cache, &root_fh, &nfs_path).await {
             Ok(true) => {
                 debug!("NFS deleted dir {nfs_path}");
@@ -175,11 +176,17 @@ async fn delete_dir(
     }
 }
 
-fn strip_base(base: &Path, path: &str) -> String {
-    Path::new(path)
+fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
+    let rel = Path::new(path)
         .strip_prefix(base)
-        .map(|r| r.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path.to_string())
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(path));
+    let prefixed = if target_prefix.is_empty() {
+        rel
+    } else {
+        Path::new(target_prefix).join(rel)
+    };
+    prefixed.to_string_lossy().into_owned()
 }
 
 fn split_path(path: &str) -> (String, String) {

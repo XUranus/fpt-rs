@@ -1,7 +1,7 @@
 //! AIO copy pipeline: NFS source → local filesystem target.
 //!
 //! [`run_aio_nfs_to_local_pipeline`] is the counterpart of
-//! [`super::copy::run_aio_copy_pipeline`] for the case where data lives on an
+//! [`super::local_to_nfs::run_local_to_nfs_copy_pipeline`] for the case where data lives on an
 //! NFS server and must be written to a local directory.
 //!
 //! ## Concurrency model
@@ -26,7 +26,7 @@ use std::sync::atomic::Ordering;
 use log::{debug, error, info};
 use tokio::sync::{Semaphore, mpsc};
 
-use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState};
+use crate::backup::fcb::{ControlBlockVarient, FileControlBlock};
 use crate::backup::stats::BackupStats;
 use crate::nfs::aio::reader::{FileHandleCache, new_file_handle_cache, nfs_read_task};
 use crate::nfs::connection::NfsConnectionPool;
@@ -196,7 +196,7 @@ fn write_local_file(path: &PathBuf, buf: &[u8]) -> Result<(), String> {
 }
 
 /// Produce `ControlBlockVarient` items from a control file and send them on `tx`.
-/// Mirrors `produce_entries` in `copy.rs` but uses `nfs_source_base` as the
+/// Mirrors `produce_entries` in `local_to_nfs.rs` but uses `nfs_source_base` as the
 /// prefix for computing both relative target paths and NFS-relative src paths
 /// (for use with LOOKUP RPCs from the pool's effective root_fh).
 fn produce_entries(

@@ -18,7 +18,6 @@ use nfs3_client::nfs3_types::nfs3::{
 use crate::nfs::aio::reader::{FileHandleCache, resolve_path};
 use crate::nfs::aio::writer::{DirHandleCache, get_or_create_dir};
 use crate::nfs::connection::NfsConnectionPool;
-use crate::nfs::error::NfsError;
 use crate::scanner::metadata::{HardlinkControlFileReader, HardlinkEntry};
 
 /// Statistics for the NFS hardlink phase.
@@ -38,6 +37,7 @@ pub struct NfsHardlinkStats {
 pub async fn run_nfs_hardlink_phase(
     ctrl_dir: &Path,
     source_dir_base: &Path,
+    target_prefix: &str,
     pool: Arc<NfsConnectionPool>,
     src_cache: FileHandleCache,
     dst_dir_cache: DirHandleCache,
@@ -85,6 +85,7 @@ pub async fn run_nfs_hardlink_phase(
                         &dst_dir_cache,
                         &root_fh,
                         source_dir_base,
+                        target_prefix,
                         &current_files,
                         &mut stats,
                     )
@@ -107,6 +108,7 @@ pub async fn run_nfs_hardlink_phase(
             &dst_dir_cache,
             &root_fh,
             source_dir_base,
+            target_prefix,
             &current_files,
             &mut stats,
         )
@@ -128,6 +130,7 @@ async fn process_group(
     dst_dir_cache: &DirHandleCache,
     root_fh: &nfs_fh3,
     source_dir_base: &Path,
+    target_prefix: &str,
     files: &[String],
     stats: &mut NfsHardlinkStats,
 ) {
@@ -136,7 +139,7 @@ async fn process_group(
     }
 
     // The first file is the primary (already backed up in the copy phase).
-    let primary_nfs = strip_base(source_dir_base, &files[0]);
+    let primary_nfs = to_target_relative_path(source_dir_base, target_prefix, &files[0]);
     let primary_fh = match resolve_path(pool, src_cache, &primary_nfs, root_fh).await {
         Ok(fh) => fh,
         Err(e) => {
@@ -150,7 +153,7 @@ async fn process_group(
 
     // Create hard links for secondary files.
     for secondary_path in files.iter().skip(1) {
-        let nfs_path = strip_base(source_dir_base, secondary_path);
+        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, secondary_path);
         let (parent, link_name) = split_path(&nfs_path);
 
         let parent_fh = match get_or_create_dir(pool, dst_dir_cache, &parent, root_fh).await {
@@ -191,11 +194,17 @@ async fn process_group(
     }
 }
 
-fn strip_base(base: &Path, path: &str) -> String {
-    Path::new(path)
+fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
+    let rel = Path::new(path)
         .strip_prefix(base)
-        .map(|r| r.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| path.to_string())
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(path));
+    let prefixed = if target_prefix.is_empty() {
+        rel
+    } else {
+        Path::new(target_prefix).join(rel)
+    };
+    prefixed.to_string_lossy().into_owned()
 }
 
 fn split_path(path: &str) -> (String, String) {

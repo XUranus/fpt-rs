@@ -1,15 +1,442 @@
-//! Async I/O backup pipeline.
+//! Async backup execution for any NFS-involved data path.
 //!
-//! This module contains the AIO copy pipeline used when the backup target
-//! (or source) is an NFS server.  It mirrors the BIO pipeline structure but
-//! uses Tokio tasks and the NFS connection pool instead of blocking threads
-//! and `std::fs::File` handles.
+//! This module is the NFS counterpart to [`crate::backup::bio`]:
+//! - Direction-specific **copy** pipelines live under `backup/aio/`.
+//! - NFS target **post-copy phases** (hardlink/delete/mtime) reuse the RPC
+//!   helpers under [`crate::nfs::aio`].
+//! - Local target post-copy phases reuse the existing BIO phase handlers.
 //!
-//! Sub-modules:
-//! - [`copy`] — [`run_aio_copy_pipeline`]: local source → NFS target.
-//! - [`nfs_to_local`] — [`run_aio_nfs_to_local_pipeline`]: NFS source → local target.
-//! - [`nfs_to_nfs`] — [`run_aio_nfs_to_nfs_pipeline`]: NFS source → NFS target.
+//! The public entry points here are direction-level orchestrators so callers
+//! do not need to manually stitch together copy and post-copy phases.
 
-pub mod copy;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+
+use log::{error, info};
+
+use crate::backup::bio::{delete, hardlink, mtime};
+use crate::backup::stats::BackupStats;
+use crate::nfs::aio::reader::new_file_handle_cache;
+use crate::nfs::aio::writer::new_dir_handle_cache;
+use crate::nfs::connection::NfsConnectionPool;
+use crate::nfs::NfsLocation;
+
+pub mod local_to_nfs;
 pub mod nfs_to_local;
 pub mod nfs_to_nfs;
+
+pub fn spawn_local_to_nfs_backup(
+    nfs_target: NfsLocation,
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    stats: Arc<BackupStats>,
+    terminate_indicator: Arc<AtomicBool>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-local-to-nfs")
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("local→NFS: failed to build async runtime: {e}");
+                terminate_indicator.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let pool = match NfsConnectionPool::new(&nfs_target).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("local→NFS: failed to connect: {e}");
+                    return;
+                }
+            };
+
+            info!("local→NFS: connected to {} (wtmax={})", nfs_target.host, pool.server_wtmax);
+
+            run_local_to_nfs_backup(
+                control_file,
+                meta_dir,
+                ctrl_dir,
+                source_dir_base,
+                target_prefix,
+                pool,
+                stats,
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            ).await;
+        });
+
+        terminate_indicator.store(true, Ordering::Relaxed);
+    })
+}
+
+pub fn spawn_nfs_to_local_backup(
+    nfs_source: NfsLocation,
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_dir_base: PathBuf,
+    stats: Arc<BackupStats>,
+    terminate_indicator: Arc<AtomicBool>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-nfs-to-local")
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("NFS→local: failed to build async runtime: {e}");
+                terminate_indicator.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let pool = match NfsConnectionPool::new(&nfs_source).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("NFS→local: failed to connect: {e}");
+                    return;
+                }
+            };
+
+            info!("NFS→local: connected to {} (rtmax={})", nfs_source.host, pool.server_rtmax);
+
+            run_nfs_to_local_backup(
+                control_file,
+                meta_dir,
+                ctrl_dir,
+                source_dir_base,
+                target_dir_base,
+                pool,
+                stats,
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            ).await;
+        });
+
+        terminate_indicator.store(true, Ordering::Relaxed);
+    })
+}
+
+pub fn spawn_nfs_to_nfs_backup(
+    nfs_source: NfsLocation,
+    nfs_target: NfsLocation,
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    stats: Arc<BackupStats>,
+    terminate_indicator: Arc<AtomicBool>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-nfs-to-nfs")
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("NFS→NFS: failed to build async runtime: {e}");
+                terminate_indicator.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let src_pool = match NfsConnectionPool::new(&nfs_source).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("NFS→NFS: failed to connect to source: {e}");
+                    return;
+                }
+            };
+
+            let tgt_pool = match NfsConnectionPool::new(&nfs_target).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("NFS→NFS: failed to connect to target: {e}");
+                    return;
+                }
+            };
+
+            info!(
+                "NFS→NFS: connected source {} (rtmax={}), target {} (wtmax={})",
+                nfs_source.host, src_pool.server_rtmax,
+                nfs_target.host, tgt_pool.server_wtmax
+            );
+
+            run_nfs_to_nfs_backup(
+                control_file,
+                meta_dir,
+                ctrl_dir,
+                source_dir_base,
+                target_prefix,
+                src_pool,
+                tgt_pool,
+                stats,
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            ).await;
+        });
+
+        terminate_indicator.store(true, Ordering::Relaxed);
+    })
+}
+
+/// Run a full backup pipeline for local source → NFS target.
+pub async fn run_local_to_nfs_backup(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    pool: Arc<NfsConnectionPool>,
+    stats: Arc<BackupStats>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    local_to_nfs::run_local_to_nfs_copy_pipeline(
+        control_file,
+        meta_dir,
+        source_dir_base.clone(),
+        target_prefix.clone(),
+        Arc::clone(&pool),
+        Arc::clone(&stats),
+    )
+    .await;
+
+    let file_cache = new_file_handle_cache();
+    let dir_cache = new_dir_handle_cache();
+
+    run_nfs_target_phases(
+        &ctrl_dir,
+        &source_dir_base,
+        &target_prefix,
+        pool,
+        file_cache,
+        dir_cache,
+        enable_hardlink_phase,
+        enable_delete_phase,
+        enable_mtime_phase,
+    )
+    .await;
+}
+
+/// Run a full backup pipeline for NFS source → local target.
+pub async fn run_nfs_to_local_backup(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_dir_base: PathBuf,
+    pool: Arc<NfsConnectionPool>,
+    stats: Arc<BackupStats>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    nfs_to_local::run_aio_nfs_to_local_pipeline(
+        control_file,
+        meta_dir.clone(),
+        source_dir_base.clone(),
+        target_dir_base.clone(),
+        pool,
+        stats,
+    )
+    .await;
+
+    run_local_target_phases(
+        &ctrl_dir,
+        &meta_dir,
+        &source_dir_base,
+        &target_dir_base,
+        enable_hardlink_phase,
+        enable_delete_phase,
+        enable_mtime_phase,
+    );
+}
+
+/// Run a full backup pipeline for NFS source → NFS target.
+pub async fn run_nfs_to_nfs_backup(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    source_pool: Arc<NfsConnectionPool>,
+    target_pool: Arc<NfsConnectionPool>,
+    stats: Arc<BackupStats>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    nfs_to_nfs::run_aio_nfs_to_nfs_pipeline(
+        control_file,
+        meta_dir,
+        source_dir_base.clone(),
+        target_prefix.clone(),
+        source_pool,
+        Arc::clone(&target_pool),
+        stats,
+    )
+    .await;
+
+    let file_cache = new_file_handle_cache();
+    let dir_cache = new_dir_handle_cache();
+
+    run_nfs_target_phases(
+        &ctrl_dir,
+        &source_dir_base,
+        &target_prefix,
+        target_pool,
+        file_cache,
+        dir_cache,
+        enable_hardlink_phase,
+        enable_delete_phase,
+        enable_mtime_phase,
+    )
+    .await;
+}
+
+fn run_local_target_phases(
+    ctrl_dir: &PathBuf,
+    meta_dir: &PathBuf,
+    source_dir_base: &PathBuf,
+    target_dir_base: &PathBuf,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    if enable_hardlink_phase {
+        info!("Starting hardlink phase...");
+        match hardlink::run_hardlink_phase(ctrl_dir, meta_dir, source_dir_base, target_dir_base) {
+            Ok(hl_stats) => {
+                info!(
+                    "Hardlink phase completed: {} created, {} failed",
+                    hl_stats.hardlinks_created, hl_stats.hardlinks_failed
+                );
+            }
+            Err(e) => {
+                error!("Hardlink phase failed: {e}");
+            }
+        }
+    }
+
+    if enable_delete_phase {
+        info!("Starting delete phase...");
+        match delete::run_delete_phase(ctrl_dir, source_dir_base, target_dir_base) {
+            Ok(del_stats) => {
+                info!(
+                    "Delete phase completed: {} files deleted, {} dirs deleted",
+                    del_stats.files_deleted, del_stats.dirs_deleted
+                );
+            }
+            Err(e) => {
+                error!("Delete phase failed: {e}");
+            }
+        }
+    }
+
+    if enable_mtime_phase {
+        info!("Starting mtime phase...");
+        match mtime::run_mtime_phase(ctrl_dir, source_dir_base, target_dir_base) {
+            Ok(mt_stats) => {
+                info!(
+                    "Mtime phase completed: {} restored, {} failed",
+                    mt_stats.dirs_restored, mt_stats.dirs_failed
+                );
+            }
+            Err(e) => {
+                error!("Mtime phase failed: {e}");
+            }
+        }
+    }
+}
+
+async fn run_nfs_target_phases(
+    ctrl_dir: &PathBuf,
+    source_dir_base: &PathBuf,
+    target_prefix: &str,
+    pool: Arc<NfsConnectionPool>,
+    file_cache: crate::nfs::aio::reader::FileHandleCache,
+    dir_cache: crate::nfs::aio::writer::DirHandleCache,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    if enable_hardlink_phase {
+        info!("NFS: starting hardlink phase...");
+        let hl_stats = crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_prefix,
+            Arc::clone(&pool),
+            Arc::clone(&file_cache),
+            Arc::clone(&dir_cache),
+        )
+        .await;
+        info!(
+            "NFS hardlink phase complete: {} created, {} failed",
+            hl_stats.hardlinks_created, hl_stats.hardlinks_failed
+        );
+    }
+
+    if enable_delete_phase {
+        info!("NFS: starting delete phase...");
+        let del_stats = crate::nfs::aio::delete::run_nfs_delete_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_prefix,
+            Arc::clone(&pool),
+            Arc::clone(&file_cache),
+        )
+        .await;
+        info!(
+            "NFS delete phase complete: {} files, {} dirs deleted, {} failed",
+            del_stats.files_deleted, del_stats.dirs_deleted, del_stats.entries_failed
+        );
+    }
+
+    if enable_mtime_phase {
+        info!("NFS: starting mtime phase...");
+        let mt_stats = crate::nfs::aio::mtime::run_nfs_mtime_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_prefix,
+            pool,
+            file_cache,
+        )
+        .await;
+        info!(
+            "NFS mtime phase complete: {} dirs restored, {} failed",
+            mt_stats.dirs_restored, mt_stats.dirs_failed
+        );
+    }
+}
