@@ -7,19 +7,18 @@
 //! - Multi-subtask scheduling for large filesets
 //! - Task-specific logging
 
-use std::{
-    io::{self, Write},
-    path::{Path, PathBuf},
-    sync::{Arc, atomic::{AtomicUsize, Ordering}},
-    thread,
-    time::Duration,
-};
+use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
-use log::{info, error, LevelFilter};
-use uuid::Uuid;
 
-use bifrost::scanner::{Scanner, options::ScanOption};
-use bifrost::backup::{self, BackupOption, RestoreOption, RestorePolicy};
+use bifrost::backup::RestorePolicy;
+use bifrost::backup::aggregate::AggregateConfig;
+use bifrost::frame::{
+    BackupJob, BackupJobConfig,
+    RestoreJob, RestoreJobConfig,
+    DataLocation,
+    scan::ScanConfig,
+    traits::BackupRestoreJob,
+};
 
 /// File Protection Tool CLI
 #[derive(Parser, Debug)]
@@ -99,9 +98,25 @@ enum Commands {
         #[arg(long, default_value = "4", value_name = "COUNT")]
         nfs_connections: usize,
 
-        /// Verbose logging
+        /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
+        #[arg(long, value_name = "UID")]
+        nfs_uid: Option<u32>,
+
+        /// AUTH_UNIX gid to present to the NFS server (overrides gid= in URL)
+        #[arg(long, value_name = "GID")]
+        nfs_gid: Option<u32>,
+
+        /// Temporary working directory for staging metadata/control files (default: /tmp/bifrost)
+        #[arg(long, value_name = "DIR")]
+        temp_dir: Option<PathBuf>,
+
+        /// Verbose logging (-v=INFO, -vv=DEBUG, -vvv=TRACE)
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
+
+        /// Log file path (append mode; logs also go to stdout and C_REPO/logs/backup.log)
+        #[arg(long, value_name = "FILE")]
+        log_file: Option<PathBuf>,
     },
 
     /// Restore from a backup copy
@@ -146,9 +161,25 @@ enum Commands {
         #[arg(long, default_value = "4", value_name = "COUNT")]
         nfs_connections: usize,
 
-        /// Verbose logging
+        /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
+        #[arg(long, value_name = "UID")]
+        nfs_uid: Option<u32>,
+
+        /// AUTH_UNIX gid to present to the NFS server (overrides gid= in URL)
+        #[arg(long, value_name = "GID")]
+        nfs_gid: Option<u32>,
+
+        /// Temporary working directory for staging metadata/control files (default: /tmp/bifrost)
+        #[arg(long, value_name = "DIR")]
+        temp_dir: Option<PathBuf>,
+
+        /// Verbose logging (-v=INFO, -vv=DEBUG, -vvv=TRACE)
         #[arg(short, long, action = clap::ArgAction::Count)]
         verbose: u8,
+
+        /// Log file path (append mode; logs also go to stdout)
+        #[arg(long, value_name = "FILE")]
+        log_file: Option<PathBuf>,
     },
 }
 
@@ -175,425 +206,28 @@ impl From<RestorePolicyArg> for RestorePolicy {
     }
 }
 
-/// Copy type for naming
-#[derive(Debug, Clone, Copy)]
-enum CopyType {
-    Full,
-    Incremental,
-}
-
-impl CopyType {
-    fn as_str(&self) -> &'static str {
-        match self {
-            CopyType::Full => "FULL",
-            CopyType::Incremental => "INC",
-        }
-    }
-}
-
 /// Format abbreviation for naming
-fn format_abbr(format: BackupFormat) -> &'static str {
-    match format {
+fn format_abbr(fmt: BackupFormat) -> &'static str {
+    match fmt {
         BackupFormat::Common => "COMMON",
         BackupFormat::Aggregated => "AGGR",
     }
 }
 
-/// Backup Copy structure containing D_REPO, M_REPO, and C_REPO
-struct BackupCopy {
-    copy_path: PathBuf,
-    copy_uuid: String,
-    d_repo: PathBuf,  // Data repository
-    m_repo: PathBuf,  // Metadata repository
-    c_repo: PathBuf,  // Control/logs repository
-}
-
-impl BackupCopy {
-    fn new(copy_path: PathBuf, copy_uuid: String) -> Self {
-        let d_repo = copy_path.join("D_REPO");
-        let m_repo = copy_path.join("M_REPO");
-        let c_repo = copy_path.join("C_REPO");
-        Self { copy_path, copy_uuid, d_repo, m_repo, c_repo }
-    }
-
-    fn create_dirs(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.d_repo)?;
-        std::fs::create_dir_all(&self.m_repo)?;
-        std::fs::create_dir_all(&self.c_repo)?;
-        std::fs::create_dir_all(&self.c_repo.join("ctrl"))?;
-        std::fs::create_dir_all(&self.c_repo.join("logs"))?;
-        std::fs::create_dir_all(&self.c_repo.join("status"))?;
-        Ok(())
-    }
-
-    /// Create a status file for tracking task state
-    fn create_status_file(&self, name: &str) -> std::io::Result<()> {
-        let status_path = self.c_repo.join("status").join(name);
-        std::fs::File::create(status_path)?;
-        Ok(())
-    }
-
-    /// Remove a status file
-    fn remove_status_file(&self, name: &str) -> std::io::Result<()> {
-        let status_path = self.c_repo.join("status").join(name);
-        if status_path.exists() {
-            std::fs::remove_file(status_path)?;
-        }
-        Ok(())
-    }
-
-    /// Check if a status file exists
-    fn has_status_file(&self, name: &str) -> bool {
-        self.c_repo.join("status").join(name).exists()
-    }
-
-    fn exists(&self) -> bool {
-        self.copy_path.exists()
-    }
-
-    fn write_manifest(&self, manifest: &BackupManifest) -> std::io::Result<()> {
-        let manifest_path = self.copy_path.join("manifest.json");
-        let content = serde_json::to_string_pretty(manifest)?;
-        std::fs::write(manifest_path, content)
-    }
-
-    fn read_manifest(&self) -> Option<BackupManifest> {
-        let manifest_path = self.copy_path.join("manifest.json");
-        if manifest_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                if let Ok(manifest) = serde_json::from_str(&content) {
-                    return Some(manifest);
-                }
-            }
-        }
-        None
-    }
-
-    /// Get relative path from copy root for a given path
-    fn relative_path(&self, path: &Path) -> PathBuf {
-        path.strip_prefix(&self.copy_path)
-            .unwrap_or(path)
-            .to_path_buf()
-    }
-}
-
-/// Backup manifest stored at copy root
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct BackupManifest {
-    version: String,
-    copy_uuid: String,
-    copy_type: String,  // "full" or "incremental"
-    format: String,     // "common" or "aggregated"
-    source_path: String,
-    created_at: String,
-    base_copy: Option<String>,  // For incremental copies
-    subtasks: Vec<SubtaskInfo>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct SubtaskInfo {
-    id: String,
-    control_file: String,  // Relative path or filename only
-    log_file: String,      // Relative path or filename only
-}
-
-/// Task scheduler for managing concurrent subtasks
-struct TaskScheduler {
-    max_concurrent: usize,
-    running: Arc<AtomicUsize>,
-}
-
-impl TaskScheduler {
-    fn new(max_concurrent: usize) -> Self {
-        Self {
-            max_concurrent,
-            running: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    fn can_start_new(&self) -> bool {
-        self.running.load(Ordering::Relaxed) < self.max_concurrent
-    }
-
-    fn start_task(&self) {
-        self.running.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn complete_task(&self) {
-        self.running.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-/// Initialize global logging to stdout only (for early initialization)
-fn init_global_logger(verbose: u8) -> Result<(), fern::InitError> {
-    init_global_logger_with_file(verbose, None)
-}
-
-/// Initialize global logging.
-///
-/// When a log file is provided (i.e. during backup/restore), detailed output
-/// (INFO and above) is written exclusively to that file. Only WARN and ERROR
-/// messages are also echoed to stdout, to keep the terminal clean while
-/// progress and summary information is printed via explicit `println!` calls.
-///
-/// When no log file is given (e.g. for quick CLI sub-commands), all output
-/// goes to stdout at the requested verbosity level as before.
-fn init_global_logger_with_file(verbose: u8, log_file: Option<&Path>) -> Result<(), fern::InitError> {
-    let log_level = match verbose {
-        0 => LevelFilter::Info,
-        1 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
-    };
-
-    let formatter = fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{} [{}] {} - {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                record.level(),
-                record.target(),
-                message
-            ))
-        });
-
-    let dispatch = if let Some(log_path) = log_file {
-        // Backup/restore mode: detailed logs go to the file, only warnings and
-        // errors are printed to stdout so the terminal stays readable.
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-            .map_err(|e| fern::InitError::Io(e))?;
-
-        let stdout_dispatch = fern::Dispatch::new()
-            .level(LevelFilter::Warn)   // stdout: WARN and ERROR only
-            .chain(std::io::stdout());
-
-        let file_dispatch = fern::Dispatch::new()
-            .level(log_level)           // file: INFO/DEBUG/TRACE as requested
-            .chain(file);
-
-        formatter
-            .chain(stdout_dispatch)
-            .chain(file_dispatch)
-    } else {
-        // No log file: send everything to stdout (used by non-backup sub-commands).
-        formatter
-            .level(log_level)
-            .chain(std::io::stdout())
-    };
-
-    dispatch.apply()?;
-    Ok(())
-}
-
-/// Find all control files in a directory, sorted by priority
-/// For backup operations, we only process copy control files
-fn find_control_files(ctrl_dir: &Path) -> Vec<(PathBuf, ControlFilePriority)> {
-    let mut files = Vec::new();
-
-    // Only process copy control files for backup
-    // hardlink, delete, and mtime are handled separately by the backup engine phases
-    let copy_file = ctrl_dir.join("copy.txt");
-    if copy_file.exists() {
-        files.push((copy_file, ControlFilePriority::Copy));
-    }
-
-    // Also check for sharded control files
-    if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.starts_with("copy_") && name_str.ends_with(".txt") {
-                    files.push((entry.path(), ControlFilePriority::Copy));
-                }
-            }
-        }
-    }
-
-    files
-}
-
-/// Find all control files for restore operations
-/// Restore processes all 4 phases: copy, hardlink, delete, mtime
-fn find_restore_control_files(ctrl_dir: &Path) -> Vec<(PathBuf, ControlFilePriority)> {
-    let mut files = Vec::new();
-
-    // Process copy control files (highest priority)
-    let copy_file = ctrl_dir.join("copy.txt");
-    if copy_file.exists() {
-        files.push((copy_file, ControlFilePriority::Copy));
-    }
-
-    // Process hardlink control files
-    let hardlink_file = ctrl_dir.join("hardlink.txt");
-    if hardlink_file.exists() {
-        files.push((hardlink_file, ControlFilePriority::Hardlink));
-    }
-
-    // Process delete control files
-    let delete_file = ctrl_dir.join("delete.txt");
-    if delete_file.exists() {
-        files.push((delete_file, ControlFilePriority::Delete));
-    }
-
-    // Process mtime control files
-    let mtime_file = ctrl_dir.join("mtime.txt");
-    if mtime_file.exists() {
-        files.push((mtime_file, ControlFilePriority::Mtime));
-    }
-
-    // Also check for sharded control files
-    if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.ends_with(".txt") {
-                    if name_str.starts_with("copy_") {
-                        files.push((entry.path(), ControlFilePriority::Copy));
-                    } else if name_str.starts_with("hardlink_") {
-                        files.push((entry.path(), ControlFilePriority::Hardlink));
-                    } else if name_str.starts_with("delete_") {
-                        files.push((entry.path(), ControlFilePriority::Delete));
-                    } else if name_str.starts_with("mtime_") {
-                        files.push((entry.path(), ControlFilePriority::Mtime));
-                    }
-                }
-            }
-        }
-    }
-
-    // Sort by priority (Copy < Hardlink < Delete < Mtime)
-    files.sort_by_key(|(_, priority)| *priority);
-
-    files
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ControlFilePriority {
-    Copy = 0,
-    Hardlink = 1,
-    Delete = 2,
-    Mtime = 3,
-}
-
-/// Execute a single backup subtask
-fn execute_backup_subtask(
-    subtask_id: String,
-    source_dir: PathBuf,
-    copy: &BackupCopy,
-    control_file: PathBuf,
-    format: BackupFormat,
-    workers: usize,
-    enable_hardlink: bool,
-    enable_delete: bool,
-    enable_mtime: bool,
-    blob_size: u64,
-    threshold: u64,
-    log_file: PathBuf,
-    #[cfg(feature = "nfs")]
-    nfs_target: Option<bifrost::nfs::NfsLocation>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Detailed subtask output goes to the per-subtask log file only.
-    // The terminal receives only the final summary line printed by the caller.
-    let mut log_writer = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_file)?;
-
-    writeln!(log_writer, "[{}] Starting backup subtask", subtask_id)?;
-    writeln!(log_writer, "[{}] Control file: {}", subtask_id, control_file.display())?;
-    writeln!(log_writer, "[{}] Format: {:?}", subtask_id, format)?;
-
-    // Create backup option
-    // Meta files are in M_REPO/meta/, control files are in C_REPO/
-    let meta_dir = copy.m_repo.join("meta");
-    let ctrl_dir = copy.c_repo.clone();
-
-    let mut backup_option = BackupOption::new(
-        source_dir.clone(),
-        copy.d_repo.clone(),
-        meta_dir,
-        ctrl_dir,
-        control_file,
-    )
-    .enable_hardlink_phase(enable_hardlink)
-    .enable_delete_phase(enable_delete)
-    .enable_mtime_phase(enable_mtime);
-
-    // Configure aggregation for aggregated format
-    if matches!(format, BackupFormat::Aggregated) {
-        let max_blob_size = blob_size * 1024 * 1024; // Convert MB to bytes
-        let aggregate_threshold = threshold * 1024; // Convert KB to bytes
-        backup_option = backup_option
-            .enable_aggregation(true)
-            .aggregate_max_blob_size(max_blob_size)
-            .aggregate_file_threshold(aggregate_threshold);
-        writeln!(log_writer, "[{}] Aggregation enabled: blob_size={}MB, threshold={}KB", subtask_id, blob_size, threshold)?;
-    }
-
-    // Configure NFS target if provided
-    #[cfg(feature = "nfs")]
-    if let Some(loc) = nfs_target {
-        writeln!(log_writer, "[{}] NFS target: {}:{}", subtask_id, loc.host, loc.export)?;
-        backup_option = backup_option.nfs_target(loc);
-    }
-
-    let backup_task: backup::BackupTask = backup_option.into();
-
-    let running_backup = backup_task.start()?;
-
-    // Poll until done; write periodic progress to the log file only.
-    loop {
-        let stats = running_backup.stats();
-        writeln!(
-            log_writer,
-            "[{}] Progress: {} files ({} bytes), {} dirs, {} failed",
-            subtask_id,
-            stats.files_copied,
-            stats.bytes_copied,
-            stats.dirs_created,
-            stats.files_failed
-        )?;
-
-        if running_backup.complete() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(500));
-    }
-
-    let final_stats = running_backup.stats();
-    running_backup.wait()?;
-
-    writeln!(
-        log_writer,
-        "[{}] Subtask completed: {} files ({} MB), {} dirs",
-        subtask_id,
-        final_stats.files_copied,
-        final_stats.bytes_copied / (1024 * 1024),
-        final_stats.dirs_created
-    )?;
-
-    if final_stats.files_failed > 0 {
-        return Err(format!("Subtask {} failed: {} files failed", subtask_id, final_stats.files_failed).into());
-    }
-
-    Ok(())
-}
-
-/// Resolve and validate the NFS source/target URL.
-/// Returns `Ok(NfsLocation)` or an error string.
+/// Resolve and validate an NFS URL into a [`DataLocation`].
 #[cfg(feature = "nfs")]
-fn parse_nfs_url(url: &str, connections: usize) -> Result<bifrost::nfs::NfsLocation, Box<dyn std::error::Error>> {
-    let loc = bifrost::nfs::NfsLocation::from_url(url)
+fn parse_nfs_location(url: &str, connections: usize, uid: Option<u32>, gid: Option<u32>) -> Result<DataLocation, Box<dyn std::error::Error>> {
+    let mut loc = bifrost::nfs::NfsLocation::from_url(url)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
         .connection_count(connections);
-    Ok(loc)
+    // CLI flags override any uid/gid already set via URL query params
+    let final_uid = uid.unwrap_or(loc.uid);
+    let final_gid = gid.unwrap_or(loc.gid);
+    loc = loc.credentials(final_uid, final_gid);
+    Ok(DataLocation::nfs(loc))
 }
 
-/// Execute backup command
+/// Execute backup command using the `frame::BackupJob` orchestrator.
 fn cmd_backup(
     data: Option<PathBuf>,
     data_nfs: Option<String>,
@@ -609,653 +243,187 @@ fn cmd_backup(
     mtime: bool,
     workers: usize,
     nfs_connections: usize,
+    nfs_uid: Option<u32>,
+    nfs_gid: Option<u32>,
+    temp_dir: Option<PathBuf>,
     verbose: u8,
+    log_file: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Exactly one of --data / --data-nfs must be provided
+    // Validate: exactly one source and one target
     if data.is_none() && data_nfs.is_none() {
         return Err("Either --data (local path) or --data-nfs (NFS URL) must be provided".into());
     }
-
-    // Exactly one of --target / --target-nfs must be provided
     if target.is_none() && target_nfs.is_none() {
         return Err("Either --target (local path) or --target-nfs (NFS URL) must be provided".into());
     }
-
-    // Parse NFS source location if requested
-    #[cfg(feature = "nfs")]
-    let nfs_source: Option<bifrost::nfs::NfsLocation> = match &data_nfs {
-        Some(url) => Some(parse_nfs_url(url, nfs_connections)?),
-        None => None,
-    };
-    #[cfg(not(feature = "nfs"))]
-    if data_nfs.is_some() {
-        return Err("NFS source requested but binary was built without the `nfs` feature.\n\
-                    Rebuild with: cargo build --features nfs".into());
-    }
-
-    // Parse NFS target location if requested
-    #[cfg(feature = "nfs")]
-    let nfs_target_loc: Option<bifrost::nfs::NfsLocation> = match &target_nfs {
-        Some(url) => Some(parse_nfs_url(url, nfs_connections)?),
-        None => None,
-    };
-    #[cfg(not(feature = "nfs"))]
-    if target_nfs.is_some() {
-        return Err("NFS target requested but binary was built without the `nfs` feature.\n\
-                    Rebuild with: cargo build --features nfs".into());
-    }
-
-    // The local source path for scanning and the display string
-    // When source is NFS, scanning uses NfsScanner; we still need a PathBuf placeholder
-    // for BackupOption (source_dir_base is used to strip path prefixes from FCBs).
-    let source_display = data_nfs.as_deref().unwrap_or_else(|| {
-        data.as_ref().map(|p| p.to_str().unwrap_or("")).unwrap_or("")
-    });
-
-    // For a local source, the real source dir; for NFS source, a placeholder (unused in AIO path)
-    let source_dir: PathBuf = data.clone().unwrap_or_else(|| PathBuf::from("/"));
-
-    // Determine the local target root (for copy folder placement)
-    // When target is NFS, we still create a local temp directory for the copy structure
-    // (manifest, metadata, control files), but the actual data files go to NFS.
-    let local_target: PathBuf = target.clone().unwrap_or_else(|| {
-        // NFS target: store copy metadata under /tmp/bifrost_copies by default
-        PathBuf::from("/tmp/bifrost_copies")
-    });
-
-    // Validate format/incremental combination
     if incremental_base.is_some() && matches!(format, BackupFormat::Common) {
         return Err("Incremental backup is only supported with aggregated format".into());
     }
 
-    // Generate copy UUID
-    let copy_uuid = Uuid::new_v4().to_string();
-
-    // Determine copy type
-    let is_incremental = incremental_base.is_some();
-    let copy_type = if is_incremental { CopyType::Incremental } else { CopyType::Full };
-    let copy_type_str = copy_type.as_str();
-
-    // Build copy folder name: COPY_{format}_{type}_{uuid}
-    let copy_folder_name = format!("COPY_{}_{}_{}", format_abbr(format), copy_type_str, copy_uuid);
-    let copy_path = local_target.join(&copy_folder_name);
-
-    // Create backup copy structure
-    let copy = BackupCopy::new(copy_path.clone(), copy_uuid.clone());
-
-    println!("Creating {} backup copy at: {}", copy_type_str, copy_path.display());
-    println!("Source: {}", source_display);
-    println!("Format: {:?}", format);
-    println!("Copy UUID: {}", copy_uuid);
-
-    // Create directories
-    copy.create_dirs()?;
-
-    // Initialize global logger to write to both stdout and C_REPO/logs/backup.log
-    let main_log_path = copy.c_repo.join("logs").join("backup.log");
-    init_global_logger_with_file(verbose, Some(&main_log_path))?;
-    info!("Starting backup copy {}", copy_uuid);
-
-    // Create SCAN.RUNNING status file
-    copy.create_status_file(&format!("SCAN_{}.RUNNING", copy_uuid))?;
-
-    // Create scan log file (for scan-specific output, file only)
-    let scan_log_path = copy.c_repo.join("logs").join("scan.log");
-    let mut scan_log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&scan_log_path)?;
-
-    // Create temp scan directories within M_REPO
-    let scan_ctrl_dir = copy.c_repo.join("ctrl");
-    let scan_meta_dir = copy.m_repo.join("meta");
-    std::fs::create_dir_all(&scan_ctrl_dir)?;
-    std::fs::create_dir_all(&scan_meta_dir)?;
-
-    // Determine previous meta for incremental scan
-    let prev_meta_dir = if let Some(ref base) = incremental_base {
-        let base_copy = BackupCopy::new(base.clone(), String::new());
-        if !base_copy.exists() {
-            return Err(format!("Base copy does not exist: {}", base.display()).into());
-        }
-        Some(base_copy.m_repo.join("meta"))
+    // Build source DataLocation
+    let source: DataLocation = if let Some(path) = data {
+        DataLocation::local(path)
     } else {
-        None
-    };
-
-    // Step 1: Scan the source
-    writeln!(scan_log, "[SCAN] Starting scan for copy {}", copy_uuid)?;
-    writeln!(scan_log, "[SCAN] Source: {}", source_display)?;
-    println!("\n[1/3] Scanning source directory...");
-
-    #[cfg(feature = "nfs")]
-    if let Some(ref nfs_loc) = nfs_source {
-        // NFS source: run NfsScanner inside a Tokio runtime, feed results into
-        // the standard metadata writers.
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .thread_name("bifrost-nfs-scan")
-            .build()?;
-
-        let nfs_loc_clone = nfs_loc.clone();
-        let scan_option = ScanOption::new(scan_ctrl_dir.clone(), scan_meta_dir.clone())
-            .worker_count(workers)
-            .writer_count(1)
-            .prev_meta_dir(prev_meta_dir.clone());
-
-        let (tot_files, tot_dirs) = rt.block_on(
-            bifrost::scanner::run_nfs_scan(&nfs_loc_clone, scan_option)
-        ).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-
-        writeln!(scan_log, "[SCAN] NFS scan complete: {} files, {} dirs", tot_files, tot_dirs)?;
-        println!("  NFS scan complete: {} files, {} dirs", tot_files, tot_dirs);
-    }
-
-    #[cfg(feature = "nfs")]
-    if nfs_source.is_none() {
-        // Local source path
-        let scan_option = ScanOption::new(
-            scan_ctrl_dir.clone(),
-            scan_meta_dir.clone(),
-        )
-        .worker_count(workers)
-        .writer_count(1)
-        .prev_meta_dir(prev_meta_dir);
-
-        let mut scanner = Scanner::new(scan_option);
-        scanner.enqueue_path(source_dir.clone())?;
-
-        let running_scan = scanner.start()?;
-
-        loop {
-            let stats = running_scan.stats();
-            print!("\r  Files: {}, Dirs: {}, Size: {:.2} MB",
-                stats.tot_files, stats.tot_dirs, stats.tot_size as f64 / (1024.0 * 1024.0));
-            std::io::Write::flush(&mut std::io::stdout())?;
-
-            if running_scan.complete() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-        println!();
-
-        let scan_stats = running_scan.stats();
-        running_scan.wait();
-
-        writeln!(scan_log, "[SCAN] Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs)?;
-        println!("  Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs);
-    }
-
-    #[cfg(not(feature = "nfs"))]
-    {
-        let scan_option = ScanOption::new(
-            scan_ctrl_dir.clone(),
-            scan_meta_dir.clone(),
-        )
-        .worker_count(workers)
-        .writer_count(1)
-        .prev_meta_dir(prev_meta_dir);
-
-        let mut scanner = Scanner::new(scan_option);
-        scanner.enqueue_path(source_dir.clone())?;
-
-        let running_scan = scanner.start()?;
-
-        loop {
-            let stats = running_scan.stats();
-            print!("\r  Files: {}, Dirs: {}, Size: {:.2} MB",
-                stats.tot_files, stats.tot_dirs, stats.tot_size as f64 / (1024.0 * 1024.0));
-            std::io::Write::flush(&mut std::io::stdout())?;
-
-            if running_scan.complete() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-        println!();
-
-        let scan_stats = running_scan.stats();
-        running_scan.wait();
-
-        writeln!(scan_log, "[SCAN] Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs)?;
-        println!("  Scan complete: {} files, {} dirs", scan_stats.tot_files, scan_stats.tot_dirs);
-    }
-    
-    // Update scan status: remove RUNNING, create DONE
-    copy.remove_status_file(&format!("SCAN_{}.RUNNING", copy_uuid))?;
-    copy.create_status_file(&format!("SCAN_{}.DONE", copy_uuid))?;
-
-    // Step 2: Find control files and schedule backup subtasks
-    println!("\n[2/3] Scheduling backup subtasks...");
-    let control_files = find_control_files(&scan_ctrl_dir);
-    println!("  Found {} control files", control_files.len());
-
-    let scheduler = TaskScheduler::new(jobs);
-    let mut subtask_handles = Vec::new();
-    let mut subtask_infos = Vec::new();
-
-    for (ctrl_file, priority) in control_files {
-        // Each subtask gets its own UUID
-        let subtask_id = Uuid::new_v4().to_string();
-        
-        // Log file goes to C_REPO/logs/ with subtask UUID as filename
-        let log_file_name = format!("{}.log", subtask_id);
-        let log_file = copy.c_repo.join("logs").join(&log_file_name);
-
-        // Control file relative path (just the filename, stored in C_REPO/ctrl/)
-        let ctrl_file_name = ctrl_file.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown.txt".to_string());
-
-        let info = SubtaskInfo {
-            id: subtask_id.clone(),
-            control_file: format!("C_REPO/ctrl/{}", ctrl_file_name),
-            log_file: format!("C_REPO/logs/{}", log_file_name),
-        };
-        subtask_infos.push(info);
-
-        // Create SUBTASK_{uuid}.RUNNING status file
-        copy.create_status_file(&format!("SUBTASK_{}.RUNNING", subtask_id))?;
-
-        println!("  Subtask {}: {:?} -> {}", subtask_id, priority, ctrl_file.display());
-
-        // Wait if we've reached max concurrent tasks
-        while !scheduler.can_start_new() {
-            thread::sleep(Duration::from_millis(100));
-        }
-
-        scheduler.start_task();
-
-        let subtask_id_clone = subtask_id.clone();
-        let source_dir_clone = source_dir.clone();
-        let copy_d_repo = copy.d_repo.clone();
-        let copy_m_repo = copy.m_repo.clone();
-        let copy_c_repo = copy.c_repo.clone();
-        let copy_uuid_clone = copy_uuid.clone();
-        let ctrl_file_clone = ctrl_file.clone();
-        let format_clone = format;
-        let priority_clone = priority;
+        let url = data_nfs.as_deref().unwrap();
         #[cfg(feature = "nfs")]
-        let nfs_target_clone = nfs_target_loc.clone();
-
-        // Enable phases based on command-line flags and format
-        // For aggregated format, only copy phase is used (hardlink/delete/mtime are ignored)
-        // For common format, all phases can be enabled via flags
-        let is_aggregated = matches!(format_clone, BackupFormat::Aggregated);
-        let enable_hardlink_phase = hardlink && !is_aggregated;
-        let enable_delete_phase = delete && !is_aggregated;
-        let enable_mtime_phase = mtime && !is_aggregated;
-
-        if is_aggregated && (hardlink || delete || mtime) {
-            println!("[{}] Note: hardlink/delete/mtime phases are ignored for aggregated format", subtask_id_clone);
-        }
-
-        let handle = thread::spawn(move || {
-            // Reconstruct BackupCopy for this thread
-            let thread_copy_path = copy_d_repo.parent().unwrap().to_path_buf();
-            let thread_copy = BackupCopy::new(thread_copy_path, copy_uuid_clone);
-            
-            let result = execute_backup_subtask(
-                subtask_id_clone.clone(),
-                source_dir_clone,
-                &thread_copy,
-                ctrl_file_clone,
-                format_clone,
-                workers,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
-                blob_size,
-                threshold,
-                log_file,
-                #[cfg(feature = "nfs")]
-                nfs_target_clone,
-            );
-
-            let success = result.is_ok();
-            if let Err(ref e) = result {
-                eprintln!("[{}] Subtask failed: {}", subtask_id_clone, e);
-            }
-
-            // Update status files based on result
-            let _ = thread_copy.remove_status_file(&format!("SUBTASK_{}.RUNNING", subtask_id_clone));
-            if success {
-                let _ = thread_copy.create_status_file(&format!("SUBTASK_{}.DONE", subtask_id_clone));
-            } else {
-                let _ = thread_copy.create_status_file(&format!("SUBTASK_{}.FAILED", subtask_id_clone));
-            }
-
-            success
-        });
-
-        subtask_handles.push((subtask_id, handle));
-    }
-
-    // Wait for all subtasks to complete
-    println!("\n[3/3] Executing backup subtasks...");
-    let mut completed = 0;
-    let mut failed = 0;
-
-    for (subtask_id, handle) in subtask_handles {
-        match handle.join() {
-            Ok(true) => {
-                completed += 1;
-                println!("  ✓ Subtask {} completed", subtask_id);
-            }
-            Ok(false) => {
-                failed += 1;
-                println!("  ✗ Subtask {} failed", subtask_id);
-                // Create FAILED status file (in case thread didn't)
-                let _ = copy.create_status_file(&format!("SUBTASK_{}.FAILED", subtask_id));
-            }
-            Err(e) => {
-                failed += 1;
-                println!("  ✗ Subtask {} panicked: {:?}", subtask_id, e);
-                let _ = copy.create_status_file(&format!("SUBTASK_{}.FAILED", subtask_id));
-            }
-        }
-    }
-
-    // Step 4: Write manifest
-    let manifest = BackupManifest {
-        version: "1.0".to_string(),
-        copy_uuid: copy_uuid.clone(),
-        copy_type: copy_type_str.to_lowercase(),
-        format: format_to_string(format),
-        source_path: source_display.to_string(),
-        created_at: chrono::Local::now().to_rfc3339(),
-        base_copy: incremental_base.map(|p| p.to_string_lossy().to_string()),
-        subtasks: subtask_infos,
+        { parse_nfs_location(url, nfs_connections, nfs_uid, nfs_gid)? }
+        #[cfg(not(feature = "nfs"))]
+        { return Err("NFS support not compiled in. Rebuild with --features nfs".into()); }
     };
 
-    copy.write_manifest(&manifest)?;
+    // Build target DataLocation
+    let target_loc: DataLocation = if let Some(path) = target {
+        DataLocation::local(path)
+    } else {
+        let url = target_nfs.as_deref().unwrap();
+        #[cfg(feature = "nfs")]
+        { parse_nfs_location(url, nfs_connections, nfs_uid, nfs_gid)? }
+        #[cfg(not(feature = "nfs"))]
+        { return Err("NFS support not compiled in. Rebuild with --features nfs".into()); }
+    };
 
-    // Summary
+    let is_incremental = incremental_base.is_some();
+    let type_tag = if is_incremental { "INC" } else { "FULL" }.to_string();
+    let format_tag = format_abbr(format).to_string();
+
+    // Build aggregate config
+    let aggregate_config = if matches!(format, BackupFormat::Aggregated) {
+        AggregateConfig::enabled()
+            .max_blob_size(blob_size * 1024 * 1024)
+            .file_threshold(threshold * 1024)
+    } else {
+        AggregateConfig::default()
+    };
+
+    let scan_config = ScanConfig {
+        worker_count: workers,
+        writer_count: 1,
+        prev_meta_dir: None, // set by BackupJob for incremental
+    };
+
+    let config = BackupJobConfig {
+        source,
+        target: target_loc,
+        format_tag,
+        type_tag,
+        temp_config: match temp_dir {
+            Some(p) => bifrost::frame::repo::TempRepoConfig::new(p),
+            None => bifrost::frame::repo::TempRepoConfig::default(),
+        },
+        scan_config,
+        aggregate_config,
+        enable_hardlink: hardlink && !matches!(format, BackupFormat::Aggregated),
+        enable_delete:   delete   && !matches!(format, BackupFormat::Aggregated),
+        enable_mtime:    mtime    && !matches!(format, BackupFormat::Aggregated),
+        max_concurrent_subtasks: jobs,
+        incremental_base,
+        verbose,
+    };
+
+    println!("Starting {} {} backup...", config.format_tag, config.type_tag);
+    println!("Source : {}", config.source);
+    println!("Target : {}", config.target);
+
+    // Initialize logger.  BackupJob will add module→file routes after prereq.
+    bifrost::logging::init(verbose);
+    if let Some(ref p) = log_file {
+        bifrost::logging::add_file(p);
+    }
+
+    let job = BackupJob::new(config);
+    let result = job.run()
+        .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+
     println!("\n{}", "=".repeat(60));
     println!("Backup Summary");
     println!("{}", "=".repeat(60));
-    println!("Copy UUID: {}", copy_uuid);
-    println!("Copy type: {}", copy_type_str);
-    println!("Format: {:?}", format);
-    println!("Target: {}", copy_path.display());
-    println!("Subtasks: {} completed, {} failed", completed, failed);
-    println!("Manifest: {}", copy.copy_path.join("manifest.json").display());
+    println!("Copy UUID  : {}", result.copy_uuid);
+    println!("Copy root  : {}", result.copy_root.display());
+    println!("Subtasks   : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
+    println!("Total files: {}", result.total_files);
+    println!("Total bytes: {}", result.total_bytes);
 
-    if failed > 0 {
-        println!("\nWarning: Some subtasks failed. Check log files in {}/ for details.", copy.c_repo.display());
-        return Err("Backup completed with failures".into());
+    if result.subtasks_failed > 0 {
+        return Err(format!("{} subtask(s) failed", result.subtasks_failed).into());
     }
 
     println!("\nBackup completed successfully!");
     Ok(())
 }
 
-/// Execute restore command
+/// Execute restore command using the `frame::RestoreJob` orchestrator.
 fn cmd_restore(
     copy_path: PathBuf,
     target: Option<PathBuf>,
     target_nfs: Option<String>,
     policy: RestorePolicy,
     jobs: usize,
-    workers: usize,
-    hardlinks: bool,
-    mtime: bool,
+    _workers: usize,
+    _hardlinks: bool,
+    _mtime: bool,
     nfs_connections: usize,
+    nfs_uid: Option<u32>,
+    nfs_gid: Option<u32>,
+    temp_dir: Option<PathBuf>,
     verbose: u8,
+    log_file: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Exactly one of --target / --target-nfs must be provided
     if target.is_none() && target_nfs.is_none() {
         return Err("Either --target (local path) or --target-nfs (NFS URL) must be provided".into());
     }
 
-    // Parse NFS target location if requested
-    #[cfg(feature = "nfs")]
-    let nfs_target_loc: Option<bifrost::nfs::NfsLocation> = match &target_nfs {
-        Some(url) => Some(parse_nfs_url(url, nfs_connections)?),
-        None => None,
-    };
-    #[cfg(not(feature = "nfs"))]
-    if target_nfs.is_some() {
-        return Err("NFS target requested but binary was built without the `nfs` feature.\n\
-                    Rebuild with: cargo build --features nfs".into());
-    }
-
-    // Local target path; when NFS target is used, a placeholder dir holds no data files.
-    let local_target: PathBuf = target.clone().unwrap_or_else(|| PathBuf::from("/tmp/bifrost_restore_placeholder"));
-
-    let target_display = target_nfs.as_deref().unwrap_or_else(|| {
-        target.as_ref().map(|p| p.to_str().unwrap_or("")).unwrap_or("")
-    });
-
-    println!("Restoring from backup copy: {}", copy_path.display());
-    println!("Target: {}", target_display);
-    println!("Policy: {:?}", policy);
-
-    // Read manifest first to get UUID
-    let manifest_path = copy_path.join("manifest.json");
-    if !manifest_path.exists() {
-        return Err(format!("Backup manifest not found: {}", manifest_path.display()).into());
-    }
-
-    let manifest_content = std::fs::read_to_string(&manifest_path)?;
-    let manifest: BackupManifest = serde_json::from_str(&manifest_content)
-        .map_err(|e| format!("Failed to parse manifest: {}", e))?;
-
-    let copy_uuid = manifest.copy_uuid.clone();
-    let copy = BackupCopy::new(copy_path.clone(), copy_uuid);
-
-    if !copy.exists() {
-        return Err(format!("Backup copy does not exist: {}", copy_path.display()).into());
-    }
-
-    println!("\nBackup info:");
-    println!("  Copy UUID: {}", manifest.copy_uuid);
-    println!("  Type: {}", manifest.copy_type);
-    println!("  Format: {}", manifest.format);
-    println!("  Created: {}", manifest.created_at);
-    println!("  Source: {}", manifest.source_path);
-
-    // Handle incremental copy chain
-    if manifest.copy_type == "incremental" {
-        println!("\nNote: This is an incremental copy. Full restore requires the copy chain.");
-        if let Some(ref base) = manifest.base_copy {
-            println!("  Base copy: {}", base);
-        }
-    }
-
-    // Create target directory
-    std::fs::create_dir_all(&local_target)?;
-
-    // Find control files for restore
-    // Restore processes all 4 phases: copy, hardlink, delete, mtime
-    let ctrl_dir = copy.c_repo.join("ctrl");
-    let control_files = find_restore_control_files(&ctrl_dir);
-
-    if control_files.is_empty() {
-        return Err("No control files found for restore".into());
-    }
-
-    println!("\nRestoring {} control files...", control_files.len());
-
-    let scheduler = TaskScheduler::new(jobs);
-    let mut subtask_handles = Vec::new();
-
-    for (ctrl_file, priority) in control_files {
-        // Each restore subtask gets its own UUID
-        let subtask_id = Uuid::new_v4().to_string();
-
-        println!("  Subtask {}: {:?} -> {}", subtask_id, priority, ctrl_file.display());
-
-        while !scheduler.can_start_new() {
-            thread::sleep(Duration::from_millis(100));
-        }
-
-        scheduler.start_task();
-
-        let subtask_id_clone = subtask_id.clone();
-        let copy_d_repo = copy.d_repo.clone();
-        let copy_m_repo = copy.m_repo.clone();
-        let copy_c_repo = copy.c_repo.clone();
-        let copy_uuid_clone = copy.copy_uuid.clone();
-        let target_dir = local_target.clone();
-        let ctrl_file_clone = ctrl_file.clone();
-        let policy_clone = policy;
+    // Build restore target DataLocation
+    let restore_target: DataLocation = if let Some(path) = target {
+        DataLocation::local(path)
+    } else {
+        let url = target_nfs.as_deref().unwrap();
         #[cfg(feature = "nfs")]
-        let nfs_target_clone = nfs_target_loc.clone();
+        { parse_nfs_location(url, nfs_connections, nfs_uid, nfs_gid)? }
+        #[cfg(not(feature = "nfs"))]
+        { return Err("NFS support not compiled in. Rebuild with --features nfs".into()); }
+    };
 
-        let handle = thread::spawn(move || {
-            // Reconstruct BackupCopy for this thread
-            let thread_copy_path = copy_d_repo.parent().unwrap().to_path_buf();
-            let thread_copy = BackupCopy::new(thread_copy_path, copy_uuid_clone);
-            
-            let result = execute_restore_subtask(
-                subtask_id_clone.clone(),
-                thread_copy,
-                target_dir,
-                ctrl_file_clone,
-                policy_clone,
-                workers,
-                hardlinks,
-                mtime,
-                verbose,
-                #[cfg(feature = "nfs")]
-                nfs_target_clone,
-            );
+    let copy_source = DataLocation::local(copy_path.clone());
 
-            if let Err(ref e) = result {
-                error!("Restore subtask {} failed: {}", subtask_id_clone, e);
-            }
+    println!("Restoring from : {}", copy_path.display());
+    println!("Restore target : {}", restore_target);
+    println!("Policy         : {:?}", policy);
 
-            result.is_ok()
-        });
-
-        subtask_handles.push((subtask_id, handle));
+    bifrost::logging::init(verbose);
+    if let Some(ref p) = log_file {
+        bifrost::logging::add_file(p);
     }
 
-    // Wait for all restore subtasks
-    println!("\nExecuting restore subtasks...");
-    let mut completed = 0;
-    let mut failed = 0;
+    let config = RestoreJobConfig {
+        copy_source,
+        restore_target,
+        policy,
+        temp_config: match temp_dir {
+            Some(p) => bifrost::frame::repo::TempRepoConfig::new(p),
+            None => bifrost::frame::repo::TempRepoConfig::default(),
+        },
+        max_concurrent_subtasks: jobs,
+    };
 
-    for (subtask_id, handle) in subtask_handles {
-        match handle.join() {
-            Ok(true) => {
-                completed += 1;
-                println!("  ✓ Subtask {} completed", subtask_id);
-            }
-            Ok(false) => {
-                failed += 1;
-                println!("  ✗ Subtask {} failed", subtask_id);
-            }
-            Err(e) => {
-                failed += 1;
-                println!("  ✗ Subtask {} panicked: {:?}", subtask_id, e);
-            }
-        }
-    }
+    let job = RestoreJob::new(config);
+    let result = job.run()
+        .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
 
-    // Summary
     println!("\n{}", "=".repeat(60));
     println!("Restore Summary");
     println!("{}", "=".repeat(60));
-    println!("Source: {}", copy_path.display());
-    println!("Target: {}", target_display);
-    println!("Subtasks: {} completed, {} failed", completed, failed);
+    println!("Subtasks   : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
+    println!("Total files: {}", result.total_files);
 
-    if failed > 0 {
-        return Err("Restore completed with failures".into());
+    if result.subtasks_failed > 0 {
+        return Err(format!("{} subtask(s) failed", result.subtasks_failed).into());
     }
 
     println!("\nRestore completed successfully!");
     Ok(())
 }
 
-/// Execute a single restore subtask
-fn execute_restore_subtask(
-    subtask_id: String,
-    copy: BackupCopy,
-    target_dir: PathBuf,
-    control_file: PathBuf,
-    policy: RestorePolicy,
-    workers: usize,
-    _hardlinks: bool,
-    _mtime: bool,
-    _verbose: u8,
-    #[cfg(feature = "nfs")]
-    nfs_target: Option<bifrost::nfs::NfsLocation>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    println!("[{}] Starting restore subtask", subtask_id);
-    println!("[{}] Control file: {}", subtask_id, control_file.display());
 
-    // Create restore option
-    // Meta files are in M_REPO/meta/, control files are in C_REPO/ctrl/
-    let meta_dir = copy.m_repo.join("meta");
-    let ctrl_dir = copy.c_repo.join("ctrl");
-    let mut restore_option = RestoreOption::new(
-        copy.d_repo.clone(),
-        target_dir,
-        meta_dir,
-        ctrl_dir,
-        control_file,
-    )
-    .policy(policy)
-    .worker_count(workers)
-    .restore_hardlinks(false) // TODO: Implement hardlink restore
-    .restore_mtime(true);
-
-    // Configure NFS target if provided
-    #[cfg(feature = "nfs")]
-    if let Some(loc) = nfs_target {
-        println!("[{}] NFS target: {}:{}", subtask_id, loc.host, loc.export);
-        restore_option = restore_option.nfs_target(loc);
-    }
-
-    let restore_task = backup::RestoreTask::new(restore_option);
-
-    let running_restore = restore_task.start()?;
-
-    // Monitor progress
-    loop {
-        let stats = running_restore.stats();
-        println!(
-            "[{}] Progress: {} restored, {} skipped, {} failed",
-            subtask_id,
-            stats.files_restored,
-            stats.files_skipped,
-            stats.files_failed
-        );
-
-        if running_restore.complete() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(500));
-    }
-
-    let final_stats = running_restore.stats();
-    running_restore.wait()?;
-
-    println!(
-        "[{}] Subtask completed: {} files restored, {} skipped, {} failed",
-        subtask_id,
-        final_stats.files_restored,
-        final_stats.files_skipped,
-        final_stats.files_failed
-    );
-
-    if final_stats.files_failed > 0 {
-        return Err(format!("Subtask {} failed: {} files failed", subtask_id, final_stats.files_failed).into());
-    }
-
-    Ok(())
-}
-
-fn format_to_string(format: BackupFormat) -> String {
-    match format {
-        BackupFormat::Common => "common".to_string(),
-        BackupFormat::Aggregated => "aggregated".to_string(),
-    }
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === File Descriptor Limit Initialization ===
@@ -1312,10 +480,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mtime,
             workers,
             nfs_connections,
+            nfs_uid,
+            nfs_gid,
+            temp_dir,
             verbose,
+            log_file,
         } => {
-            // For backup, we need to initialize logger after creating copy structure
-            // So we pass verbose to cmd_backup and let it initialize the logger
             cmd_backup(
                 data,
                 data_nfs,
@@ -1331,7 +501,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mtime,
                 workers,
                 nfs_connections,
+                nfs_uid,
+                nfs_gid,
+                temp_dir,
                 verbose,
+                log_file,
             )
         }
         Commands::Restore {
@@ -1344,10 +518,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardlinks,
             mtime,
             nfs_connections,
+            nfs_uid,
+            nfs_gid,
+            temp_dir,
             verbose,
+            log_file,
         } => {
-            // Initialize global logger for restore (no file logging needed)
-            init_global_logger(verbose)?;
             cmd_restore(
                 copy,
                 target,
@@ -1358,7 +534,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hardlinks,
                 mtime,
                 nfs_connections,
+                nfs_uid,
+                nfs_gid,
+                temp_dir,
                 verbose,
+                log_file,
             )
         }
     }

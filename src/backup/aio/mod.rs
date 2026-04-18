@@ -6,7 +6,8 @@
 //! and `std::fs::File` handles.
 //!
 //! Sub-modules:
-//! - [`copy`] — [`run_aio_copy_pipeline`]: reads a control file and writes
-//!   files to an NFS target using [`crate::nfs::aio::writer::nfs_write_task`].
+//! - [`copy`] — [`run_aio_copy_pipeline`]: local source → NFS target.
+//! - [`nfs_to_local`] — [`run_aio_nfs_to_local_pipeline`]: NFS source → local target.
 
 pub mod copy;
+pub mod nfs_to_local;

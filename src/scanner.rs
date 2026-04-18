@@ -288,12 +288,12 @@ impl RunningScan {
 /// 4. After all items are consumed, the standard control-file generator
 ///    runs and emits `copy.txt` (and optionally `hardlink.txt`, etc.).
 ///
-/// Returns `(total_files, total_dirs)` on success.
+/// Returns `(total_files, total_dirs, total_size_bytes)` on success.
 #[cfg(feature = "nfs")]
 pub async fn run_nfs_scan(
     location: &crate::nfs::NfsLocation,
     scan_option: ScanOption,
-) -> Result<(u64, u64), String> {
+) -> Result<(u64, u64, u64), String> {
     use crate::nfs::NfsScanner;
     use crate::nfs::connection::NfsConnectionPool;
     use crate::scanner::engine::{self, start_meta_writers};
@@ -302,14 +302,26 @@ pub async fn run_nfs_scan(
     let pool = NfsConnectionPool::new(location).await
         .map_err(|e| format!("NFS connect failed: {e}"))?;
 
-    // root_fh() is a sync method on the pool
-    let root_fh = pool.root_fh();
-
-    let root_path = location.sub_path.clone();
-    let root_path = if root_path.is_empty() {
-        location.export.clone()
+    // Compute the absolute path and file handle for the scan root.
+    // If sub_path is set, navigate to it via LOOKUP RPCs.
+    let (root_fh, root_path) = if location.sub_path.is_empty() {
+        (pool.root_fh(), location.export.clone())
     } else {
-        format!("{}/{}", location.export.trim_end_matches('/'), root_path.trim_start_matches('/'))
+        let full_path = format!(
+            "{}/{}",
+            location.export.trim_end_matches('/'),
+            location.sub_path.trim_start_matches('/')
+        );
+        // Walk only the sub_path components via LOOKUP from the export root fh.
+        // resolve_path walks each component relative to root_fh, so we pass only
+        // sub_path (e.g. "ds2"), NOT the full absolute path.
+        let export_fh = pool.root_fh();
+        let sub_fh = crate::nfs::aio::reader::resolve_path(
+            &pool, &crate::nfs::aio::reader::new_file_handle_cache(),
+            &location.sub_path, &export_fh,
+        ).await
+        .map_err(|e| format!("NFS sub_path navigation failed: {e}"))?;
+        (sub_fh, full_path)
     };
 
     // Create the shared output queue and statistics.
@@ -354,10 +366,12 @@ pub async fn run_nfs_scan(
     let bridge_stats = Arc::clone(&stats);
     while let Some(batch) = rx.recv().await {
         let file_count = batch.files.len();
+        let batch_size: u64 = batch.files.iter().map(|f| f.size).sum();
         oq.push(batch);
         for _ in 0..file_count {
             bridge_stats.inc_files();
         }
+        bridge_stats.add_file_size(batch_size);
         bridge_stats.inc_dirs();
     }
 
@@ -379,5 +393,5 @@ pub async fn run_nfs_scan(
         .map_err(|e| format!("generate_control_files failed: {e}"))?;
 
     let snap = stats.snapshot();
-    Ok((snap.tot_files, snap.tot_dirs))
+    Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))
 }

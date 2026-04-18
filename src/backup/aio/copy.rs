@@ -81,6 +81,7 @@ pub async fn run_aio_copy_pipeline(
         match item {
             ControlBlockVarient::DirControlBlock(dcb) => {
                 let dir_path = dcb.dst_path.to_string_lossy().into_owned();
+                debug!("AIO copy: mkdir {dir_path}");
                 let pool2 = Arc::clone(&pool);
                 let dir_cache2 = Arc::clone(&dir_cache);
                 let root_fh2 = root_fh.clone();
@@ -112,7 +113,9 @@ pub async fn run_aio_copy_pipeline(
 
                 // Read the source file from local FS in a blocking task.
                 let src_path = fcb.src_path.clone();
+                let dst_path = fcb.dst_path.clone();
                 let meta_size = fcb.meta.size;
+                debug!("AIO copy: file src={src_path:?} dst={dst_path:?} size={meta_size}");
                 let read_result: Result<Vec<u8>, String> =
                     tokio::task::spawn_blocking(move || read_local_file(&src_path, meta_size))
                         .await

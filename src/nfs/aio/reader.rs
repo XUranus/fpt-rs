@@ -57,6 +57,8 @@ pub async fn nfs_read_task(
     read_chunk: u32,
 ) -> NfsReaderResult {
     let src_path = fcb.src_path.clone();
+    log::debug!("NFS read: path={:?} offset={} size={}", src_path, fcb.src_offset, fcb.meta.size);
+
     // ------------------------------------------------------------------ 1. resolve file handle
     let file_fh = match resolve_path(&pool, &dir_cache, &fcb.src_path.to_string_lossy(), &root_fh).await {
         Ok(fh) => fh,
@@ -135,6 +137,7 @@ pub async fn nfs_read_task(
         SourceHandleState::PartialRead
     };
 
+    log::debug!("NFS read done: path={:?} bytes_read={} offset={}", src_path, n, offset);
     NfsReaderResult::Read(fcb)
 }
 
@@ -186,6 +189,7 @@ pub async fn resolve_path(
         }
 
         // Do a lookup RPC.
+        log::debug!("NFS LOOKUP: component={component} path={current_path}");
         let child_fh = lookup_one(pool, &current_fh, component).await?;
 
         // Cache directory handles (not the final file handle).
@@ -208,6 +212,7 @@ async fn lookup_one(
 ) -> Result<nfs_fh3, NfsError> {
     use nfs3_client::nfs3_types::nfs3::LOOKUP3args;
 
+    log::debug!("NFS LOOKUP RPC: name={name}");
     let mut conn = pool.acquire().await;
     let res = conn
         .lookup(&LOOKUP3args {

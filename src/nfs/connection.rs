@@ -53,6 +53,12 @@ impl NfsConnectionPool {
             ));
         }
 
+        log::info!(
+            "NFS connection pool: creating {} connections to {}, export={}, uid={}, gid={}",
+            location.connection_count, location.host,
+            location.export, location.uid, location.gid,
+        );
+
         // Establish all connections.
         let mut connections = Vec::with_capacity(location.connection_count);
         let mut root_fh_opt: Option<nfs_fh3> = None;
@@ -61,6 +67,7 @@ impl NfsConnectionPool {
 
         for _ in 0..location.connection_count {
             let conn = Self::connect_one(location).await?;
+            log::debug!("NFS connection established to {}:{}", location.host, location.export);
 
             // On the first connection, grab the root FH and query server limits.
             if root_fh_opt.is_none() {
@@ -77,6 +84,10 @@ impl NfsConnectionPool {
             let mut guard = connections[0].lock().await;
             match guard.fsinfo(&FSINFO3args { fsroot: root_fh }).await {
                 Ok(Nfs3Result::Ok(ok)) => {
+                    log::debug!(
+                        "NFS fsinfo: rtmax={} wtmax={} dtperf={}",
+                        ok.rtmax, ok.wtmax, ok.dtpref
+                    );
                     server_rtmax = ok.rtmax.min(location.read_chunk_size);
                     server_wtmax = ok.wtmax.min(location.write_chunk_size);
                 }

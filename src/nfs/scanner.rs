@@ -215,6 +215,7 @@ async fn scan_one_dir(
 
     loop {
         let _permit = sem.acquire().await.map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
+        log::debug!("NFS READDIRPLUS: dir={dir_path} cookie={cookie:?}");
         let res = {
             let mut conn = pool.acquire().await;
             conn.readdirplus(&READDIRPLUS3args {
@@ -279,6 +280,7 @@ async fn scan_one_dir(
 
             match attrs.type_ {
                 ftype3::NF3DIR => {
+                    log::debug!("NFS scan: dir entry {child_path}");
                     // Recurse into subdirectory.
                     if let Nfs3Option::Some(fh) = &entry.name_handle {
                         work_tx
@@ -304,9 +306,11 @@ async fn scan_one_dir(
                     }
                 }
                 ftype3::NF3REG => {
+                    log::debug!("NFS scan: file entry {child_path} size={}", attrs.size);
                     files.push(nfs_fattr3_to_file_meta(&attrs, &name, None));
                 }
                 ftype3::NF3LNK => {
+                    log::debug!("NFS scan: symlink entry {child_path}");
                     // Resolve symlink target.
                     let target = if let Nfs3Option::Some(fh) = &entry.name_handle {
                         match readlink_target(pool, fh).await {

@@ -199,9 +199,11 @@ impl NfsLocation {
 
     /// Parse an NFS URL of the form `nfs://HOST/EXPORT_PATH`.
     ///
-    /// The full path component of the URL becomes the export.  An optional
-    /// `sub` query parameter (e.g. `nfs://host/export?sub=subdir`) sets the
-    /// sub-path within the export.
+    /// The full path component of the URL becomes the export.  Optional query
+    /// parameters:
+    /// - `sub=VALUE` — sub-path within the export
+    /// - `uid=VALUE` — AUTH_UNIX uid to present to the server (default: 0)
+    /// - `gid=VALUE` — AUTH_UNIX gid to present to the server (default: 0)
     ///
     /// # Examples
     ///
@@ -212,10 +214,12 @@ impl NfsLocation {
     /// assert_eq!(loc.export, "/opt/dataset");
     /// assert_eq!(loc.sub_path, "");
     ///
-    /// let loc = NfsLocation::from_url("nfs://192.168.1.10/export/data?sub=project/backup").unwrap();
+    /// let loc = NfsLocation::from_url("nfs://192.168.1.10/export/data?sub=project/backup&uid=1000&gid=1000").unwrap();
     /// assert_eq!(loc.host, "192.168.1.10");
     /// assert_eq!(loc.export, "/export/data");
     /// assert_eq!(loc.sub_path, "project/backup");
+    /// assert_eq!(loc.uid, 1000);
+    /// assert_eq!(loc.gid, 1000);
     /// ```
     pub fn from_url(url: &str) -> Result<Self, String> {
         // Must start with "nfs://"
@@ -249,19 +253,32 @@ impl NfsLocation {
         };
 
         // Split path from optional query string
-        let (export, sub_path) = match path_and_query.find('?') {
+        let (export, sub_path, uid, gid) = match path_and_query.find('?') {
             Some(idx) => {
                 let export = &path_and_query[..idx];
                 let query = &path_and_query[idx + 1..];
-                // Parse query parameters: look for "sub=VALUE"
-                let sub = query
-                    .split('&')
-                    .find_map(|kv| kv.strip_prefix("sub="))
-                    .unwrap_or("")
-                    .to_string();
-                (export, sub)
+
+                let mut sub = String::new();
+                let mut uid: u32 = 0;
+                let mut gid: u32 = 0;
+
+                for kv in query.split('&') {
+                    if let Some(v) = kv.strip_prefix("sub=") {
+                        sub = v.to_string();
+                    } else if let Some(v) = kv.strip_prefix("uid=") {
+                        uid = v.parse::<u32>().map_err(|_| {
+                            format!("invalid uid in NFS URL: '{v}'")
+                        })?;
+                    } else if let Some(v) = kv.strip_prefix("gid=") {
+                        gid = v.parse::<u32>().map_err(|_| {
+                            format!("invalid gid in NFS URL: '{v}'")
+                        })?;
+                    }
+                }
+
+                (export, sub, uid, gid)
             }
-            None => (path_and_query, String::new()),
+            None => (path_and_query, String::new(), 0u32, 0u32),
         };
 
         if export == "/" || export.is_empty() {
@@ -270,7 +287,9 @@ impl NfsLocation {
             ));
         }
 
-        let mut loc = NfsLocation::new(host, export).sub_path(sub_path);
+        let mut loc = NfsLocation::new(host, export)
+            .sub_path(sub_path)
+            .credentials(uid, gid);
         if let Some(port) = nfs_port {
             loc = loc.nfs_port(port);
         }

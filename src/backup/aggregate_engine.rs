@@ -139,6 +139,7 @@ impl AggregateBackupEngine {
         let blob_name = self.id_generator.generate_blob_name();
         let blob_path = dir_info.aggr_dir.join(&blob_name);
 
+        debug!("Writing aggregated blob: {:?} ({} bytes from {} files)", blob_path, files.iter().map(|f| f.data.len() as u64).sum::<u64>(), files.len());
         let mut blob_file = File::create(&blob_path)?;
         let mut entries = Vec::new();
         let mut current_offset: u64 = 0;

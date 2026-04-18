@@ -519,6 +519,7 @@ pub fn spawn_writer(
                     match item {
                         ControlBlockVarient::DirControlBlock(dcb) => {
                             // Create the directory explicitly
+                            debug!("Creating directory: {:?}", dcb.dst_path);
                             if let Err(e) = std::fs::create_dir_all(&dcb.dst_path) {
                                 error!("Failed to create target directory {:?}: {}", dcb.dst_path, e);
                                 stats.dirs_failed.fetch_add(1, Ordering::Relaxed);
@@ -765,6 +766,7 @@ fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
         }
     }
 
+    debug!("Copying file: {:?} -> {:?} ({} bytes)", fcb.src_path, fcb.dst_path, fcb.meta.size);
     debug!("open dst {:?}", fcb.dst_path);
     // Use create_new(true) to avoid overwriting existing files?
     match File::create(&fcb.dst_path) {

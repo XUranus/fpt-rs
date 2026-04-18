@@ -54,6 +54,11 @@ pub struct BackupOption {
     /// instead of the local filesystem.  Requires the `nfs` feature.
     #[cfg(feature = "nfs")]
     pub nfs_target: Option<crate::nfs::NfsLocation>,
+
+    /// NFS source location.  When `Some`, the AIO pipeline reads from NFS
+    /// instead of the local filesystem.  Requires the `nfs` feature.
+    #[cfg(feature = "nfs")]
+    pub nfs_source: Option<crate::nfs::NfsLocation>,
 }
 
 
@@ -107,6 +112,8 @@ impl BackupOption {
             aggregate_config : AggregateConfig::default(),
             #[cfg(feature = "nfs")]
             nfs_target: None,
+            #[cfg(feature = "nfs")]
+            nfs_source: None,
         }
     }
     
@@ -160,6 +167,15 @@ impl BackupOption {
         self.nfs_target = Some(loc);
         self
     }
+
+    /// Set an NFS source location.  When set, the AIO pipeline reads files
+    /// from the NFS server instead of the local filesystem.
+    /// Requires the `nfs` Cargo feature.
+    #[cfg(feature = "nfs")]
+    pub fn nfs_source(mut self, loc: crate::nfs::NfsLocation) -> Self {
+        self.nfs_source = Some(loc);
+        self
+    }
 }
 
 struct SharedState {
@@ -202,6 +218,8 @@ impl BackupTask {
         // Capture the NFS target location (if any) before moving `self.option`.
         #[cfg(feature = "nfs")]
         let nfs_target = self.option.nfs_target.clone();
+        #[cfg(feature = "nfs")]
+        let nfs_source = self.option.nfs_source.clone();
 
         // When an NFS target is configured, run the entire pipeline on the
         // AIO (async) path and skip the BIO pipeline.
@@ -300,6 +318,69 @@ impl BackupTask {
                             mt_stats.dirs_restored, mt_stats.dirs_failed
                         );
                     }
+                });
+
+                terminate_indicator_inner2.store(true, Ordering::Relaxed);
+            });
+
+            return Ok(RunningBackup {
+                option: self.option,
+                stats,
+                hardlink_stats: None,
+                delete_stats: None,
+                mtime_stats: None,
+                terminate_handle,
+                terminate_indicator,
+            });
+        }
+
+        // When an NFS source is configured (NFS→local backup), use the
+        // nfs_to_local AIO pipeline for the copy phase.
+        #[cfg(feature = "nfs")]
+        if let Some(ref loc) = nfs_source {
+            let loc_clone = loc.clone();
+            let meta_dir2 = meta_dir.clone();
+            let control_file2 = control_file.clone();
+            let target_dir_base2 = target_dir_base.clone();
+            let source_dir_base2 = source_dir_base.clone();
+            let nfs_export2 = std::path::PathBuf::from(&loc.export);
+            let stats2 = Arc::clone(&stats);
+            let terminate_indicator_inner2 = Arc::clone(&terminate_indicator);
+
+            let terminate_handle = thread::spawn(move || {
+                let rt = match tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("bifrost-nfs-src")
+                    .build()
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("NFS source: failed to build async runtime: {e}");
+                        terminate_indicator_inner2.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                rt.block_on(async {
+                    let pool = match crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            eprintln!("NFS source: failed to connect: {e}");
+                            return;
+                        }
+                    };
+
+                    info!("NFS source: connected to {} (rtmax={})", loc_clone.host, pool.server_rtmax);
+
+                    crate::backup::aio::nfs_to_local::run_aio_nfs_to_local_pipeline(
+                        control_file2,
+                        meta_dir2,
+                        source_dir_base2,
+                        nfs_export2,
+                        target_dir_base2,
+                        Arc::clone(&pool),
+                        Arc::clone(&stats2),
+                    ).await;
                 });
 
                 terminate_indicator_inner2.store(true, Ordering::Relaxed);

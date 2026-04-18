@@ -80,6 +80,7 @@ pub async fn nfs_write_task(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
+    log::debug!("NFS CREATE: name={file_name} in dir for {dst_path:?}");
     let create_res = {
         let mut conn = pool.acquire().await;
         conn.create(&CREATE3args {
@@ -127,12 +128,15 @@ pub async fn nfs_write_task(
     let total = data.len();
     let mut written = 0usize;
 
+    log::debug!("NFS WRITE: path={dst_path:?} total_size={total}");
+
     while written < total {
         let end = (written + write_chunk as usize).min(total);
         let chunk = &data[written..end];
 
         let write_res = {
             let mut conn = pool.acquire().await;
+            log::debug!("NFS WRITE RPC: path={dst_path:?} offset={written} len={}", chunk.len());
             conn.write(&WRITE3args {
                 file: file_fh.clone(),
                 offset: written as u64,
@@ -277,6 +281,7 @@ async fn mkdir_one(
     parent_fh: &nfs_fh3,
     name: &str,
 ) -> Result<nfs_fh3, NfsError> {
+    log::debug!("NFS MKDIR RPC: name={name}");
     let mut conn = pool.acquire().await;
     let res = conn
         .mkdir(&MKDIR3args {
@@ -381,4 +386,92 @@ pub fn dir_meta_sattr3(mode: u32, mtime_secs: u32) -> sattr3 {
             nseconds: 0,
         }),
     }
+}
+
+/// Upload raw bytes to a file at `nfs_path` on the NFS server.
+///
+/// Used by the post-job phase to upload M\_REPO / C\_REPO files after all
+/// data subtasks have completed.  The caller provides an already-connected
+/// [`NfsConnectionPool`].  Parent directories are created on demand.
+pub async fn nfs_create_and_write(
+    pool: Arc<NfsConnectionPool>,
+    nfs_path: std::path::PathBuf,
+    data: Vec<u8>,
+) -> Result<(), NfsError> {
+    log::debug!("NFS create_and_write: path={nfs_path:?} size={}", data.len());
+
+    let dir_cache   = new_dir_handle_cache();
+    let root_fh     = pool.root_fh();
+    let write_chunk = pool.server_wtmax;
+
+    // Ensure parent directories exist.
+    let parent = nfs_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let dir_fh = get_or_create_dir(&pool, &dir_cache, &parent, &root_fh).await?;
+
+    let file_name: String = nfs_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unnamed".to_string());
+
+    // CREATE (UNCHECKED — overwrite if it exists).
+    log::debug!("NFS CREATE RPC: name={file_name} path={nfs_path:?}");
+    let create_res = {
+        let mut conn = pool.acquire().await;
+        conn.create(&CREATE3args {
+            where_: diropargs3 {
+                dir: dir_fh.clone(),
+                name: filename3::from(file_name.as_bytes()),
+            },
+            how: createhow3::UNCHECKED(sattr3::default()),
+        })
+        .await
+        .map_err(NfsError::Transport)?
+    };
+
+    let file_fh = match create_res {
+        Nfs3Result::Ok(ok) => match ok.obj {
+            Nfs3Option::Some(fh) => fh,
+            Nfs3Option::None => {
+                return Err(NfsError::Path(format!("CREATE returned no FH for {nfs_path:?}")));
+            }
+        },
+        Nfs3Result::Err((stat, _)) => {
+            return Err(NfsError::Nfs(stat, format!("CREATE {nfs_path:?}")));
+        }
+    };
+
+    // WRITE in chunks.
+    let chunk_size = write_chunk as usize;
+    let mut offset: u64 = 0;
+    for slice in data.chunks(chunk_size.max(1)) {
+        log::debug!("NFS WRITE RPC: path={nfs_path:?} offset={offset} len={}", slice.len());
+        let write_res = {
+            let mut conn = pool.acquire().await;
+            conn.write(&WRITE3args {
+                file: file_fh.clone(),
+                offset,
+                count: slice.len() as u32,
+                stable: stable_how::FILE_SYNC,
+                data: Opaque::owned(slice.to_vec()),
+            })
+            .await
+        };
+        match write_res {
+            Ok(Nfs3Result::Ok(_)) => {}
+            Ok(Nfs3Result::Err((stat, _))) => {
+                return Err(NfsError::Nfs(stat, format!(
+                    "WRITE {nfs_path:?} at {offset}"
+                )));
+            }
+            Err(e) => return Err(NfsError::Transport(e)),
+        }
+        offset += slice.len() as u64;
+    }
+
+    Ok(())
 }
