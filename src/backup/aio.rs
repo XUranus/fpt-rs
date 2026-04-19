@@ -35,19 +35,9 @@ use crate::smb::SmbLocation;
 
 mod entry;
 mod local_fs;
-
-#[cfg(feature = "smb")]
-pub mod local_to_smb;
-#[cfg(feature = "nfs")]
-pub mod local_to_nfs;
-#[cfg(feature = "nfs")]
-pub mod nfs_to_local;
-#[cfg(feature = "nfs")]
-pub mod nfs_to_nfs;
-#[cfg(feature = "smb")]
-pub mod smb_to_local;
-#[cfg(feature = "smb")]
-pub mod smb_to_smb;
+mod pipeline;
+mod transport;
+mod directions;
 
 #[cfg(feature = "nfs")]
 pub fn spawn_local_to_nfs_backup(
@@ -437,7 +427,7 @@ pub async fn run_local_to_nfs_backup(
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
 ) {
-    local_to_nfs::run_local_to_nfs_copy_pipeline(
+    directions::run_local_to_nfs_copy_pipeline(
         control_file,
         meta_dir,
         source_dir_base.clone(),
@@ -479,7 +469,7 @@ pub async fn run_local_to_smb_backup(
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
 ) {
-    local_to_smb::run_local_to_smb_copy_pipeline(
+    directions::run_local_to_smb_copy_pipeline(
         control_file,
         meta_dir,
         source_dir_base.clone(),
@@ -516,7 +506,7 @@ pub async fn run_nfs_to_local_backup(
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
 ) {
-    nfs_to_local::run_aio_nfs_to_local_pipeline(
+    directions::run_aio_nfs_to_local_pipeline(
         control_file,
         meta_dir.clone(),
         source_dir_base.clone(),
@@ -552,7 +542,7 @@ pub async fn run_nfs_to_nfs_backup(
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
 ) {
-    nfs_to_nfs::run_aio_nfs_to_nfs_pipeline(
+    directions::run_aio_nfs_to_nfs_pipeline(
         control_file,
         meta_dir,
         source_dir_base.clone(),
@@ -595,7 +585,7 @@ pub async fn run_smb_to_local_backup(
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
 ) {
-    smb_to_local::run_smb_to_local_copy_pipeline(
+    directions::run_smb_to_local_copy_pipeline(
         control_file,
         meta_dir.clone(),
         source_dir_base.clone(),
@@ -634,7 +624,7 @@ pub async fn run_smb_to_smb_backup(
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
 ) {
-    smb_to_smb::run_smb_to_smb_copy_pipeline(
+    directions::run_smb_to_smb_copy_pipeline(
         control_file,
         meta_dir,
         source_dir_base.clone(),
