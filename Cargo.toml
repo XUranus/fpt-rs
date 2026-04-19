@@ -9,7 +9,7 @@ edition = "2021"
 default = ["sqlite"]
 sqlite = ["rusqlite"]
 nfs = ["nfs3_client", "async-channel"]
-smb = ["dep:smb_client"]
+smb = ["dep:smb_client", "dep:sspi"]
 
 [dependencies]
 libc = "0.2"
@@ -34,7 +34,8 @@ uuid = { version = "1.0", features = ["v4"] }
 rusqlite = { version = "0.29", features = ["bundled"], optional = true }
 nfs3_client = { version = "0.8.0", features = ["tokio"], optional = true }
 async-channel = { version = "2.3", optional = true }
-smb_client = { package = "smb", version = "0.11.1", default-features = false, features = ["async"], optional = true }
+smb_client = { package = "smb", version = "0.11.1", default-features = false, features = ["async", "sign", "encrypt", "compress"], optional = true }
+sspi = { version = "0.19.2", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["fs", "resource"] }
@@ -57,3 +58,6 @@ tempfile = "3.0"
 
 [profile.release]
 debug = true
+
+[patch.crates-io]
+smb = { git = "https://github.com/XUranus/smb-rs", rev = "fe8eb82d30d0e93dca432b64c2c57adb748b19ac" }

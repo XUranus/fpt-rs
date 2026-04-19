@@ -172,6 +172,8 @@ impl BackupRestoreJob for FileBackupJob {
         crate::logging::add_route("bifrost::nfs", &repo.scan_log());
         crate::logging::add_route("bifrost::smb", &repo.scan_log());
         crate::logging::add_route("exacl", &repo.scan_log());
+        crate::logging::add_route("sspi", &repo.scan_log());
+        crate::logging::add_route("smb::", &repo.scan_log());
         crate::logging::add_route("smb", &repo.scan_log());
         crate::logging::add_route("bifrost::frame", &repo.frame_log());
         crate::logging::add_route("bifrost::backup", &repo.frame_log());
@@ -229,11 +231,15 @@ impl BackupRestoreJob for FileBackupJob {
             crate::logging::remove_route("bifrost::nfs::aio");
             crate::logging::remove_route("bifrost::smb::aio");
             crate::logging::remove_route("exacl");
+            crate::logging::remove_route("sspi");
+            crate::logging::remove_route("smb::");
             crate::logging::remove_route("smb");
             crate::logging::add_route("bifrost::backup", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("bifrost::nfs::aio", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("bifrost::smb::aio", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("exacl", &repo.subtask_log(&subtask_uuid));
+            crate::logging::add_route("sspi", &repo.subtask_log(&subtask_uuid));
+            crate::logging::add_route("smb::", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("smb", &repo.subtask_log(&subtask_uuid));
 
             let subtask_cfg = SubtaskConfig {
@@ -331,6 +337,7 @@ impl BackupRestoreJob for FileBackupJob {
             subtasks_ok,
             subtasks_failed,
             total_files,
+            total_dirs:      scan_stats.total_dirs,
             total_bytes,
         })
     }

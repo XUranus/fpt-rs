@@ -99,6 +99,8 @@ pub struct JobResult {
     pub subtasks_failed: usize,
     /// Aggregate files transferred across all subtasks.
     pub total_files:     u64,
+    /// Aggregate directories observed or created across the job.
+    pub total_dirs:      u64,
     /// Aggregate bytes transferred across all subtasks.
     pub total_bytes:     u64,
 }

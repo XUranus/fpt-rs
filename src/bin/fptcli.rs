@@ -8,6 +8,7 @@
 //! - Task-specific logging
 
 use std::path::PathBuf;
+use std::time::Instant;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use bifrost::backup::RestorePolicy;
@@ -313,18 +314,28 @@ fn cmd_backup(
         bifrost::logging::add_file(p);
     }
 
+    let started_at = Instant::now();
     let job = BackupJob::new(config);
     let result = job.run()
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+    let elapsed = started_at.elapsed();
 
     println!("\n{}", "=".repeat(60));
     println!("Backup Summary");
     println!("{}", "=".repeat(60));
-    println!("Copy UUID  : {}", result.copy_uuid);
-    println!("Copy root  : {}", result.copy_root.display());
-    println!("Subtasks   : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
-    println!("Total files: {}", result.total_files);
-    println!("Total bytes: {}", result.total_bytes);
+    println!("Source type : {}", location_kind(&data));
+    println!("Target type : {}", location_kind(&target));
+    println!("Source path : {}", data);
+    println!("Target path : {}", target);
+    println!("Copy UUID   : {}", result.copy_uuid);
+    println!("Copy root   : {}", result.copy_root.display());
+    println!("Subtasks    : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
+    println!("Total files : {}", result.total_files);
+    println!("Total dirs  : {}", result.total_dirs);
+    println!("Total bytes : {}", result.total_bytes);
+    println!("Elapsed     : {}", format_duration(elapsed));
+    println!("File rate   : {:.2} files/s", rate(result.total_files as f64, elapsed));
+    println!("Data rate   : {}/s", format_bytes(rate(result.total_bytes as f64, elapsed) as u64));
 
     if result.subtasks_failed > 0 {
         return Err(format!("{} subtask(s) failed", result.subtasks_failed).into());
@@ -362,6 +373,7 @@ fn cmd_restore(
         bifrost::logging::add_file(p);
     }
 
+    let started_at = Instant::now();
     let config = RestoreJobConfig {
         copy_source,
         restore_target,
@@ -376,12 +388,19 @@ fn cmd_restore(
     let job = RestoreJob::new(config);
     let result = job.run()
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+    let elapsed = started_at.elapsed();
 
     println!("\n{}", "=".repeat(60));
     println!("Restore Summary");
     println!("{}", "=".repeat(60));
-    println!("Subtasks   : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
-    println!("Total files: {}", result.total_files);
+    println!("Source type : {}", location_kind(&copy_path));
+    println!("Target type : {}", location_kind(&target));
+    println!("Source path : {}", copy_path);
+    println!("Target path : {}", target);
+    println!("Subtasks    : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
+    println!("Total files : {}", result.total_files);
+    println!("Elapsed     : {}", format_duration(elapsed));
+    println!("File rate   : {:.2} files/s", rate(result.total_files as f64, elapsed));
 
     if result.subtasks_failed > 0 {
         return Err(format!("{} subtask(s) failed", result.subtasks_failed).into());
@@ -389,6 +408,47 @@ fn cmd_restore(
 
     println!("\nRestore completed successfully!");
     Ok(())
+}
+
+fn location_kind(spec: &str) -> &'static str {
+    if spec.starts_with("nfs://") {
+        "NFS"
+    } else if spec.starts_with("smb://") || spec.starts_with(r"smb:\\") {
+        "SMB"
+    } else {
+        "Local"
+    }
+}
+
+fn rate(value: f64, elapsed: std::time::Duration) -> f64 {
+    let secs = elapsed.as_secs_f64();
+    if secs > 0.0 { value / secs } else { value }
+}
+
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let millis = d.subsec_millis();
+    if secs < 60 {
+        format!("{}.{:03}s", secs, millis)
+    } else {
+        format!("{}m {}.{:03}s", secs / 60, secs % 60, millis)
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let value = bytes as f64;
+    if value >= GIB {
+        format!("{:.2} GiB", value / GIB)
+    } else if value >= MIB {
+        format!("{:.2} MiB", value / MIB)
+    } else if value >= KIB {
+        format!("{:.2} KiB", value / KIB)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 

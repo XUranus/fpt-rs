@@ -136,6 +136,16 @@ impl BackupRestoreJob for FileRestoreJob {
 
         let repo = RepoLayout::from_existing(local_copy_root.clone());
 
+        std::fs::create_dir_all(&repo.logs_dir)
+            .map_err(RestoreJobError::Io)?;
+
+        crate::logging::add_route("bifrost::nfs", &repo.frame_log());
+        crate::logging::add_route("bifrost::smb", &repo.frame_log());
+        crate::logging::add_route("sspi", &repo.frame_log());
+        crate::logging::add_route("smb::", &repo.frame_log());
+        crate::logging::add_route("smb", &repo.frame_log());
+        crate::logging::add_route("bifrost::frame", &repo.frame_log());
+
         // ── Phase 1: Prerequisites ────────────────────────────────────────────
         RestorePrereqJob::new(&cfg.copy_source, &repo)
             .run_sync()
@@ -219,6 +229,7 @@ impl BackupRestoreJob for FileRestoreJob {
             subtasks_ok,
             subtasks_failed,
             total_files,
+            total_dirs:      0,
             total_bytes: 0,
         })
     }
