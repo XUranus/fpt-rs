@@ -172,6 +172,7 @@ impl BackupRestoreJob for FileBackupJob {
         crate::logging::add_route("bifrost::nfs", &repo.scan_log());
         crate::logging::add_route("bifrost::smb", &repo.scan_log());
         crate::logging::add_route("exacl", &repo.scan_log());
+        crate::logging::add_route("smb", &repo.scan_log());
         crate::logging::add_route("bifrost::frame", &repo.frame_log());
         crate::logging::add_route("bifrost::backup", &repo.frame_log());
         // Per-subtask backup route is swapped below.
@@ -228,10 +229,12 @@ impl BackupRestoreJob for FileBackupJob {
             crate::logging::remove_route("bifrost::nfs::aio");
             crate::logging::remove_route("bifrost::smb::aio");
             crate::logging::remove_route("exacl");
+            crate::logging::remove_route("smb");
             crate::logging::add_route("bifrost::backup", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("bifrost::nfs::aio", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("bifrost::smb::aio", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("exacl", &repo.subtask_log(&subtask_uuid));
+            crate::logging::add_route("smb", &repo.subtask_log(&subtask_uuid));
 
             let subtask_cfg = SubtaskConfig {
                 subtask_uuid:    subtask_uuid.clone(),

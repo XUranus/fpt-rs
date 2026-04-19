@@ -149,6 +149,20 @@ pub fn run_backup_subtask(
                 .map_err(map_backup_err)
         }
         #[cfg(feature = "smb")]
+        (DataLocation::Smb(smb_source), DataLocation::Local(_)) => {
+            use crate::frame::backup_impls::SmbSourceFileBackup;
+            SmbSourceFileBackup::new(backup_cfg, smb_source.clone())
+                .run()
+                .map_err(map_backup_err)
+        }
+        #[cfg(feature = "smb")]
+        (DataLocation::Smb(smb_source), DataLocation::Smb(smb_target)) => {
+            use crate::frame::backup_impls::SmbSourceTargetFileBackup;
+            SmbSourceTargetFileBackup::new(backup_cfg, smb_source.clone(), smb_target.clone())
+                .run()
+                .map_err(map_backup_err)
+        }
+        #[cfg(feature = "smb")]
         _ if config.backup_source.is_smb() || config.backup_target.is_smb() => {
             Err(SubtaskError::Engine(
                 "this SMB backup direction is not implemented yet".to_string()

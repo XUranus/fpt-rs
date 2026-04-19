@@ -146,6 +146,10 @@ pub use nfs_impl::NfsSourceFileBackup;
 pub use nfs_impl::NfsSourceTargetFileBackup;
 #[cfg(feature = "smb")]
 pub use smb_impl::SmbFileBackup;
+#[cfg(feature = "smb")]
+pub use smb_impl::SmbSourceFileBackup;
+#[cfg(feature = "smb")]
+pub use smb_impl::SmbSourceTargetFileBackup;
 
 #[cfg(feature = "nfs")]
 mod nfs_impl {
@@ -305,6 +309,77 @@ mod smb_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .smb_target(self.smb_target.clone())
+            .smb_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+
+            run_backup_task(option)
+        }
+    }
+
+    /// Backs up data from an SMB share source to a local target.
+    pub struct SmbSourceFileBackup {
+        pub config: BackupConfig,
+        pub smb_source: SmbLocation,
+    }
+
+    impl SmbSourceFileBackup {
+        pub fn new(config: BackupConfig, smb_source: SmbLocation) -> Self {
+            Self { config, smb_source }
+        }
+    }
+
+    impl FileBackup for SmbSourceFileBackup {
+        type Error = BackupTaskError;
+
+        fn run(&self) -> Result<TransferStats, BackupTaskError> {
+            let cfg = &self.config;
+            let option = BackupOption::new(
+                cfg.source_dir.clone(),
+                cfg.local_target_dir.clone(),
+                cfg.meta_dir.clone(),
+                cfg.ctrl_dir.clone(),
+                cfg.control_file.clone(),
+            )
+            .enable_hardlink_phase(cfg.enable_hardlink)
+            .enable_delete_phase(cfg.enable_delete)
+            .enable_mtime_phase(cfg.enable_mtime)
+            .aggregate_config(cfg.aggregate_config.clone())
+            .smb_source(self.smb_source.clone());
+
+            run_backup_task(option)
+        }
+    }
+
+    /// Backs up data from an SMB share source to an SMB share target.
+    pub struct SmbSourceTargetFileBackup {
+        pub config: BackupConfig,
+        pub smb_source: SmbLocation,
+        pub smb_target: SmbLocation,
+    }
+
+    impl SmbSourceTargetFileBackup {
+        pub fn new(config: BackupConfig, smb_source: SmbLocation, smb_target: SmbLocation) -> Self {
+            Self { config, smb_source, smb_target }
+        }
+    }
+
+    impl FileBackup for SmbSourceTargetFileBackup {
+        type Error = BackupTaskError;
+
+        fn run(&self) -> Result<TransferStats, BackupTaskError> {
+            let cfg = &self.config;
+            let option = BackupOption::new(
+                cfg.source_dir.clone(),
+                cfg.local_target_dir.clone(),
+                cfg.meta_dir.clone(),
+                cfg.ctrl_dir.clone(),
+                cfg.control_file.clone(),
+            )
+            .enable_hardlink_phase(cfg.enable_hardlink)
+            .enable_delete_phase(cfg.enable_delete)
+            .enable_mtime_phase(cfg.enable_mtime)
+            .aggregate_config(cfg.aggregate_config.clone())
+            .smb_source(self.smb_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
 

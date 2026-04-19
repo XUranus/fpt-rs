@@ -15,16 +15,14 @@ pub mod mtime;
 pub type DirCache = Arc<Mutex<HashSet<String>>>;
 
 const SMB_WRITE_CHUNK: usize = 1024 * 1024;
+const SMB_READ_CHUNK: usize = 1024 * 1024;
 
 pub fn new_dir_cache() -> DirCache {
     Arc::new(Mutex::new(HashSet::new()))
 }
 
 pub async fn connect_client(location: &SmbLocation) -> Result<Arc<smb_client::Client>, String> {
-    let mut config = smb_client::ClientConfig::default();
-    config.connection.port = location.port;
-
-    let client = Arc::new(smb_client::Client::new(config));
+    let client = Arc::new(smb_client::Client::new(crate::smb::client_config(location)));
     let share_root = location.share_unc_path()?;
     let username = location.username.as_deref().unwrap_or("");
     let password = location.password.clone().unwrap_or_default();
@@ -44,18 +42,20 @@ pub async fn ensure_relative_directory(
     relative_dir: &str,
 ) -> Result<(), String> {
     let relative_dir = normalize_relative_path(relative_dir);
-    if relative_dir.is_empty() {
+    let base_rel = normalize_relative_path(&location.sub_path);
+    let full_rel = join_relative(&base_rel, &relative_dir);
+    if full_rel.is_empty() {
         return Ok(());
     }
 
     {
         let cache = dir_cache.lock().await;
-        if cache.contains(&relative_dir) {
+        if cache.contains(&full_rel) {
             return Ok(());
         }
     }
 
-    let mut current_unc = location.root_unc_path()?;
+    let mut current_unc = location.share_unc_path()?;
     let mut current_rel = String::new();
     let dir_args = smb_client::FileCreateArgs {
         disposition: smb_client::CreateDisposition::OpenIf,
@@ -64,7 +64,7 @@ pub async fn ensure_relative_directory(
         desired_access: smb_client::FileAccessMask::new().with_generic_all(true),
     };
 
-    for segment in relative_dir.split('/').filter(|s| !s.is_empty()) {
+    for segment in full_rel.split('/').filter(|s| !s.is_empty()) {
         current_unc = current_unc.with_add_path(segment);
         if current_rel.is_empty() {
             current_rel.push_str(segment);
@@ -147,6 +147,51 @@ pub async fn write_relative_file(
     Ok(())
 }
 
+pub async fn read_relative_file(
+    client: &smb_client::Client,
+    location: &SmbLocation,
+    relative_path: &str,
+    expected_size: u64,
+) -> Result<Vec<u8>, String> {
+    let relative_path = normalize_relative_path(relative_path);
+    let unc = relative_unc_path(location, &relative_path)?;
+    let open_args = smb_client::FileCreateArgs::make_open_existing(
+        smb_client::FileAccessMask::new().with_generic_read(true),
+    );
+    let resource = client
+        .create_file(&unc, &open_args)
+        .await
+        .map_err(|e| format!("open {}: {e}", unc))?;
+
+    let file = match resource {
+        smb_client::Resource::File(file) => file,
+        other => {
+            close_resource(other).await?;
+            return Err(format!("{} did not resolve to a file handle", unc));
+        }
+    };
+
+    let mut data = Vec::with_capacity(expected_size.min(usize::MAX as u64) as usize);
+    let mut offset = 0u64;
+    loop {
+        let mut chunk = vec![0u8; SMB_READ_CHUNK];
+        let read_len = file
+            .read_block(&mut chunk, offset, None, false)
+            .await
+            .map_err(|e| format!("read {} @{}: {e}", unc, offset))?;
+        if read_len == 0 {
+            break;
+        }
+        data.extend_from_slice(&chunk[..read_len]);
+        offset += read_len as u64;
+    }
+
+    file.close()
+        .await
+        .map_err(|e| format!("close {}: {e}", unc))?;
+    Ok(data)
+}
+
 pub async fn upload_local_dir_to_smb(
     local_dir: &std::path::Path,
     location: &SmbLocation,
@@ -215,16 +260,17 @@ pub fn normalize_relative_path(path: &str) -> String {
 }
 
 pub fn target_relative_path(source_dir_base: &Path, target_prefix: &str, path: &str) -> String {
-    let rel = Path::new(path)
-        .strip_prefix(source_dir_base)
-        .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| PathBuf::from(path));
+    let rel = relative_path_buf(source_dir_base, Path::new(path));
     let prefixed = if target_prefix.is_empty() {
         rel
     } else {
         Path::new(target_prefix).join(rel)
     };
     normalize_relative_path(&prefixed.to_string_lossy())
+}
+
+pub fn relative_path_from_base(source_dir_base: &Path, path: &Path) -> String {
+    normalize_relative_path(&relative_path_buf(source_dir_base, path).to_string_lossy())
 }
 
 pub fn share_relative_path(location: &SmbLocation, relative_path: &str) -> String {
@@ -251,6 +297,12 @@ fn join_relative(base: &str, child: &str) -> String {
     } else {
         format!("{base}/{child}")
     }
+}
+
+fn relative_path_buf(source_dir_base: &Path, path: &Path) -> PathBuf {
+    path.strip_prefix(source_dir_base)
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {

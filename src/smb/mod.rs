@@ -216,11 +216,23 @@ impl SmbLocation {
     /// This is the first transport-level runtime primitive used by the frame
     /// layer. It intentionally stops at connectivity and root validation; full
     /// traversal/copy support will build on top of the same connection shape.
-    pub async fn verify_root_access(&self) -> Result<(), String> {
-        let mut config = smb_client::ClientConfig::default();
-        config.connection.port = self.port;
+    pub async fn verify_share_access(&self) -> Result<(), String> {
+        let client = smb_client::Client::new(client_config(self));
+        let share_root = self.share_unc_path()?;
+        let username = self.username.as_deref().unwrap_or("");
+        let password = self.password.clone().unwrap_or_default();
 
-        let client = smb_client::Client::new(config);
+        client
+            .share_connect(&share_root, username, password)
+            .await
+            .map_err(|e| format!("share connect {}: {e}", self.display_string()))?;
+
+        client.close().await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub async fn verify_root_access(&self) -> Result<(), String> {
+        let client = smb_client::Client::new(client_config(self));
         let share_root = self.share_unc_path()?;
         let username = self.username.as_deref().unwrap_or("");
         let password = self.password.clone().unwrap_or_default();
@@ -244,6 +256,19 @@ impl SmbLocation {
         client.close().await.map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+pub fn client_config(location: &SmbLocation) -> smb_client::ClientConfig {
+    let mut config = smb_client::ClientConfig::default();
+    config.dfs = false;
+    config.connection.port = location.port;
+    config.connection.auth_methods.kerberos = false;
+    config.connection.auth_methods.ntlm = true;
+    config.connection.compression_enabled = false;
+    config.connection.disable_notifications = true;
+    config.connection.smb2_only_negotiate = true;
+    config.connection.allow_unsigned_guest_access = true;
+    config
 }
 
 fn normalize_segmentish_path(path: &str) -> String {

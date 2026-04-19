@@ -108,9 +108,8 @@ impl<'a> BackupPrereqJob<'a> {
             log::debug!("Prereq: local source verified: {:?}", local);
         }
 
-        // 3. Verify remote source / target connectivity
-        for location in [self.source, self.target] {
-            match location {
+        // 3. Verify remote source connectivity
+        match self.source {
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(ref loc) => {
                 log::info!("Prereq: verifying NFS connectivity to {}", loc.host);
@@ -143,7 +142,42 @@ impl<'a> BackupPrereqJob<'a> {
                 log::info!("Prereq: SMB reachable ({})", loc.display_string());
             }
             _ => {}
+        }
+
+        // 4. Verify remote target connectivity
+        match self.target {
+            #[cfg(feature = "nfs")]
+            DataLocation::Nfs(ref loc) => {
+                log::info!("Prereq: verifying NFS connectivity to {}", loc.host);
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(PrereqError::Io)?;
+                let loc_clone = loc.clone();
+                rt.block_on(async {
+                    let _pool = crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await
+                        .map_err(PrereqError::NfsConnect)?;
+                    log::info!("Prereq: NFS reachable (export={})", loc_clone.export);
+                    Ok::<(), PrereqError>(())
+                })?;
             }
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(ref loc) => {
+                log::info!("Prereq: verifying SMB target connectivity to {}", loc.display_string());
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(PrereqError::Io)?;
+                let loc_clone = loc.clone();
+                rt.block_on(async {
+                    loc_clone
+                        .verify_share_access()
+                        .await
+                        .map_err(PrereqError::SmbConnect)
+                })?;
+                log::info!("Prereq: SMB target reachable ({})", loc.display_string());
+            }
+            _ => {}
         }
         log::info!("Prereq: all checks passed");
         Ok(())

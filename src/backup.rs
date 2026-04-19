@@ -70,6 +70,11 @@ pub struct BackupOption {
     #[cfg(feature = "smb")]
     pub smb_target: Option<crate::smb::SmbLocation>,
 
+    /// SMB source location. When `Some`, the async pipeline reads from SMB
+    /// instead of the local filesystem. Requires the `smb` feature.
+    #[cfg(feature = "smb")]
+    pub smb_source: Option<crate::smb::SmbLocation>,
+
     /// Relative path within the SMB target where D_REPO data should be written.
     /// e.g. `COPY_COMMON_FULL_xxx/D_REPO`.
     #[cfg(feature = "smb")]
@@ -133,6 +138,8 @@ impl BackupOption {
             nfs_target_d_repo_path: None,
             #[cfg(feature = "smb")]
             smb_target: None,
+            #[cfg(feature = "smb")]
+            smb_source: None,
             #[cfg(feature = "smb")]
             smb_target_d_repo_path: None,
         }
@@ -216,6 +223,15 @@ impl BackupOption {
         self
     }
 
+    /// Set an SMB source location. When set, the async pipeline reads files
+    /// from the SMB share instead of the local filesystem.
+    /// Requires the `smb` Cargo feature.
+    #[cfg(feature = "smb")]
+    pub fn smb_source(mut self, loc: crate::smb::SmbLocation) -> Self {
+        self.smb_source = Some(loc);
+        self
+    }
+
     /// Set the relative path within the SMB target where D_REPO data should
     /// be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
     /// Requires the `smb` Cargo feature.
@@ -270,6 +286,8 @@ impl BackupTask {
         let nfs_target_d_repo_path = self.option.nfs_target_d_repo_path.clone();
         #[cfg(feature = "smb")]
         let smb_target = self.option.smb_target.clone();
+        #[cfg(feature = "smb")]
+        let smb_source = self.option.smb_source.clone();
         #[cfg(feature = "smb")]
         let smb_target_d_repo_path = self.option.smb_target_d_repo_path.clone();
 
@@ -353,6 +371,31 @@ impl BackupTask {
         }
 
         #[cfg(feature = "smb")]
+        if let (Some(ref src_loc), Some(ref tgt_loc)) = (&smb_source, &smb_target) {
+            let terminate_handle = crate::backup::aio::spawn_smb_to_smb_backup(
+                src_loc.clone(),
+                tgt_loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                smb_target_d_repo_path.clone().unwrap_or_default(),
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
+
+            return Ok(Self::running_backup(
+                self.option,
+                stats,
+                terminate_handle,
+                terminate_indicator,
+            ));
+        }
+
+        #[cfg(feature = "smb")]
         if let Some(ref loc) = smb_target {
             let terminate_handle = crate::backup::aio::spawn_local_to_smb_backup(
                 loc.clone(),
@@ -361,6 +404,30 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 smb_target_d_repo_path.clone().unwrap_or_default(),
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
+
+            return Ok(Self::running_backup(
+                self.option,
+                stats,
+                terminate_handle,
+                terminate_indicator,
+            ));
+        }
+
+        #[cfg(feature = "smb")]
+        if let Some(ref loc) = smb_source {
+            let terminate_handle = crate::backup::aio::spawn_smb_to_local_backup(
+                loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                target_dir_base.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,

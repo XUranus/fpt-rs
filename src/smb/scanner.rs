@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use smb_client::{Directory, FileAccessMask, FileAllInformation, FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath};
+use smb_client::{DirAccessMask, Directory, FileAccessMask, FileAllInformation, FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath};
 use tokio::sync::mpsc;
 
 use crate::scanner::models::DirBatchScanResult;
@@ -33,10 +33,7 @@ struct DirTask {
 
 impl SmbScanner {
     pub async fn new(location: &SmbLocation) -> Result<Self, String> {
-        let mut config = smb_client::ClientConfig::default();
-        config.connection.port = location.port;
-
-        let client = Arc::new(smb_client::Client::new(config));
+        let client = Arc::new(smb_client::Client::new(crate::smb::client_config(location)));
         let share_root = location.share_unc_path()?;
         let username = location.username.as_deref().unwrap_or("");
         let password = location.password.clone().unwrap_or_default();
@@ -83,7 +80,10 @@ impl SmbScanner {
         stack: &mut Vec<DirTask>,
     ) {
         let open_args = FileCreateArgs::make_open_existing(
-            FileAccessMask::new().with_generic_read(true),
+            DirAccessMask::new()
+                .with_list_directory(true)
+                .with_read_attributes(true)
+                .into(),
         );
 
         let resource = match self.client.create_file(&task.unc, &open_args).await {
