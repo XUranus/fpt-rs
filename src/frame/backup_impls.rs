@@ -4,6 +4,7 @@
 //! |------|--------|----------|
 //! | [`LocalFileBackup`] | Local filesystem path | Blocking BIO threads, `std::fs` |
 //! | [`NfsFileBackup`]   | NFSv3 export          | Tokio AIO tasks, `nfs3_client` WRITE RPCs |
+//! | [`SmbFileBackup`]   | SMB share             | Tokio AIO tasks, `smb-rs` async client |
 //!
 //! Both types read source data and metadata from local paths.  Only the
 //! **data write destination** differs.
@@ -143,6 +144,8 @@ pub use nfs_impl::NfsFileBackup;
 pub use nfs_impl::NfsSourceFileBackup;
 #[cfg(feature = "nfs")]
 pub use nfs_impl::NfsSourceTargetFileBackup;
+#[cfg(feature = "smb")]
+pub use smb_impl::SmbFileBackup;
 
 #[cfg(feature = "nfs")]
 mod nfs_impl {
@@ -181,7 +184,7 @@ mod nfs_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(extract_d_repo_relative_path(&cfg.local_target_dir));
+            .nfs_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
 
             run_backup_task(option)
         }
@@ -259,7 +262,51 @@ mod nfs_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_source(self.nfs_source.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(extract_d_repo_relative_path(&cfg.local_target_dir));
+            .nfs_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+
+            run_backup_task(option)
+        }
+    }
+}
+
+#[cfg(feature = "smb")]
+mod smb_impl {
+    use super::*;
+    use crate::smb::SmbLocation;
+
+    /// Backs up data to an SMB share using the AIO pipeline.
+    ///
+    /// Metadata (M_REPO, C_REPO) is staged locally and uploaded in post-job.
+    /// D_REPO data is written directly to the SMB share during the subtask.
+    pub struct SmbFileBackup {
+        pub config: BackupConfig,
+        pub smb_target: SmbLocation,
+    }
+
+    impl SmbFileBackup {
+        pub fn new(config: BackupConfig, smb_target: SmbLocation) -> Self {
+            Self { config, smb_target }
+        }
+    }
+
+    impl FileBackup for SmbFileBackup {
+        type Error = BackupTaskError;
+
+        fn run(&self) -> Result<TransferStats, BackupTaskError> {
+            let cfg = &self.config;
+            let option = BackupOption::new(
+                cfg.source_dir.clone(),
+                cfg.local_target_dir.clone(),
+                cfg.meta_dir.clone(),
+                cfg.ctrl_dir.clone(),
+                cfg.control_file.clone(),
+            )
+            .enable_hardlink_phase(cfg.enable_hardlink)
+            .enable_delete_phase(cfg.enable_delete)
+            .enable_mtime_phase(cfg.enable_mtime)
+            .aggregate_config(cfg.aggregate_config.clone())
+            .smb_target(self.smb_target.clone())
+            .smb_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
 
             run_backup_task(option)
         }
@@ -274,7 +321,7 @@ mod nfs_impl {
 ///
 /// Given a path like `/tmp/work/COPY_COMMON_FULL_xxx/D_REPO`, returns
 /// `COPY_COMMON_FULL_xxx/D_REPO`.
-fn extract_d_repo_relative_path(local_target_dir: &PathBuf) -> String {
+fn extract_repo_relative_path(local_target_dir: &PathBuf) -> String {
     // Walk up from the path to find the COPY_.../D_REPO portion.
     // The structure is: <base>/COPY_{format}_{type}_{uuid}/D_REPO
     // We want: COPY_{format}_{type}_{uuid}/D_REPO

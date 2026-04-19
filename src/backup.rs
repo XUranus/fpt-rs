@@ -19,8 +19,8 @@ pub mod aggregate_index;
 pub mod aggregate_engine;
 pub mod aggregate_restore;
 
-// Async I/O pipeline (used for NFS targets / sources)
-#[cfg(feature = "nfs")]
+// Async I/O pipeline (used for remote targets / sources such as NFS and SMB)
+#[cfg(any(feature = "nfs", feature = "smb"))]
 pub mod aio;
 
 pub struct BackupOption {
@@ -64,6 +64,16 @@ pub struct BackupOption {
     /// to place files under the correct copy structure.
     #[cfg(feature = "nfs")]
     pub nfs_target_d_repo_path: Option<String>,
+
+    /// SMB target location. When `Some`, the async pipeline writes to SMB
+    /// instead of the local filesystem. Requires the `smb` feature.
+    #[cfg(feature = "smb")]
+    pub smb_target: Option<crate::smb::SmbLocation>,
+
+    /// Relative path within the SMB target where D_REPO data should be written.
+    /// e.g. `COPY_COMMON_FULL_xxx/D_REPO`.
+    #[cfg(feature = "smb")]
+    pub smb_target_d_repo_path: Option<String>,
 }
 
 
@@ -121,6 +131,10 @@ impl BackupOption {
             nfs_source: None,
             #[cfg(feature = "nfs")]
             nfs_target_d_repo_path: None,
+            #[cfg(feature = "smb")]
+            smb_target: None,
+            #[cfg(feature = "smb")]
+            smb_target_d_repo_path: None,
         }
     }
     
@@ -192,6 +206,24 @@ impl BackupOption {
         self.nfs_target_d_repo_path = Some(path);
         self
     }
+
+    /// Set an SMB target location. When set, the async pipeline writes files
+    /// to the SMB share instead of the local filesystem.
+    /// Requires the `smb` Cargo feature.
+    #[cfg(feature = "smb")]
+    pub fn smb_target(mut self, loc: crate::smb::SmbLocation) -> Self {
+        self.smb_target = Some(loc);
+        self
+    }
+
+    /// Set the relative path within the SMB target where D_REPO data should
+    /// be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
+    /// Requires the `smb` Cargo feature.
+    #[cfg(feature = "smb")]
+    pub fn smb_target_d_repo_path(mut self, path: String) -> Self {
+        self.smb_target_d_repo_path = Some(path);
+        self
+    }
 }
 
 struct SharedState {
@@ -236,6 +268,10 @@ impl BackupTask {
         let nfs_source = self.option.nfs_source.clone();
         #[cfg(feature = "nfs")]
         let nfs_target_d_repo_path = self.option.nfs_target_d_repo_path.clone();
+        #[cfg(feature = "smb")]
+        let smb_target = self.option.smb_target.clone();
+        #[cfg(feature = "smb")]
+        let smb_target_d_repo_path = self.option.smb_target_d_repo_path.clone();
 
         // When both NFS source AND NFS target are configured, run the
         // dual-pool NFS→NFS AIO pipeline.
@@ -301,6 +337,30 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 target_dir_base.clone(),
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
+
+            return Ok(Self::running_backup(
+                self.option,
+                stats,
+                terminate_handle,
+                terminate_indicator,
+            ));
+        }
+
+        #[cfg(feature = "smb")]
+        if let Some(ref loc) = smb_target {
+            let terminate_handle = crate::backup::aio::spawn_local_to_smb_backup(
+                loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                smb_target_d_repo_path.clone().unwrap_or_default(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,

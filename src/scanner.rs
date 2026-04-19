@@ -400,3 +400,81 @@ pub async fn run_nfs_scan(
     let snap = stats.snapshot();
     Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))
 }
+
+/// Run a full SMB scan and write metadata/control files to disk.
+///
+/// This mirrors [`run_nfs_scan`] but uses the SMB client transport.
+#[cfg(feature = "smb")]
+pub async fn run_smb_scan(
+    location: &crate::smb::SmbLocation,
+    scan_option: ScanOption,
+) -> Result<(u64, u64, u64), String> {
+    use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
+    use crate::smb::scanner::SmbScanner;
+
+    let output_queue = Arc::new(BlockingQueue::<DirBatchScanResult>::new(1000));
+    let stats = Arc::new(ScanStatistics::default());
+
+    let writer_count = scan_option.writer_count;
+    let scan_opt_arc = Arc::new(scan_option);
+
+    let context = ScanWorkerContext {
+        scan_option: Arc::clone(&scan_opt_arc),
+        dirent_queue: Arc::new(
+            SpillQueue::new(
+                scan_opt_arc.queue_option.temp_dir.clone(),
+                scan_opt_arc.queue_option.memory_upper_bound,
+                scan_opt_arc.queue_option.memory_lower_bound,
+                scan_opt_arc.queue_option.spill_load_batch_size,
+            )
+            .map_err(|e| format!("queue init failed: {e}"))?,
+        ),
+        output_queue: Arc::clone(&output_queue),
+        stats: Arc::clone(&stats),
+    };
+
+    let writer_handles = if scan_opt_arc.stats_only {
+        start_stats_consumers(&context, writer_count.max(1))
+    } else {
+        start_meta_writers(&context, writer_count, None)
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
+    let scanner = SmbScanner::new(location).await?;
+    let scan_opt_for_task = Arc::clone(&scan_opt_arc);
+
+    let scan_handle = tokio::spawn(async move { scanner.scan(&scan_opt_for_task, tx).await });
+
+    let oq = Arc::clone(&output_queue);
+    let bridge_stats = Arc::clone(&stats);
+    while let Some(batch) = rx.recv().await {
+        let file_count = batch.files.len();
+        let batch_size: u64 = batch.files.iter().map(|f| f.size).sum();
+        oq.push(batch);
+        for _ in 0..file_count {
+            bridge_stats.inc_files();
+        }
+        bridge_stats.add_file_size(batch_size);
+        bridge_stats.inc_dirs();
+    }
+
+    match scan_handle.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(format!("SMB scan task panicked: {e:?}")),
+    }
+
+    output_queue.close();
+
+    for h in writer_handles {
+        let _ = h.join();
+    }
+
+    if !scan_opt_arc.stats_only {
+        engine::generate_control_files(&scan_opt_arc.target_dir)
+            .map_err(|e| format!("generate_control_files failed: {e}"))?;
+    }
+
+    let snap = stats.snapshot();
+    Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))
+}

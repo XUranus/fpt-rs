@@ -5,8 +5,8 @@
 //! **Backup post-job**
 //! - D_REPO data is always written directly by the AIO pipeline during the
 //!   subtask phase (both for local→NFS and NFS→NFS). No D_REPO upload here.
-//! - M_REPO and C_REPO are always written locally and uploaded to NFS when
-//!   the target is NFS. These repos contain only a few small files.
+//! - M_REPO and C_REPO are always written locally and uploaded to a remote
+//!   target (currently NFS or SMB). These repos contain only a few small files.
 //! - The `manifest.json` is written to the copy root.
 //!
 //! **Restore post-job**
@@ -15,12 +15,12 @@
 //! - When the restore target is **NFS**: data files were written directly by
 //!   the AIO pipeline; no extra copy required.
 //!
-//! # NFS upload
+//! # Remote upload
 //!
-//! Uploading M_REPO / C_REPO to an NFS target is done with plain synchronous
-//! reads + NFS WRITE RPCs (inside a one-off Tokio runtime so we can re-use
-//! the `nfs3_client` API without making the whole post-job async from the
-//! caller's perspective).
+//! Uploading M_REPO / C_REPO to a remote target is done from the local staging
+//! repo inside a one-off Tokio runtime so we can re-use the async transport
+//! clients without making the whole post-job async from the caller's
+//! perspective.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -40,6 +40,9 @@ pub enum PostJobError {
     /// NFS upload of repo files failed.
     #[cfg(feature = "nfs")]
     NfsUpload(String),
+    /// SMB upload of repo files failed.
+    #[cfg(feature = "smb")]
+    SmbUpload(String),
     /// Transport exists but the post-job uploader is not wired yet.
     Unsupported(String),
 }
@@ -51,6 +54,8 @@ impl std::fmt::Display for PostJobError {
             PostJobError::ManifestWrite(s) => write!(f, "manifest write error: {s}"),
             #[cfg(feature = "nfs")]
             PostJobError::NfsUpload(s)     => write!(f, "NFS upload error: {s}"),
+            #[cfg(feature = "smb")]
+            PostJobError::SmbUpload(s)     => write!(f, "SMB upload error: {s}"),
             PostJobError::Unsupported(s)   => write!(f, "unsupported: {s}"),
         }
     }
@@ -68,9 +73,9 @@ impl From<io::Error> for PostJobError {
 
 /// Post-job phase for backup.
 ///
-/// Writes the manifest and, when the target is NFS, copies M_REPO and C_REPO
-/// to the target using NFS WRITE RPCs.  D_REPO is always written directly
-/// by the AIO pipeline during the subtask phase and is not uploaded here.
+/// Writes the manifest and, when the target is remote, copies the staged
+/// repos to that target. D_REPO is written directly by the AIO pipeline during
+/// the subtask phase and is not uploaded here.
 pub struct BackupPostJob<'a> {
     /// The target location for the *copy* (not the data source).
     pub target: &'a DataLocation,
@@ -123,7 +128,7 @@ impl<'a> BackupPostJob<'a> {
         std::fs::write(&manifest_path, &manifest_json)?;
         log::debug!("Post-job: manifest written ({} bytes)", manifest_json.len());
 
-        // 2. If target is NFS, upload D_REPO, M_REPO and C_REPO.
+        // 2. If target is remote, upload manifest, M_REPO, and C_REPO.
         match self.target {
             DataLocation::Local(target_root) => {
                 // For a local target the copy root IS the local staging area,
@@ -181,10 +186,46 @@ impl<'a> BackupPostJob<'a> {
                 log::info!("Post-job: NFS upload complete");
             }
             #[cfg(feature = "smb")]
-            DataLocation::Smb(_) => {
-                return Err(PostJobError::Unsupported(
-                    "SMB post-job upload is not implemented yet".to_string(),
-                ));
+            DataLocation::Smb(smb_loc) => {
+                log::info!("Post-job: uploading M_REPO and C_REPO to SMB target");
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("bifrost-smb-post")
+                    .build()
+                    .map_err(PostJobError::Io)?;
+
+                let copy_folder = self.local_repo.copy_root
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("COPY_UNKNOWN")
+                    .to_string();
+
+                let smb_loc_clone = smb_loc.clone();
+                let m_repo = self.local_repo.copy_root.join("M_REPO");
+                let c_repo = self.local_repo.copy_root.join("C_REPO");
+                let manifest = self.local_repo.manifest_path();
+
+                rt.block_on(async move {
+                    crate::smb::aio::upload_local_dir_to_smb(
+                        &m_repo,
+                        &smb_loc_clone,
+                        &format!("{copy_folder}/M_REPO"),
+                    )
+                    .await?;
+                    crate::smb::aio::upload_local_dir_to_smb(
+                        &c_repo,
+                        &smb_loc_clone,
+                        &format!("{copy_folder}/C_REPO"),
+                    )
+                    .await?;
+                    crate::smb::aio::upload_local_file_to_smb(
+                        &manifest,
+                        &smb_loc_clone,
+                        &format!("{copy_folder}/manifest.json"),
+                    )
+                    .await
+                }).map_err(PostJobError::SmbUpload)?;
+                log::info!("Post-job: SMB upload complete");
             }
         }
         log::info!("Post-job: done");

@@ -94,6 +94,7 @@ pub type SubtaskStats = TransferStats;
 /// |---------|---------|---------------------------------|
 /// | Local   | Local   | [`LocalFileBackup`] (BIO) |
 /// | Local   | NFS     | [`NfsFileBackup`] (AIO, local read → NFS write) |
+/// | Local   | SMB     | [`SmbFileBackup`] (AIO, local read → SMB write) |
 /// | NFS     | Local   | [`NfsSourceFileBackup`] (AIO, NFS read → local write) |
 /// | NFS     | NFS     | [`NfsSourceTargetFileBackup`] (AIO, direct NFS→NFS copy) |
 pub fn run_backup_subtask(
@@ -141,13 +142,21 @@ pub fn run_backup_subtask(
                 .map_err(map_backup_err)
         }
         #[cfg(feature = "smb")]
+        (DataLocation::Local(_), DataLocation::Smb(smb_target)) => {
+            use crate::frame::backup_impls::SmbFileBackup;
+            SmbFileBackup::new(backup_cfg, smb_target.clone())
+                .run()
+                .map_err(map_backup_err)
+        }
+        #[cfg(feature = "smb")]
         _ if config.backup_source.is_smb() || config.backup_target.is_smb() => {
-            Err(SubtaskError::Engine("SMB backup is not implemented yet".to_string()))
+            Err(SubtaskError::Engine(
+                "this SMB backup direction is not implemented yet".to_string()
+            ))
         }
-        #[cfg(not(feature = "nfs"))]
-        _ => {
-            Err(SubtaskError::Engine("NFS support not compiled in".to_string()))
-        }
+        _ => Err(SubtaskError::Engine(
+            "this backup direction is not compiled in".to_string()
+        )),
     }
 }
 

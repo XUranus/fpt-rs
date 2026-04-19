@@ -236,17 +236,15 @@ mod smb_impl {
 
     #[derive(Debug)]
     pub enum SmbScanError {
-        Connect(String),
+        Scan(String),
         Runtime(std::io::Error),
-        Unsupported(String),
     }
 
     impl fmt::Display for SmbScanError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                SmbScanError::Connect(s) => write!(f, "SMB scan connection error: {s}"),
+                SmbScanError::Scan(s) => write!(f, "SMB scan error: {s}"),
                 SmbScanError::Runtime(e) => write!(f, "runtime error: {e}"),
-                SmbScanError::Unsupported(s) => write!(f, "unsupported: {s}"),
             }
         }
     }
@@ -270,17 +268,21 @@ mod smb_impl {
         type Error = SmbScanError;
 
         fn scan(&self) -> Result<ScanStats, SmbScanError> {
+            let scan_option = self.config.to_scan_option();
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(SmbScanError::Runtime)?;
 
             let source = self.source.clone();
-            rt.block_on(async move {
-                source.verify_root_access().await.map_err(SmbScanError::Connect)?;
-                Err(SmbScanError::Unsupported(
-                    "SMB directory traversal is not implemented yet".to_string(),
-                ))
+            let (tot_files, tot_dirs, tot_size) = rt
+                .block_on(crate::scanner::run_smb_scan(&source, scan_option))
+                .map_err(SmbScanError::Scan)?;
+
+            Ok(ScanStats {
+                total_files: tot_files,
+                total_dirs: tot_dirs,
+                total_size_bytes: tot_size,
             })
         }
     }

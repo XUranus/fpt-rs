@@ -78,12 +78,13 @@ impl From<crate::nfs::NfsError> for PrereqError {
 /// D\_REPO data is written directly to NFS by the AIO pipeline.
 pub struct BackupPrereqJob<'a> {
     pub source: &'a DataLocation,
+    pub target: &'a DataLocation,
     pub repo: &'a RepoLayout,
 }
 
 impl<'a> BackupPrereqJob<'a> {
-    pub fn new(source: &'a DataLocation, repo: &'a RepoLayout) -> Self {
-        Self { source, repo }
+    pub fn new(source: &'a DataLocation, target: &'a DataLocation, repo: &'a RepoLayout) -> Self {
+        Self { source, target, repo }
     }
 
     /// Run all prerequisite checks and create local directories.
@@ -107,11 +108,12 @@ impl<'a> BackupPrereqJob<'a> {
             log::debug!("Prereq: local source verified: {:?}", local);
         }
 
-        // 3. Verify NFS source connectivity
-        match self.source {
+        // 3. Verify remote source / target connectivity
+        for location in [self.source, self.target] {
+            match location {
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(ref loc) => {
-                log::info!("Prereq: verifying NFS source connectivity to {}", loc.host);
+                log::info!("Prereq: verifying NFS connectivity to {}", loc.host);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -120,13 +122,13 @@ impl<'a> BackupPrereqJob<'a> {
                 rt.block_on(async {
                     let _pool = crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await
                         .map_err(PrereqError::NfsConnect)?;
-                    log::info!("Prereq: NFS source reachable (export={})", loc_clone.export);
+                    log::info!("Prereq: NFS reachable (export={})", loc_clone.export);
                     Ok::<(), PrereqError>(())
                 })?;
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(ref loc) => {
-                log::info!("Prereq: verifying SMB source connectivity to {}", loc.display_string());
+                log::info!("Prereq: verifying SMB connectivity to {}", loc.display_string());
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -138,9 +140,10 @@ impl<'a> BackupPrereqJob<'a> {
                         .await
                         .map_err(PrereqError::SmbConnect)
                 })?;
-                log::info!("Prereq: SMB source reachable ({})", loc.display_string());
+                log::info!("Prereq: SMB reachable ({})", loc.display_string());
             }
             _ => {}
+            }
         }
         log::info!("Prereq: all checks passed");
         Ok(())

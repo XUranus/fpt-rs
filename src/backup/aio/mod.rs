@@ -1,9 +1,11 @@
-//! Async backup execution for any NFS-involved data path.
+//! Async backup execution for remote-involved data paths.
 //!
-//! This module is the NFS counterpart to [`crate::backup::bio`]:
+//! This module is the remote counterpart to [`crate::backup::bio`]:
 //! - Direction-specific **copy** pipelines live under `backup/aio/`.
 //! - NFS target **post-copy phases** (hardlink/delete/mtime) reuse the RPC
 //!   helpers under [`crate::nfs::aio`].
+//! - SMB target support currently covers the copy phase plus post-job repo
+//!   upload; SMB hardlink/delete/mtime phases are not implemented yet.
 //! - Local target post-copy phases reuse the existing BIO phase handlers.
 //!
 //! The public entry points here are direction-level orchestrators so callers
@@ -14,22 +16,37 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use log::{error, info};
+#[cfg(feature = "nfs")]
+use log::error;
+use log::info;
 
+#[cfg(feature = "nfs")]
 use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::stats::BackupStats;
+#[cfg(feature = "nfs")]
 use crate::nfs::aio::reader::new_file_handle_cache;
+#[cfg(feature = "nfs")]
 use crate::nfs::aio::writer::new_dir_handle_cache;
+#[cfg(feature = "nfs")]
 use crate::nfs::connection::NfsConnectionPool;
+#[cfg(feature = "nfs")]
 use crate::nfs::NfsLocation;
+#[cfg(feature = "smb")]
+use crate::smb::SmbLocation;
 
 mod entry;
 mod local_fs;
 
+#[cfg(feature = "smb")]
+pub mod local_to_smb;
+#[cfg(feature = "nfs")]
 pub mod local_to_nfs;
+#[cfg(feature = "nfs")]
 pub mod nfs_to_local;
+#[cfg(feature = "nfs")]
 pub mod nfs_to_nfs;
 
+#[cfg(feature = "nfs")]
 pub fn spawn_local_to_nfs_backup(
     nfs_target: NfsLocation,
     control_file: PathBuf,
@@ -86,6 +103,65 @@ pub fn spawn_local_to_nfs_backup(
     })
 }
 
+#[cfg(feature = "smb")]
+pub fn spawn_local_to_smb_backup(
+    smb_target: SmbLocation,
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    stats: Arc<BackupStats>,
+    terminate_indicator: Arc<AtomicBool>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-local-to-smb")
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("local→SMB: failed to build async runtime: {e}");
+                terminate_indicator.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let client = match crate::smb::aio::connect_client(&smb_target).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("local→SMB: failed to connect: {e}");
+                    return;
+                }
+            };
+
+            info!("local→SMB: connected to {}", smb_target.display_string());
+
+            run_local_to_smb_backup(
+                control_file,
+                meta_dir,
+                ctrl_dir,
+                source_dir_base,
+                target_prefix,
+                smb_target,
+                client,
+                stats,
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            ).await;
+        });
+
+        terminate_indicator.store(true, Ordering::Relaxed);
+    })
+}
+
+#[cfg(feature = "nfs")]
 pub fn spawn_nfs_to_local_backup(
     nfs_source: NfsLocation,
     control_file: PathBuf,
@@ -142,6 +218,7 @@ pub fn spawn_nfs_to_local_backup(
     })
 }
 
+#[cfg(feature = "nfs")]
 pub fn spawn_nfs_to_nfs_backup(
     nfs_source: NfsLocation,
     nfs_target: NfsLocation,
@@ -213,6 +290,7 @@ pub fn spawn_nfs_to_nfs_backup(
 }
 
 /// Run a full backup pipeline for local source → NFS target.
+#[cfg(feature = "nfs")]
 pub async fn run_local_to_nfs_backup(
     control_file: PathBuf,
     meta_dir: PathBuf,
@@ -252,7 +330,46 @@ pub async fn run_local_to_nfs_backup(
     .await;
 }
 
+/// Run a full backup pipeline for local source → SMB target.
+#[cfg(feature = "smb")]
+pub async fn run_local_to_smb_backup(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    location: SmbLocation,
+    client: Arc<smb_client::Client>,
+    stats: Arc<BackupStats>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    local_to_smb::run_local_to_smb_copy_pipeline(
+        control_file,
+        meta_dir,
+        source_dir_base.clone(),
+        target_prefix.clone(),
+        location.clone(),
+        client,
+        stats,
+    )
+    .await;
+
+    run_smb_target_phases(
+        &ctrl_dir,
+        &source_dir_base,
+        &target_prefix,
+        &location,
+        enable_hardlink_phase,
+        enable_delete_phase,
+        enable_mtime_phase,
+    )
+    .await;
+}
+
 /// Run a full backup pipeline for NFS source → local target.
+#[cfg(feature = "nfs")]
 pub async fn run_nfs_to_local_backup(
     control_file: PathBuf,
     meta_dir: PathBuf,
@@ -287,6 +404,7 @@ pub async fn run_nfs_to_local_backup(
 }
 
 /// Run a full backup pipeline for NFS source → NFS target.
+#[cfg(feature = "nfs")]
 pub async fn run_nfs_to_nfs_backup(
     control_file: PathBuf,
     meta_dir: PathBuf,
@@ -328,6 +446,7 @@ pub async fn run_nfs_to_nfs_backup(
     .await;
 }
 
+#[cfg(feature = "nfs")]
 fn run_local_target_phases(
     ctrl_dir: &PathBuf,
     meta_dir: &PathBuf,
@@ -383,6 +502,7 @@ fn run_local_target_phases(
     }
 }
 
+#[cfg(feature = "nfs")]
 async fn run_nfs_target_phases(
     ctrl_dir: &PathBuf,
     source_dir_base: &PathBuf,
@@ -439,6 +559,62 @@ async fn run_nfs_target_phases(
         .await;
         info!(
             "NFS mtime phase complete: {} dirs restored, {} failed",
+            mt_stats.dirs_restored, mt_stats.dirs_failed
+        );
+    }
+}
+
+#[cfg(feature = "smb")]
+async fn run_smb_target_phases(
+    ctrl_dir: &PathBuf,
+    source_dir_base: &PathBuf,
+    target_prefix: &str,
+    location: &SmbLocation,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    if enable_hardlink_phase {
+        info!("SMB: starting hardlink phase...");
+        let hl_stats = crate::smb::aio::hardlink::run_smb_hardlink_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_prefix,
+            location,
+        )
+        .await;
+        info!(
+            "SMB hardlink phase complete: {} created, {} failed",
+            hl_stats.hardlinks_created, hl_stats.hardlinks_failed
+        );
+    }
+
+    if enable_delete_phase {
+        info!("SMB: starting delete phase...");
+        let del_stats = crate::smb::aio::delete::run_smb_delete_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_prefix,
+            location,
+        )
+        .await;
+        info!(
+            "SMB delete phase complete: {} files, {} dirs deleted, {} failed",
+            del_stats.files_deleted, del_stats.dirs_deleted, del_stats.entries_failed
+        );
+    }
+
+    if enable_mtime_phase {
+        info!("SMB: starting mtime phase...");
+        let mt_stats = crate::smb::aio::mtime::run_smb_mtime_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_prefix,
+            location,
+        )
+        .await;
+        info!(
+            "SMB mtime phase complete: {} dirs restored, {} failed",
             mt_stats.dirs_restored, mt_stats.dirs_failed
         );
     }

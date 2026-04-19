@@ -72,10 +72,7 @@ impl From<crate::frame::scanner_impls::NfsScanError> for ScanError {
 #[cfg(feature = "smb")]
 impl From<crate::frame::scanner_impls::SmbScanError> for ScanError {
     fn from(e: crate::frame::scanner_impls::SmbScanError) -> Self {
-        match e {
-            crate::frame::scanner_impls::SmbScanError::Unsupported(s) => ScanError::Unsupported(s),
-            other => ScanError::SmbScan(other),
-        }
+        ScanError::SmbScan(e)
     }
 }
 
@@ -160,7 +157,7 @@ impl<'a> ScanJob<'a> {
         Ok(scanner.scan()?)
     }
 
-    /// Run the scan via an [`SmbFileScanner`] (currently connectivity check + unsupported marker).
+    /// Run the scan via an [`SmbFileScanner`].
     #[cfg(feature = "smb")]
     pub fn run_smb(&self) -> Result<ScanStats, ScanError> {
         use crate::frame::scanner_impls::SmbFileScanner;

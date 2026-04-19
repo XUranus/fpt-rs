@@ -6,6 +6,10 @@
 
 use std::path::PathBuf;
 
+pub mod fstat;
+pub mod scanner;
+pub mod aio;
+
 /// Connection information for a single SMB share root.
 ///
 /// Internally Bifrost stores the share root and an optional sub-path beneath

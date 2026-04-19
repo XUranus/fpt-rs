@@ -55,7 +55,11 @@ The repository now has:
 - `fptcli` path parsing for SMB connect strings
 - SMB prerequisite connectivity validation in the frame layer
 - `SmbFileScanner` wiring in the frame layer
-- explicit "not implemented yet" errors for traversal/copy/restore after connectivity succeeds
+- SMB async write helpers in `src/smb/aio/`
+- `local -> SMB` backup support for:
+  - direct `D_REPO` file copy during subtask execution
+  - staged `M_REPO`, `C_REPO`, and `manifest.json` upload in post-job
+- explicit "not implemented yet" errors for the remaining SMB backup/restore directions
 
 The NFS AIO path was also refactored to reduce duplication before SMB copy
 support is added:
@@ -65,7 +69,7 @@ support is added:
 - existing `local_to_nfs`, `nfs_to_local`, and `nfs_to_nfs` pipelines now reuse those helpers
 
 This is intentional. It stabilizes the location/connectivity model and starts
-the transport-oriented refactor before the SMB runtime engines are added.
+the transport-oriented refactor before the remaining SMB runtime engines are added.
 
 ## Clean Architecture Plan
 
@@ -187,8 +191,15 @@ Status: started.
 Current state:
 
 - the frame layer now delegates SMB scan requests to `SmbFileScanner`
-- `SmbFileScanner` validates authenticated access to the configured share/root
-- directory traversal and metadata emission are not implemented yet
+- `SmbFileScanner` now drives a real SMB scan through `crate::scanner::run_smb_scan(...)`
+- `src/smb/scanner.rs` traverses the configured share/sub-path and emits `DirBatchScanResult`
+- the standard metadata writers and control-file generation path are reused unchanged
+- hardlink counts are queried on demand when `scan_hardlinks` is enabled
+
+Remaining gaps:
+
+- reparse points are currently treated conservatively and are not resolved to symlink targets
+- traversal is currently single-walker async traversal, not yet parallelized like the NFS scanner
 
 ### Phase 3: SMB Read/Write Primitives
 
@@ -197,12 +208,30 @@ Current state:
 - Implement open/create/read_at/write_at/close wrappers
 - Implement path resolution and directory creation helpers
 
+Status: started.
+Current state:
+
+- `src/smb/aio/mod.rs` now owns SMB client connect helpers
+- recursive target-directory creation is implemented
+- buffered remote file creation and write is implemented
+- local directory/file upload helpers are implemented for post-job repo publish
+
+Remaining gaps:
+
+- there is no SMB source-side read adapter yet
+- the current SMB write path uploads full file buffers rather than streaming reads from the source
+
 ### Phase 4: SMB Target Phases
 
 - Add SMB hardlink, delete, and mtime support if supported cleanly by the protocol/client
 - If hardlink is not available or not reliable through the client API, document and gate it explicitly
 
 This point needs validation against `smb-rs` API surface before promising parity.
+
+Current state:
+
+- `local -> SMB` backup currently supports the copy phase only
+- hardlink/delete/mtime flags are accepted by the top-level backup flow but are skipped for SMB targets with an explicit log message
 
 ### Phase 5: Cross-Transport Orchestration Refactor
 
@@ -220,6 +249,7 @@ Current state:
 
 - duplicated control-file entry production was extracted from the NFS AIO pipelines
 - duplicated local read/write helpers were extracted from the NFS AIO pipelines
+- the async backup module now hosts both NFS and SMB transport entry points behind feature gates
 - the next refactor step is to introduce reusable remote source/target adapters on top of those shared pieces
 
 ### Phase 6: Restore
