@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::backup::RestorePolicy;
 use crate::frame::location::DataLocation;
 use crate::frame::postjob::RestorePostJob;
+use crate::frame::postjob::BackupManifest;
 use crate::frame::prereq::RestorePrereqJob;
 use crate::frame::repo::{RepoLayout, TempRepoConfig};
 use crate::frame::subtask::{
@@ -158,6 +159,11 @@ impl BackupRestoreJob for FileRestoreJob {
         }
 
         // ── Phase 2: Subtasks ─────────────────────────────────────────────────
+        let manifest: BackupManifest = serde_json::from_str(
+            &std::fs::read_to_string(repo.manifest_path()).map_err(RestoreJobError::Io)?
+        ).map_err(|e| RestoreJobError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+        let restore_source_base = parse_manifest_source_base(&manifest.source);
+
         let ctrl_files = find_restore_control_files(&repo.ctrl_dir);
         log::info!("{} restore control file(s) found", ctrl_files.len());
 
@@ -174,47 +180,60 @@ impl BackupRestoreJob for FileRestoreJob {
         let mut subtasks_ok     = 0usize;
         let mut subtasks_failed = 0usize;
         let mut total_files     = 0u64;
-        let mut handles: Vec<(String, thread::JoinHandle<_>)> = Vec::new();
+        let phase_order = ["copy", "hardlink", "delete", "mtime"];
 
-        for (ctrl_file, _phase) in ctrl_files {
-            let subtask_uuid = Uuid::new_v4().to_string();
+        for phase in phase_order {
+            let phase_ctrls: Vec<PathBuf> = ctrl_files
+                .iter()
+                .filter(|(_, tag)| *tag == phase)
+                .map(|(path, _)| path.clone())
+                .collect();
 
-            let subtask_cfg = SubtaskConfig {
-                subtask_uuid:    subtask_uuid.clone(),
-                control_file:    ctrl_file.clone(),
-                source_dir:      repo.d_repo.clone(),
-                aggregate_config: crate::backup::aggregate::AggregateConfig::default(),
-                enable_hardlink: false,
-                enable_delete:   false,
-                enable_mtime:    false,
-                backup_source:   DataLocation::Local(PathBuf::new()), // unused for restore
-                backup_target:   DataLocation::Local(PathBuf::new()), // unused for restore
-                restore_target:  cfg.restore_target.clone(),
-            };
+            if phase_ctrls.is_empty() {
+                continue;
+            }
 
-            let repo_clone           = repo.clone();
-            let local_target_clone   = local_restore_target.clone();
+            let mut handles: Vec<(String, thread::JoinHandle<_>)> = Vec::new();
 
-            let handle = thread::spawn(move || {
-                run_restore_subtask(&subtask_cfg, &repo_clone, &local_target_clone)
-            });
+            for ctrl_file in phase_ctrls {
+                let subtask_uuid = Uuid::new_v4().to_string();
 
-            handles.push((subtask_uuid, handle));
-        }
+                let subtask_cfg = SubtaskConfig {
+                    subtask_uuid:    subtask_uuid.clone(),
+                    control_file:    ctrl_file,
+                    source_dir:      repo.d_repo.clone(),
+                    aggregate_config: crate::backup::aggregate::AggregateConfig::default(),
+                    enable_hardlink: false,
+                    enable_delete:   false,
+                    enable_mtime:    false,
+                    backup_source:   DataLocation::Local(PathBuf::new()), // unused for restore
+                    backup_target:   DataLocation::Local(PathBuf::new()), // unused for restore
+                    restore_target:  cfg.restore_target.clone(),
+                    restore_source_base: restore_source_base.clone(),
+                };
 
-        for (subtask_uuid, handle) in handles {
-            let result = handle.join().unwrap_or_else(|_| {
-                Err(SubtaskError::Engine("subtask thread panicked".to_string()))
-            });
+                let repo_clone = repo.clone();
+                let local_target_clone = local_restore_target.clone();
+                let handle = thread::spawn(move || {
+                    run_restore_subtask(&subtask_cfg, &repo_clone, &local_target_clone)
+                });
+                handles.push((subtask_uuid, handle));
+            }
 
-            match result {
-                Ok(stats) => {
-                    subtasks_ok += 1;
-                    total_files += stats.files_transferred;
-                }
-                Err(e) => {
-                    subtasks_failed += 1;
-                    log::error!("Restore subtask {subtask_uuid} failed: {e}");
+            for (subtask_uuid, handle) in handles {
+                let result = handle.join().unwrap_or_else(|_| {
+                    Err(SubtaskError::Engine("subtask thread panicked".to_string()))
+                });
+
+                match result {
+                    Ok(stats) => {
+                        subtasks_ok += 1;
+                        total_files += stats.files_transferred;
+                    }
+                    Err(e) => {
+                        subtasks_failed += 1;
+                        log::error!("Restore subtask {subtask_uuid} failed: {e}");
+                    }
                 }
             }
         }
@@ -242,3 +261,17 @@ impl BackupRestoreJob for FileRestoreJob {
 /// `RestoreJob` is the old name; `FileRestoreJob` is canonical.
 pub type RestoreJob = FileRestoreJob;
 pub type RestoreJobResult = JobResult;
+
+fn parse_manifest_source_base(spec: &str) -> PathBuf {
+    if spec.starts_with("nfs://") {
+        return DataLocation::from_nfs_url(spec)
+            .map(|loc| loc.base_path())
+            .unwrap_or_else(|_| PathBuf::from(spec));
+    }
+    if spec.starts_with("smb://") || spec.starts_with("smb:\\\\") {
+        return DataLocation::from_smb_url(spec)
+            .map(|loc| loc.base_path())
+            .unwrap_or_else(|_| PathBuf::from(spec));
+    }
+    PathBuf::from(spec)
+}

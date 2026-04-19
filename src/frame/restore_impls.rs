@@ -24,6 +24,8 @@ use crate::frame::traits::{FileRestore, TransferStats};
 pub struct RestoreConfig {
     /// Local D_REPO staging directory (source of data for restore).
     pub d_repo_dir: PathBuf,
+    /// Original source base path recorded in the backup manifest.
+    pub source_base_dir: PathBuf,
     /// Local restore target directory (used by local target; ignored by NFS target).
     pub local_target_dir: PathBuf,
     /// Local M_REPO/meta directory (always BIO).
@@ -39,6 +41,7 @@ pub struct RestoreConfig {
 impl RestoreConfig {
     pub fn new(
         d_repo_dir:       impl Into<PathBuf>,
+        source_base_dir:  impl Into<PathBuf>,
         local_target_dir: impl Into<PathBuf>,
         meta_dir:         impl Into<PathBuf>,
         ctrl_dir:         impl Into<PathBuf>,
@@ -46,6 +49,7 @@ impl RestoreConfig {
     ) -> Self {
         Self {
             d_repo_dir:       d_repo_dir.into(),
+            source_base_dir:  source_base_dir.into(),
             local_target_dir: local_target_dir.into(),
             meta_dir:         meta_dir.into(),
             ctrl_dir:         ctrl_dir.into(),
@@ -100,6 +104,7 @@ impl FileRestore for LocalFileRestore {
         let cfg = &self.config;
         let option = RestoreOption::new(
             cfg.d_repo_dir.clone(),
+            cfg.source_base_dir.clone(),
             cfg.local_target_dir.clone(),
             cfg.meta_dir.clone(),
             cfg.ctrl_dir.clone(),
@@ -145,6 +150,7 @@ mod nfs_impl {
             let cfg = &self.config;
             let option = RestoreOption::new(
                 cfg.d_repo_dir.clone(),
+                cfg.source_base_dir.clone(),
                 cfg.local_target_dir.clone(),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
@@ -152,6 +158,46 @@ mod nfs_impl {
             )
             .policy(cfg.policy)
             .nfs_target(self.nfs_target.clone());
+
+            run_restore_task(option)
+        }
+    }
+}
+
+#[cfg(feature = "smb")]
+pub use smb_impl::SmbFileRestore;
+
+#[cfg(feature = "smb")]
+mod smb_impl {
+    use super::*;
+    use crate::smb::SmbLocation;
+
+    pub struct SmbFileRestore {
+        pub config: RestoreConfig,
+        pub smb_target: SmbLocation,
+    }
+
+    impl SmbFileRestore {
+        pub fn new(config: RestoreConfig, smb_target: SmbLocation) -> Self {
+            Self { config, smb_target }
+        }
+    }
+
+    impl FileRestore for SmbFileRestore {
+        type Error = RestoreTaskError;
+
+        fn run(&self) -> Result<TransferStats, RestoreTaskError> {
+            let cfg = &self.config;
+            let option = RestoreOption::new(
+                cfg.d_repo_dir.clone(),
+                cfg.source_base_dir.clone(),
+                cfg.local_target_dir.clone(),
+                cfg.meta_dir.clone(),
+                cfg.ctrl_dir.clone(),
+                cfg.control_file.clone(),
+            )
+            .policy(cfg.policy)
+            .smb_target(self.smb_target.clone());
 
             run_restore_task(option)
         }

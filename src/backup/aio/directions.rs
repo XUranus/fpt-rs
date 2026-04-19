@@ -3,6 +3,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::backup::aggregate::AggregateConfig;
+use crate::backup::aio::aggregation::AggregatingTarget;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
 use crate::backup::aio::transport::{LocalSource, LocalTarget};
@@ -31,6 +33,7 @@ pub async fn run_local_to_nfs_copy_pipeline(
     meta_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
@@ -44,6 +47,7 @@ pub async fn run_local_to_nfs_copy_pipeline(
         root_fh: pool.root_fh(),
         write_chunk: pool.server_wtmax,
     };
+    let target = AggregatingTarget::new(target, aggregate_config);
 
     run_copy_pipeline(
         control_file,
@@ -64,6 +68,7 @@ pub async fn run_local_to_smb_copy_pipeline(
     meta_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     location: SmbLocation,
     client: Arc<smb_client::Client>,
     stats: Arc<BackupStats>,
@@ -77,6 +82,7 @@ pub async fn run_local_to_smb_copy_pipeline(
         client,
         dir_cache: crate::smb::aio::new_dir_cache(),
     };
+    let target = AggregatingTarget::new(target, aggregate_config);
 
     run_copy_pipeline(
         control_file,
@@ -97,6 +103,7 @@ pub async fn run_aio_nfs_to_local_pipeline(
     meta_dir: PathBuf,
     nfs_source_base: PathBuf,
     local_target_base: PathBuf,
+    aggregate_config: AggregateConfig,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
@@ -110,6 +117,7 @@ pub async fn run_aio_nfs_to_local_pipeline(
     let target = LocalTarget {
         base: local_target_base,
     };
+    let target = AggregatingTarget::new(target, aggregate_config);
 
     run_copy_pipeline(
         control_file,
@@ -130,6 +138,7 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
     meta_dir: PathBuf,
     nfs_source_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     source_pool: Arc<NfsConnectionPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
@@ -150,6 +159,7 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
         root_fh: target_pool.root_fh(),
         write_chunk: target_pool.server_wtmax,
     };
+    let target = AggregatingTarget::new(target, aggregate_config);
 
     run_copy_pipeline(
         control_file,
@@ -170,6 +180,7 @@ pub async fn run_smb_to_local_copy_pipeline(
     meta_dir: PathBuf,
     smb_source_base: PathBuf,
     local_target_base: PathBuf,
+    aggregate_config: AggregateConfig,
     location: SmbLocation,
     client: Arc<smb_client::Client>,
     stats: Arc<BackupStats>,
@@ -179,6 +190,7 @@ pub async fn run_smb_to_local_copy_pipeline(
     let target = LocalTarget {
         base: local_target_base,
     };
+    let target = AggregatingTarget::new(target, aggregate_config);
 
     run_copy_pipeline(
         control_file,
@@ -199,6 +211,7 @@ pub async fn run_smb_to_smb_copy_pipeline(
     meta_dir: PathBuf,
     smb_source_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     source_location: SmbLocation,
     target_location: SmbLocation,
     source_client: Arc<smb_client::Client>,
@@ -218,6 +231,7 @@ pub async fn run_smb_to_smb_copy_pipeline(
         client: target_client,
         dir_cache: crate::smb::aio::new_dir_cache(),
     };
+    let target = AggregatingTarget::new(target, aggregate_config);
 
     run_copy_pipeline(
         control_file,

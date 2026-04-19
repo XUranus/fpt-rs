@@ -19,6 +19,7 @@ use std::thread;
 use log::error;
 use log::info;
 
+use crate::backup::aggregate::AggregateConfig;
 #[cfg(feature = "nfs")]
 use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::stats::BackupStats;
@@ -33,10 +34,11 @@ use crate::nfs::NfsLocation;
 #[cfg(feature = "smb")]
 use crate::smb::SmbLocation;
 
-mod entry;
-mod local_fs;
+pub(crate) mod entry;
+pub(crate) mod local_fs;
 mod pipeline;
-mod transport;
+pub(crate) mod transport;
+mod aggregation;
 mod directions;
 
 #[cfg(feature = "nfs")]
@@ -47,6 +49,7 @@ pub fn spawn_local_to_nfs_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -84,6 +87,7 @@ pub fn spawn_local_to_nfs_backup(
                 ctrl_dir,
                 source_dir_base,
                 target_prefix,
+                aggregate_config,
                 pool,
                 stats,
                 enable_hardlink_phase,
@@ -104,6 +108,7 @@ pub fn spawn_local_to_smb_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -141,6 +146,7 @@ pub fn spawn_local_to_smb_backup(
                 ctrl_dir,
                 source_dir_base,
                 target_prefix,
+                aggregate_config,
                 smb_target,
                 client,
                 stats,
@@ -162,6 +168,7 @@ pub fn spawn_smb_to_local_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
+    aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -199,6 +206,7 @@ pub fn spawn_smb_to_local_backup(
                 ctrl_dir,
                 source_dir_base,
                 target_dir_base,
+                aggregate_config,
                 smb_source,
                 client,
                 stats,
@@ -221,6 +229,7 @@ pub fn spawn_smb_to_smb_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -270,6 +279,7 @@ pub fn spawn_smb_to_smb_backup(
                 ctrl_dir,
                 source_dir_base,
                 target_prefix,
+                aggregate_config,
                 smb_source,
                 smb_target,
                 source_client,
@@ -293,6 +303,7 @@ pub fn spawn_nfs_to_local_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
+    aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -330,6 +341,7 @@ pub fn spawn_nfs_to_local_backup(
                 ctrl_dir,
                 source_dir_base,
                 target_dir_base,
+                aggregate_config,
                 pool,
                 stats,
                 enable_hardlink_phase,
@@ -351,6 +363,7 @@ pub fn spawn_nfs_to_nfs_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -400,6 +413,7 @@ pub fn spawn_nfs_to_nfs_backup(
                 ctrl_dir,
                 source_dir_base,
                 target_prefix,
+                aggregate_config,
                 src_pool,
                 tgt_pool,
                 stats,
@@ -421,6 +435,7 @@ pub async fn run_local_to_nfs_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -432,6 +447,7 @@ pub async fn run_local_to_nfs_backup(
         meta_dir,
         source_dir_base.clone(),
         target_prefix.clone(),
+        aggregate_config,
         Arc::clone(&pool),
         Arc::clone(&stats),
     )
@@ -462,6 +478,7 @@ pub async fn run_local_to_smb_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     location: SmbLocation,
     client: Arc<smb_client::Client>,
     stats: Arc<BackupStats>,
@@ -474,6 +491,7 @@ pub async fn run_local_to_smb_backup(
         meta_dir,
         source_dir_base.clone(),
         target_prefix.clone(),
+        aggregate_config,
         location.clone(),
         client,
         stats,
@@ -500,6 +518,7 @@ pub async fn run_nfs_to_local_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
+    aggregate_config: AggregateConfig,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -511,6 +530,7 @@ pub async fn run_nfs_to_local_backup(
         meta_dir.clone(),
         source_dir_base.clone(),
         target_dir_base.clone(),
+        aggregate_config,
         pool,
         stats,
     )
@@ -535,6 +555,7 @@ pub async fn run_nfs_to_nfs_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     source_pool: Arc<NfsConnectionPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
@@ -547,6 +568,7 @@ pub async fn run_nfs_to_nfs_backup(
         meta_dir,
         source_dir_base.clone(),
         target_prefix.clone(),
+        aggregate_config,
         source_pool,
         Arc::clone(&target_pool),
         stats,
@@ -578,6 +600,7 @@ pub async fn run_smb_to_local_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
+    aggregate_config: AggregateConfig,
     location: SmbLocation,
     client: Arc<smb_client::Client>,
     stats: Arc<BackupStats>,
@@ -590,6 +613,7 @@ pub async fn run_smb_to_local_backup(
         meta_dir.clone(),
         source_dir_base.clone(),
         target_dir_base.clone(),
+        aggregate_config,
         location,
         client,
         stats,
@@ -615,6 +639,7 @@ pub async fn run_smb_to_smb_backup(
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
     target_prefix: String,
+    aggregate_config: AggregateConfig,
     source_location: SmbLocation,
     target_location: SmbLocation,
     source_client: Arc<smb_client::Client>,
@@ -629,6 +654,7 @@ pub async fn run_smb_to_smb_backup(
         meta_dir,
         source_dir_base.clone(),
         target_prefix.clone(),
+        aggregate_config,
         source_location,
         target_location.clone(),
         source_client,

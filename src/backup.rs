@@ -18,6 +18,7 @@ pub mod aggregate;
 pub mod aggregate_index;
 pub mod aggregate_engine;
 pub mod aggregate_restore;
+mod restore_pipeline;
 
 // Async I/O pipeline (used for remote targets / sources such as NFS and SMB)
 #[cfg(any(feature = "nfs", feature = "smb"))]
@@ -303,6 +304,7 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
+                self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -329,6 +331,7 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
+                self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -355,6 +358,7 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 target_dir_base.clone(),
+                self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -380,6 +384,7 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 smb_target_d_repo_path.clone().unwrap_or_default(),
+                self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -404,6 +409,7 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 smb_target_d_repo_path.clone().unwrap_or_default(),
+                self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -428,6 +434,7 @@ impl BackupTask {
                 ctrl_dir.clone(),
                 source_dir_base.clone(),
                 target_dir_base.clone(),
+                self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -601,6 +608,8 @@ pub struct RestoreStats {
 pub struct RestoreOption {
     /// Source directory (backup location)
     pub source_dir_base: PathBuf,
+    /// Original source base path recorded in the manifest.
+    pub original_source_base: PathBuf,
     /// Target directory (restore destination)
     pub target_dir_base: PathBuf,
     /// Metadata directory containing meta_*.dat files
@@ -622,12 +631,16 @@ pub struct RestoreOption {
     /// Requires the `nfs` Cargo feature.
     #[cfg(feature = "nfs")]
     pub nfs_target: Option<crate::nfs::NfsLocation>,
+    /// SMB target location. When `Some`, restored files are written to SMB.
+    #[cfg(feature = "smb")]
+    pub smb_target: Option<crate::smb::SmbLocation>,
 }
 
 impl RestoreOption {
     /// Creates a new RestoreOption with required paths.
     pub fn new(
         source_dir_base: PathBuf,
+        original_source_base: PathBuf,
         target_dir_base: PathBuf,
         meta_dir: PathBuf,
         ctrl_dir: PathBuf,
@@ -635,6 +648,7 @@ impl RestoreOption {
     ) -> Self {
         Self {
             source_dir_base,
+            original_source_base,
             target_dir_base,
             meta_dir,
             ctrl_dir,
@@ -645,6 +659,8 @@ impl RestoreOption {
             restore_mtime: true,
             #[cfg(feature = "nfs")]
             nfs_target: None,
+            #[cfg(feature = "smb")]
+            smb_target: None,
         }
     }
 
@@ -678,6 +694,13 @@ impl RestoreOption {
     #[cfg(feature = "nfs")]
     pub fn nfs_target(mut self, loc: crate::nfs::NfsLocation) -> Self {
         self.nfs_target = Some(loc);
+        self
+    }
+
+    /// Set an SMB target location for restore.
+    #[cfg(feature = "smb")]
+    pub fn smb_target(mut self, loc: crate::smb::SmbLocation) -> Self {
+        self.smb_target = Some(loc);
         self
     }
 }
@@ -770,18 +793,13 @@ impl RestoreTask {
         let stats_inner = Arc::clone(&stats);
 
         let terminate_handle = thread::spawn(move || {
-            // TODO: Implement actual restore logic
-            // This would:
-            // 1. Parse control file to get list of files to restore
-            // 2. For each file, check RestorePolicy::should_restore()
-            // 3. Copy files from source to target (reverse of backup)
-            // 4. Update stats accordingly (files_restored, files_skipped, bytes_skipped)
-            // 5. Handle hardlinks and mtime if enabled
-            
             info!("Restore operation started with policy: {:?}", option.policy);
             info!("Source: {:?}, Target: {:?}", option.source_dir_base, option.target_dir_base);
-            
-            // Placeholder: mark as complete
+
+            if let Err(e) = run_restore_task(option, stats_inner) {
+                log::error!("Restore operation failed: {e}");
+            }
+
             terminate_indicator_inner.store(true, Ordering::Relaxed);
         });
 
@@ -792,6 +810,301 @@ impl RestoreTask {
             terminate_indicator,
         })
     }
+}
+
+fn run_restore_task(
+    option: RestoreOption,
+    stats: Arc<Mutex<RestoreStats>>,
+) -> Result<(), RestoreError> {
+    let control_name = option
+        .control_file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+
+    if control_name == "hardlink.txt" {
+        if option.restore_hardlinks {
+            run_restore_hardlink_phase(&option)?;
+        }
+        return Ok(());
+    }
+
+    if control_name == "delete.txt" {
+        run_restore_delete_phase(&option)?;
+        return Ok(());
+    }
+
+    if control_name == "mtime.txt" {
+        if option.restore_mtime {
+            run_restore_mtime_phase(&option)?;
+        }
+        return Ok(());
+    }
+
+    run_restore_copy_phase(&option, stats)
+}
+
+fn run_restore_copy_phase(
+    option: &RestoreOption,
+    stats: Arc<Mutex<RestoreStats>>,
+) -> Result<(), RestoreError> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("bifrost-restore-copy")
+        .build()
+        .map_err(RestoreError::IoError)?;
+
+    let source = restore_pipeline::LocalRepoRestoreSource::new(
+        option.source_dir_base.clone(),
+        option.original_source_base.clone(),
+    )
+        .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+    #[cfg(feature = "nfs")]
+    if let Some(nfs_target) = &option.nfs_target {
+        let nfs_target = nfs_target.clone();
+        return rt.block_on(async {
+            let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
+                .await
+                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let root_fh = pool.root_fh();
+            let write_chunk = pool.server_wtmax.max(4096);
+            let target = crate::backup::aio::transport::NfsTarget {
+                pool,
+                dir_cache: crate::nfs::aio::writer::new_dir_handle_cache(),
+                root_fh,
+                write_chunk,
+            };
+            restore_pipeline::run_restore_copy_pipeline(
+                option.control_file.clone(),
+                option.meta_dir.clone(),
+                option.original_source_base.clone(),
+                source,
+                target,
+                None,
+                option.policy,
+                stats,
+                "restore-copy-nfs",
+                option.worker_count,
+            )
+            .await;
+            Ok::<(), RestoreError>(())
+        });
+    }
+
+    #[cfg(feature = "smb")]
+    if let Some(smb_target) = &option.smb_target {
+        let smb_target = smb_target.clone();
+        return rt.block_on(async {
+            let client = crate::smb::aio::connect_client(&smb_target)
+                .await
+                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            let target = crate::backup::aio::transport::SmbTarget {
+                location: smb_target,
+                client,
+                dir_cache: crate::smb::aio::new_dir_cache(),
+            };
+            restore_pipeline::run_restore_copy_pipeline(
+                option.control_file.clone(),
+                option.meta_dir.clone(),
+                option.original_source_base.clone(),
+                source,
+                target,
+                None,
+                option.policy,
+                stats,
+                "restore-copy-smb",
+                option.worker_count,
+            )
+            .await;
+            Ok::<(), RestoreError>(())
+        });
+    }
+
+    let target = crate::backup::aio::transport::LocalTarget {
+        base: option.target_dir_base.clone(),
+    };
+    rt.block_on(async {
+        restore_pipeline::run_restore_copy_pipeline(
+            option.control_file.clone(),
+            option.meta_dir.clone(),
+            option.original_source_base.clone(),
+            source,
+            target,
+            Some(option.target_dir_base.clone()),
+            option.policy,
+            stats,
+            "restore-copy-local",
+            option.worker_count,
+        )
+        .await;
+    });
+    Ok(())
+}
+
+fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError> {
+    #[cfg(feature = "nfs")]
+    if let Some(nfs_target) = &option.nfs_target {
+        let nfs_target = nfs_target.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-restore-hardlink-nfs")
+            .build()
+            .map_err(RestoreError::IoError)?;
+        rt.block_on(async move {
+            let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
+                .await
+                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
+                &option.ctrl_dir,
+                &option.original_source_base,
+                "",
+                Arc::clone(&pool),
+                crate::nfs::aio::reader::new_file_handle_cache(),
+                crate::nfs::aio::writer::new_dir_handle_cache(),
+            )
+            .await;
+            Ok::<(), RestoreError>(())
+        })?;
+        return Ok(());
+    }
+
+    #[cfg(feature = "smb")]
+    if let Some(smb_target) = &option.smb_target {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-restore-hardlink-smb")
+            .build()
+            .map_err(RestoreError::IoError)?;
+        rt.block_on(async {
+            crate::smb::aio::hardlink::run_smb_hardlink_phase(
+                &option.ctrl_dir,
+                &option.original_source_base,
+                "",
+                smb_target,
+            )
+            .await;
+        });
+        return Ok(());
+    }
+
+    crate::backup::bio::hardlink::run_hardlink_phase(
+        &option.ctrl_dir,
+        &option.meta_dir,
+        &option.original_source_base,
+        &option.target_dir_base,
+    )
+    .map(|_| ())
+    .map_err(RestoreError::IoError)
+}
+
+fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> {
+    #[cfg(feature = "nfs")]
+    if let Some(nfs_target) = &option.nfs_target {
+        let nfs_target = nfs_target.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-restore-delete-nfs")
+            .build()
+            .map_err(RestoreError::IoError)?;
+        rt.block_on(async move {
+            let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
+                .await
+                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            crate::nfs::aio::delete::run_nfs_delete_phase(
+                &option.ctrl_dir,
+                &option.original_source_base,
+                "",
+                pool,
+                crate::nfs::aio::reader::new_file_handle_cache(),
+            )
+            .await;
+            Ok::<(), RestoreError>(())
+        })?;
+        return Ok(());
+    }
+
+    #[cfg(feature = "smb")]
+    if let Some(smb_target) = &option.smb_target {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-restore-delete-smb")
+            .build()
+            .map_err(RestoreError::IoError)?;
+        rt.block_on(async {
+            crate::smb::aio::delete::run_smb_delete_phase(
+                &option.ctrl_dir,
+                &option.original_source_base,
+                "",
+                smb_target,
+            )
+            .await;
+        });
+        return Ok(());
+    }
+
+    crate::backup::bio::delete::run_delete_phase(
+        &option.ctrl_dir,
+        &option.original_source_base,
+        &option.target_dir_base,
+    )
+    .map(|_| ())
+    .map_err(RestoreError::IoError)
+}
+
+fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
+    #[cfg(feature = "nfs")]
+    if let Some(nfs_target) = &option.nfs_target {
+        let nfs_target = nfs_target.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-restore-mtime-nfs")
+            .build()
+            .map_err(RestoreError::IoError)?;
+        rt.block_on(async move {
+            let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
+                .await
+                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            crate::nfs::aio::mtime::run_nfs_mtime_phase(
+                &option.ctrl_dir,
+                &option.original_source_base,
+                "",
+                pool,
+                crate::nfs::aio::reader::new_file_handle_cache(),
+            )
+            .await;
+            Ok::<(), RestoreError>(())
+        })?;
+        return Ok(());
+    }
+
+    #[cfg(feature = "smb")]
+    if let Some(smb_target) = &option.smb_target {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-restore-mtime-smb")
+            .build()
+            .map_err(RestoreError::IoError)?;
+        rt.block_on(async {
+            crate::smb::aio::mtime::run_smb_mtime_phase(
+                &option.ctrl_dir,
+                &option.original_source_base,
+                "",
+                smb_target,
+            )
+            .await;
+        });
+        return Ok(());
+    }
+
+    crate::backup::bio::mtime::run_mtime_phase(
+        &option.ctrl_dir,
+        &option.original_source_base,
+        &option.target_dir_base,
+    )
+    .map(|_| ())
+    .map_err(RestoreError::IoError)
 }
 
 impl From<RestoreOption> for RestoreTask {

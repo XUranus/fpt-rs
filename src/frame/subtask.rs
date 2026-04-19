@@ -49,6 +49,8 @@ pub struct SubtaskConfig {
     pub backup_target: DataLocation,
     /// Data target for restore (local or NFS).
     pub restore_target: DataLocation,
+    /// Original source base path recorded in the backup manifest.
+    pub restore_source_base: PathBuf,
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +188,7 @@ pub fn run_restore_subtask(
 ) -> Result<SubtaskStats, SubtaskError> {
     let restore_cfg = RestoreConfig::new(
         repo.d_repo.clone(),
+        config.restore_source_base.clone(),
         local_restore_target.clone(),
         repo.meta_dir.clone(),
         repo.ctrl_dir.clone(),
@@ -206,8 +209,11 @@ pub fn run_restore_subtask(
                 .map_err(map_restore_err)
         }
         #[cfg(feature = "smb")]
-        DataLocation::Smb(_) => {
-            Err(SubtaskError::Engine("SMB restore is not implemented yet".to_string()))
+        DataLocation::Smb(smb_loc) => {
+            use crate::frame::restore_impls::SmbFileRestore;
+            SmbFileRestore::new(restore_cfg, smb_loc.clone())
+                .run()
+                .map_err(map_restore_err)
         }
     }
 }

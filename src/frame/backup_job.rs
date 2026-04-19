@@ -253,6 +253,7 @@ impl BackupRestoreJob for FileBackupJob {
                 backup_source:    cfg.source.clone(),
                 backup_target:    cfg.target.clone(),
                 restore_target:   DataLocation::Local(PathBuf::new()), // unused for backup
+                restore_source_base: PathBuf::new(),
             };
 
             let repo_clone = repo.clone();
