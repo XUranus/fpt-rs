@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Mutex;
 
@@ -13,6 +14,11 @@ pub mod hardlink;
 pub mod mtime;
 
 pub type DirCache = Arc<Mutex<HashSet<String>>>;
+
+pub struct SmbClientPool {
+    clients: Vec<Arc<smb_client::Client>>,
+    next: AtomicUsize,
+}
 
 const SMB_WRITE_CHUNK: usize = 1024 * 1024;
 const SMB_READ_CHUNK: usize = 1024 * 1024;
@@ -33,6 +39,39 @@ pub async fn connect_client(location: &SmbLocation) -> Result<Arc<smb_client::Cl
         .map_err(|e| format!("share connect {}: {e}", location.display_string()))?;
 
     Ok(client)
+}
+
+impl SmbClientPool {
+    pub fn with_client(client: Arc<smb_client::Client>) -> Self {
+        Self {
+            clients: vec![client],
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    pub async fn connect(location: &SmbLocation, size: usize) -> Result<Arc<Self>, String> {
+        let pool_size = size.max(1);
+        let mut clients = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            clients.push(connect_client(location).await?);
+        }
+        Ok(Arc::new(Self {
+            clients,
+            next: AtomicUsize::new(0),
+        }))
+    }
+
+    pub fn client(&self) -> Arc<smb_client::Client> {
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.clients.len();
+        Arc::clone(&self.clients[idx])
+    }
+
+    pub async fn close(&self) -> Result<(), String> {
+        for client in &self.clients {
+            client.close().await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
 }
 
 pub async fn ensure_relative_directory(
@@ -138,9 +177,6 @@ pub async fn write_relative_file(
         offset += written as u64;
     }
 
-    file.flush()
-        .await
-        .map_err(|e| format!("flush {}: {e}", unc))?;
     file.close()
         .await
         .map_err(|e| format!("close {}: {e}", unc))?;
@@ -190,6 +226,106 @@ pub async fn read_relative_file(
         .await
         .map_err(|e| format!("close {}: {e}", unc))?;
     Ok(data)
+}
+
+pub async fn copy_relative_file_streaming(
+    source_pool: &Arc<SmbClientPool>,
+    source_location: &SmbLocation,
+    source_relative_path: &str,
+    target_pool: &Arc<SmbClientPool>,
+    target_location: &SmbLocation,
+    dir_cache: &DirCache,
+    target_relative_path: &str,
+) -> Result<(), String> {
+    let source_relative_path = normalize_relative_path(source_relative_path);
+    let target_relative_path = normalize_relative_path(target_relative_path);
+
+    if let Some((parent, _)) = target_relative_path.rsplit_once('/') {
+        ensure_relative_directory(&target_pool.client(), target_location, dir_cache, parent).await?;
+    }
+
+    let source_unc = relative_unc_path(source_location, &source_relative_path)?;
+    let target_unc = relative_unc_path(target_location, &target_relative_path)?;
+
+    let source_client = source_pool.client();
+    let target_client = target_pool.client();
+
+    let source_open_args = smb_client::FileCreateArgs::make_open_existing(
+        smb_client::FileAccessMask::new().with_generic_read(true),
+    );
+    let target_open_args = smb_client::FileCreateArgs::make_overwrite(
+        smb_client::FileAttributes::new(),
+        smb_client::CreateOptions::new().with_non_directory_file(true),
+    );
+
+    let source_resource = source_client
+        .create_file(&source_unc, &source_open_args)
+        .await
+        .map_err(|e| format!("open {}: {e}", source_unc))?;
+    let source_file = match source_resource {
+        smb_client::Resource::File(file) => file,
+        other => {
+            close_resource(other).await?;
+            return Err(format!("{} did not resolve to a file handle", source_unc));
+        }
+    };
+
+    let target_resource = match target_client.create_file(&target_unc, &target_open_args).await {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = source_file.close().await;
+            return Err(format!("create {}: {e}", target_unc));
+        }
+    };
+    let target_file = match target_resource {
+        smb_client::Resource::File(file) => file,
+        other => {
+            let _ = source_file.close().await;
+            close_resource(other).await?;
+            return Err(format!("{} did not resolve to a file handle", target_unc));
+        }
+    };
+
+    let mut chunk = vec![0u8; SMB_READ_CHUNK];
+    let mut src_offset = 0u64;
+    let mut dst_offset = 0u64;
+
+    loop {
+        let read_len = source_file
+            .read_block(&mut chunk, src_offset, None, false)
+            .await
+            .map_err(|e| format!("read {} @{}: {e}", source_unc, src_offset))?;
+        if read_len == 0 {
+            break;
+        }
+
+        let mut chunk_offset = 0usize;
+        while chunk_offset < read_len {
+            let written = target_file
+                .write_block(&chunk[chunk_offset..read_len], dst_offset, None)
+                .await
+                .map_err(|e| format!("write {} @{}: {e}", target_unc, dst_offset))?;
+            if written == 0 {
+                let _ = source_file.close().await;
+                let _ = target_file.close().await;
+                return Err(format!("short write to {} at offset {}", target_unc, dst_offset));
+            }
+            chunk_offset += written;
+            dst_offset += written as u64;
+        }
+
+        src_offset += read_len as u64;
+    }
+
+    source_file
+        .close()
+        .await
+        .map_err(|e| format!("close {}: {e}", source_unc))?;
+    target_file
+        .close()
+        .await
+        .map_err(|e| format!("close {}: {e}", target_unc))?;
+    Ok(())
 }
 
 pub async fn upload_local_dir_to_smb(

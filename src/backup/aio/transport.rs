@@ -161,7 +161,7 @@ impl TargetWriter for NfsTarget {
 #[derive(Clone)]
 pub struct SmbSource {
     pub location: crate::smb::SmbLocation,
-    pub client: Arc<smb_client::Client>,
+    pub pool: Arc<crate::smb::aio::SmbClientPool>,
 }
 
 #[cfg(feature = "smb")]
@@ -170,7 +170,8 @@ impl SourceReader for SmbSource {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.src_path.to_string_lossy().replace('\\', "/");
-            match crate::smb::aio::read_relative_file(&this.client, &this.location, &rel_path, fcb.meta.size).await {
+            let client = this.pool.client();
+            match crate::smb::aio::read_relative_file(&client, &this.location, &rel_path, fcb.meta.size).await {
                 Ok(buf) => {
                     fcb.buffer_len = buf.len();
                     fcb.buffer = buf;
@@ -184,7 +185,7 @@ impl SourceReader for SmbSource {
 
     fn finish(&self) -> BoxFuture<'static, Result<(), String>> {
         let this = self.clone();
-        Box::pin(async move { this.client.close().await.map_err(|e| e.to_string()) })
+        Box::pin(async move { this.pool.close().await })
     }
 }
 
@@ -192,7 +193,7 @@ impl SourceReader for SmbSource {
 #[derive(Clone)]
 pub struct SmbTarget {
     pub location: crate::smb::SmbLocation,
-    pub client: Arc<smb_client::Client>,
+    pub pool: Arc<crate::smb::aio::SmbClientPool>,
     pub dir_cache: crate::smb::aio::DirCache,
 }
 
@@ -201,8 +202,9 @@ impl TargetWriter for SmbTarget {
     fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>> {
         let this = self.clone();
         Box::pin(async move {
+            let client = this.pool.client();
             crate::smb::aio::ensure_relative_directory(
-                &this.client,
+                &client,
                 &this.location,
                 &this.dir_cache,
                 &path.to_string_lossy().replace('\\', "/"),
@@ -215,8 +217,9 @@ impl TargetWriter for SmbTarget {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.dst_path.to_string_lossy().replace('\\', "/");
+            let client = this.pool.client();
             match crate::smb::aio::write_relative_file(
-                &this.client,
+                &client,
                 &this.location,
                 &this.dir_cache,
                 &rel_path,
@@ -232,6 +235,6 @@ impl TargetWriter for SmbTarget {
 
     fn finish(&self) -> BoxFuture<'static, Result<(), String>> {
         let this = self.clone();
-        Box::pin(async move { this.client.close().await.map_err(|e| e.to_string()) })
+        Box::pin(async move { this.pool.close().await })
     }
 }

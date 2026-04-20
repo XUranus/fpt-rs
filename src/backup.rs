@@ -951,12 +951,12 @@ fn run_restore_copy_phase(
     if let Some(smb_target) = &option.smb_target {
         let smb_target = smb_target.clone();
         return rt.block_on(async {
-            let client = crate::smb::aio::connect_client(&smb_target)
+            let pool = crate::smb::aio::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
                 .await
                 .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
             let target = crate::backup::aio::transport::SmbTarget {
                 location: smb_target,
-                client,
+                pool,
                 dir_cache: crate::smb::aio::new_dir_cache(),
             };
             restore_pipeline::run_restore_copy_pipeline(

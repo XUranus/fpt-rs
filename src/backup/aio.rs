@@ -34,6 +34,9 @@ use crate::nfs::NfsLocation;
 #[cfg(feature = "smb")]
 use crate::smb::SmbLocation;
 
+#[cfg(feature = "smb")]
+const SMB_POOL_SIZE: usize = 2;
+
 pub(crate) mod entry;
 pub(crate) mod local_fs;
 mod pipeline;
@@ -130,8 +133,8 @@ pub fn spawn_local_to_smb_backup(
         };
 
         rt.block_on(async {
-            let client = match crate::smb::aio::connect_client(&smb_target).await {
-                Ok(c) => c,
+            let pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, SMB_POOL_SIZE).await {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("local→SMB: failed to connect: {e}");
                     return;
@@ -148,7 +151,7 @@ pub fn spawn_local_to_smb_backup(
                 target_prefix,
                 aggregate_config,
                 smb_target,
-                client,
+                pool,
                 stats,
                 enable_hardlink_phase,
                 enable_delete_phase,
@@ -190,8 +193,8 @@ pub fn spawn_smb_to_local_backup(
         };
 
         rt.block_on(async {
-            let client = match crate::smb::aio::connect_client(&smb_source).await {
-                Ok(c) => c,
+            let pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, SMB_POOL_SIZE).await {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("SMB->local: failed to connect: {e}");
                     return;
@@ -208,7 +211,7 @@ pub fn spawn_smb_to_local_backup(
                 target_dir_base,
                 aggregate_config,
                 smb_source,
-                client,
+                pool,
                 stats,
                 enable_hardlink_phase,
                 enable_delete_phase,
@@ -251,18 +254,18 @@ pub fn spawn_smb_to_smb_backup(
         };
 
         rt.block_on(async {
-            let source_client = match crate::smb::aio::connect_client(&smb_source).await {
-                Ok(c) => c,
+            let source_pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, SMB_POOL_SIZE).await {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("SMB->SMB: failed to connect to source: {e}");
                     return;
                 }
             };
-            let target_client = match crate::smb::aio::connect_client(&smb_target).await {
-                Ok(c) => c,
+            let target_pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, SMB_POOL_SIZE).await {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("SMB->SMB: failed to connect to target: {e}");
-                    let _ = source_client.close().await;
+                    let _ = source_pool.close().await;
                     return;
                 }
             };
@@ -282,8 +285,8 @@ pub fn spawn_smb_to_smb_backup(
                 aggregate_config,
                 smb_source,
                 smb_target,
-                source_client,
-                target_client,
+                source_pool,
+                target_pool,
                 stats,
                 enable_hardlink_phase,
                 enable_delete_phase,
@@ -333,8 +336,8 @@ pub fn spawn_nfs_to_smb_backup(
                     return;
                 }
             };
-            let target_client = match crate::smb::aio::connect_client(&smb_target).await {
-                Ok(c) => c,
+            let target_pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, SMB_POOL_SIZE).await {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("NFS->SMB: failed to connect to target: {e}");
                     return;
@@ -350,7 +353,7 @@ pub fn spawn_nfs_to_smb_backup(
                 aggregate_config,
                 source_pool,
                 smb_target,
-                target_client,
+                target_pool,
                 stats,
                 enable_hardlink_phase,
                 enable_delete_phase,
@@ -394,8 +397,8 @@ pub fn spawn_smb_to_nfs_backup(
         };
 
         rt.block_on(async {
-            let source_client = match crate::smb::aio::connect_client(&smb_source).await {
-                Ok(c) => c,
+            let source_pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, SMB_POOL_SIZE).await {
+                Ok(p) => p,
                 Err(e) => {
                     eprintln!("SMB->NFS: failed to connect to source: {e}");
                     return;
@@ -405,7 +408,7 @@ pub fn spawn_smb_to_nfs_backup(
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("SMB->NFS: failed to connect to target: {e}");
-                    let _ = source_client.close().await;
+                    let _ = source_pool.close().await;
                     return;
                 }
             };
@@ -418,7 +421,7 @@ pub fn spawn_smb_to_nfs_backup(
                 target_prefix,
                 aggregate_config,
                 smb_source,
-                source_client,
+                source_pool,
                 target_pool,
                 stats,
                 enable_hardlink_phase,
@@ -617,7 +620,7 @@ pub async fn run_local_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     location: SmbLocation,
-    client: Arc<smb_client::Client>,
+    pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -630,7 +633,7 @@ pub async fn run_local_to_smb_backup(
         target_prefix.clone(),
         aggregate_config,
         location.clone(),
-        client,
+        pool,
         stats,
     )
     .await;
@@ -739,7 +742,7 @@ pub async fn run_smb_to_local_backup(
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
     location: SmbLocation,
-    client: Arc<smb_client::Client>,
+    pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -752,7 +755,7 @@ pub async fn run_smb_to_local_backup(
         target_dir_base.clone(),
         aggregate_config,
         location,
-        client,
+        pool,
         stats,
     )
     .await;
@@ -779,8 +782,8 @@ pub async fn run_smb_to_smb_backup(
     aggregate_config: AggregateConfig,
     source_location: SmbLocation,
     target_location: SmbLocation,
-    source_client: Arc<smb_client::Client>,
-    target_client: Arc<smb_client::Client>,
+    source_pool: Arc<crate::smb::aio::SmbClientPool>,
+    target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -794,8 +797,8 @@ pub async fn run_smb_to_smb_backup(
         aggregate_config,
         source_location,
         target_location.clone(),
-        source_client,
-        target_client,
+        source_pool,
+        target_pool,
         stats,
     )
     .await;
@@ -822,7 +825,7 @@ pub async fn run_nfs_to_smb_backup(
     aggregate_config: AggregateConfig,
     source_pool: Arc<NfsConnectionPool>,
     target_location: SmbLocation,
-    target_client: Arc<smb_client::Client>,
+    target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -836,7 +839,7 @@ pub async fn run_nfs_to_smb_backup(
         aggregate_config,
         source_pool,
         target_location.clone(),
-        target_client,
+        target_pool,
         stats,
     )
     .await;
@@ -862,7 +865,7 @@ pub async fn run_smb_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     source_location: SmbLocation,
-    source_client: Arc<smb_client::Client>,
+    source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -876,7 +879,7 @@ pub async fn run_smb_to_nfs_backup(
         target_prefix.clone(),
         aggregate_config,
         source_location,
-        source_client,
+        source_pool,
         Arc::clone(&target_pool),
         stats,
     )

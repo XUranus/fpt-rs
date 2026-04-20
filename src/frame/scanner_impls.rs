@@ -269,8 +269,10 @@ mod smb_impl {
 
         fn scan(&self) -> Result<ScanStats, SmbScanError> {
             let scan_option = self.config.to_scan_option();
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                .worker_threads(self.config.worker_count.max(1))
+                .thread_name("bifrost-smb-scan")
                 .build()
                 .map_err(SmbScanError::Runtime)?;
 
