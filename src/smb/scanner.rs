@@ -39,15 +39,7 @@ struct DirScanOutput {
 
 impl SmbScanner {
     pub async fn new(location: &SmbLocation) -> Result<Self, String> {
-        let client = Arc::new(smb_client::Client::new(crate::smb::client_config(location)));
-        let share_root = location.share_unc_path()?;
-        let username = location.username.as_deref().unwrap_or("");
-        let password = location.password.clone().unwrap_or_default();
-
-        client
-            .share_connect(&share_root, username, password)
-            .await
-            .map_err(|e| format!("share connect {}: {e}", location.display_string()))?;
+        let client = crate::smb::aio::connect_client(location).await?;
 
         Ok(Self {
             client,
