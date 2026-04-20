@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nfs3_client::nfs3_types::nfs3::{
-    CREATE3args, GETATTR3args, MKDIR3args, Nfs3Option, Nfs3Result, SETATTR3args,
+    CREATE3args, MKDIR3args, Nfs3Option, Nfs3Result, SETATTR3args,
     WRITE3args, createhow3, diropargs3, filename3, nfs_fh3, sattr3,
-    sattrguard3, set_gid3, set_mtime, set_mode3, set_uid3, size3, stable_how,
+    sattrguard3, set_gid3, set_mtime, set_mode3, set_uid3, stable_how,
 };
 use nfs3_client::nfs3_types::xdr_codec::Opaque;
 use tokio::sync::RwLock;

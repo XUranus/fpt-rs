@@ -274,6 +274,7 @@ pub enum ControlEntry {
 /// Not thread-safe.
 pub struct ControlFileReader {
     freader: BufReader<File>,
+    #[allow(dead_code)]
     header: String,
 }
 

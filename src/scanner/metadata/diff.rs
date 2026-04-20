@@ -49,6 +49,7 @@ pub enum DiffType {
 
 /// A directory entry with its source (previous or current)
 #[derive(Debug)]
+#[allow(dead_code)]
 enum DirSource {
     Prev(DirCacheEntry),
     Curr(DirCacheEntry),
@@ -56,6 +57,7 @@ enum DirSource {
 
 /// A file entry with its source (previous or current)
 #[derive(Debug)]
+#[allow(dead_code)]
 enum FileSource {
     Prev(FileCacheEntry),
     Curr(FileCacheEntry),

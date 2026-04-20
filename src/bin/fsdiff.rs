@@ -48,6 +48,7 @@ struct Args {
     verbose: bool,
 }
 
+#[allow(unused, dead_code)]
 #[derive(Debug, Clone)]
 struct FileInfo {
     path: PathBuf,

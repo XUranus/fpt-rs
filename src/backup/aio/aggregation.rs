@@ -55,6 +55,7 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             && fcb.src_state == SourceHandleState::Read
     }
 
+    #[allow(dead_code)]
     async fn flush_dir_locked(
         &self,
         dir_key: &str,
@@ -116,7 +117,7 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             if blobs.is_empty() {
                 continue;
             }
-            let mut temp = NamedTempFile::new().map_err(|e| e.to_string())?;
+            let temp = NamedTempFile::new().map_err(|e| e.to_string())?;
             {
                 let index = AggregateIndex::open(temp.path()).map_err(|e| e.to_string())?;
                 for blob in &blobs {

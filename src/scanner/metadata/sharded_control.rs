@@ -38,13 +38,12 @@
 //! ```
 
 use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::scanner::metadata::{
     ControlFileWriter, DirControlEntry, FileControlEntry,
-    DirDiff, FileDiff,
 };
 
 /// Default maximum entries per control file shard for copy phase.
@@ -239,7 +238,7 @@ impl ShardedControlFileManager {
 
         if should_rollover {
             // Close existing writer if any
-            if let Some(mut old_shard) = self.shards.remove(&shard_id) {
+            if let Some(old_shard) = self.shards.remove(&shard_id) {
                 old_shard.writer.finish()?;
             }
 
@@ -361,7 +360,7 @@ impl ShardedControlFileManager {
     pub fn finish(mut self) -> io::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
         
-        for (shard_id, mut shard) in self.shards.drain() {
+        for (_shard_id, shard) in self.shards.drain() {
             shard.writer.finish()?;
             files.push(shard.path);
         }
@@ -376,6 +375,7 @@ impl ShardedControlFileManager {
 }
 
 /// Extended ControlFileWriter with batch support.
+#[allow(dead_code)]
 pub trait ControlFileWriterExt {
     /// Writes a directory entry with batch information.
     fn write_dir_with_batch(

@@ -13,12 +13,12 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 
 use crate::backup::aggregate::{
     AggregateBlobMeta, AggregateConfig, AggregateFileEntry,
@@ -31,6 +31,7 @@ use crate::backup::stats::BackupStats;
 use crate::backup::SharedState;
 
 /// Per-directory aggregate information
+#[allow(dead_code)]
 struct DirAggregateInfo {
     /// Path to the directory in target
     target_dir: PathBuf,
@@ -227,7 +228,7 @@ impl AggregateBackupEngine {
     pub fn flush_all_indexes(&self) -> Result<(), AggregateEngineError> {
         let dir_info_map = self.dir_info.lock().unwrap();
         for (dir_path, dir_info) in dir_info_map.iter() {
-            if let Some(ref index) = dir_info.index {
+            if let Some(ref _index) = dir_info.index {
                 info!("Flushed index for directory: {}", dir_path);
             }
         }
@@ -342,7 +343,8 @@ pub fn fcb_to_pending_file(fcb: &FileControlBlock) -> PendingFile {
 }
 
 /// Spawns the aggregate backup coordinator thread.
-pub fn spawn_aggregate_coordinator(
+#[allow(dead_code)]
+pub(crate) fn spawn_aggregate_coordinator(
     agg_state: Arc<AggregateBackupState>,
     fcb_rx: mpsc::Receiver<ControlBlockVarient>,
     writer_tx: mpsc::Sender<ControlBlockVarient>,

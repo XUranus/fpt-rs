@@ -26,7 +26,6 @@
 //! 3. Write extracted files to destination
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// Metadata for a single file within an aggregate blob.

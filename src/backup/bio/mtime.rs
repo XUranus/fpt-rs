@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
-use crate::scanner::metadata::{MtimeControlFileReader, MtimeDirEntry};
+use crate::scanner::metadata::MtimeControlFileReader;
 
 /// Statistics for the mtime backup phase.
 #[derive(Debug, Default)]
@@ -235,7 +235,6 @@ pub fn run_mtime_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_make_relative_and_join() {

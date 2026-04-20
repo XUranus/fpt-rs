@@ -2,7 +2,7 @@
 
 // Enable required features for nix
 #[cfg(all(unix, not(target_os = "windows")))]
-use nix::sys::stat::{stat, SFlag, FileStat};
+use nix::sys::stat::{SFlag, FileStat};
 #[cfg(all(unix, target_os = "linux"))]
 use xattr;
 #[cfg(all(unix, target_os = "linux"))]
@@ -102,7 +102,7 @@ fn get_xattrs_as_string(path: &Path) -> std::io::Result<String> {
 /// Returns (access_acl, default_acl) where default_acl is only for directories
 #[cfg(all(unix, target_os = "linux"))]
 fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> {
-    use exacl::{getfacl, AclEntry};
+    use exacl::getfacl;
     
     let mut access_acl = String::new();
     let mut default_acl = String::new();
@@ -276,7 +276,6 @@ pub fn stat_dir(path: &PathBuf) -> std::io::Result<DirMeta> {
 #[cfg(all(unix, target_os = "linux"))]
 fn detect_sparse_ranges(path: &Path) -> Option<Vec<(u64, u64)>> {
     use std::os::unix::fs::MetadataExt;
-    use std::os::unix::io::AsRawFd;
     
     // Check if file is actually sparse by comparing size vs blocks used
     let metadata = std::fs::metadata(path).ok()?;

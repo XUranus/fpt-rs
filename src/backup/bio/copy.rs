@@ -14,7 +14,7 @@
 //! - **Scalability**: Configurable number of I/O threads for parallelism.
 //! - **Observability**: Detailed statistics tracking via `BackupStats`.
 
-use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats, aggregate_engine::{AggregateBackupEngine, AggregateBackupState, fcb_to_pending_file}}, scanner::metadata::{ControlEntry, ControlFileReader, DirMeta, MetaRepoReader}};
+use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats, aggregate_engine::{AggregateBackupEngine, AggregateBackupState, fcb_to_pending_file}}, scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader}};
 use std::{fs::File, path::{Path, PathBuf}, sync::mpsc::RecvTimeoutError, time::Duration};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
@@ -23,11 +23,7 @@ use std::sync::{
     mpsc,
     Arc,
 };
-use bincode::de;
-use chrono::format::Item;
 use log::{debug, info, warn, error};
-use sha2::digest::typenum::Or;
-use base64::Engine as _;
 
 /// A blocking I/O task for the source (reader) side.
 #[derive(Debug)]
@@ -37,6 +33,7 @@ pub enum ReaderBioTask {
     /// Read data from the source file into the buffer.
     ReadSource(FileControlBlock),
     /// Close the source file handle.
+    #[allow(dead_code)]
     CloseSource(FileControlBlock),
 }
 
@@ -48,6 +45,7 @@ pub enum WriterBioTask {
     /// Write buffered data to the target file.
     WriteTarget(FileControlBlock),
     /// Close the target file handle.
+    #[allow(dead_code)]
     CloseTarget(FileControlBlock),
 }
 
@@ -77,8 +75,10 @@ pub enum WriterBioResult {
 #[derive(Debug)]
 pub enum BioError {
     /// Insufficient disk space on the target device.
+    #[allow(dead_code)]
     InsufficientSpace(io::Error),
     /// Any other I/O error.
+    #[allow(dead_code)]
     Unknown(io::Error),
 }
 
@@ -251,7 +251,7 @@ pub fn spawn_reader_with_aggregation(
 
                                 if should_agg && fcb.src_state == SourceHandleState::Read {
                                     // File is small and already read - aggregate it
-                                    let file_size = fcb.meta.size;
+                                    let _file_size = fcb.meta.size;
 
                                     // BUG FIX: Explicitly close the source file handle immediately after
                                     // reading to avoid "Too many open files (os error 24)" error.
@@ -595,7 +595,7 @@ pub fn spawn_writer_io_result_poll(
                 WriterBioResult::WriteTarget(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
                 }
-                WriterBioResult::CloseTarget(Ok(fcb)) => {
+                WriterBioResult::CloseTarget(Ok(_fcb)) => {
                     stats.dst_closed.fetch_add(1, Ordering::Relaxed);
                     // File is now fully backed up; could send to completion queue
                 }
@@ -866,7 +866,7 @@ fn restore_acl(path: &PathBuf, access_acl: &Option<String>, default_acl: &Option
 fn restore_acl(_path: &PathBuf, _access_acl: &Option<String>, _default_acl: &Option<String>) {}
 
 /// Create a symlink at the target path
-fn create_symlink(src_path: &PathBuf, dst_path: &PathBuf, target: &str) -> io::Result<()> {
+fn create_symlink(_src_path: &PathBuf, dst_path: &PathBuf, target: &str) -> io::Result<()> {
     // Remove existing file/symlink if exists
     if dst_path.exists() {
         std::fs::remove_file(dst_path)?;

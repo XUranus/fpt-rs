@@ -3,20 +3,6 @@ extern crate libc;
 use std::{path::PathBuf, time::Duration};
 
 use bifrost::{backup::{BackupOption, BackupTask}, scanner::{Scanner, options::ScanOption}};
-use clap::builder::Str;
-
-// fn get_inode(path: &str) -> io::Result<u64> {
-//     let c_path = CString::new(path)?;
-//     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    
-//     // Call the libc stat function to get file metadata
-//     let res = unsafe { libc::stat(c_path.as_ptr(), &mut stat as *mut _) };
-//     if res == -1 {
-//         return Err(io::Error::last_os_error());
-//     }
-    
-//     Ok(stat.st_ino)
-// }
 
 
 fn setup_logger() -> Result<(), fern::InitError> {
@@ -119,7 +105,6 @@ fn main() {
     let ctrl_dir = PathBuf::from("/tmp/bifrost/ctrl");
     let control_file = PathBuf::from("/tmp/bifrost/meta/ctrl.txt");
     
-    let mut i = 0;
     let fsbackup : BackupTask = BackupOption::new(source_dir_base, target_dir_base, meta_dir, ctrl_dir, control_file).into();
     let task = fsbackup.start().unwrap();
     while !task.complete() {

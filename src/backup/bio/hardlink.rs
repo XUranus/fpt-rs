@@ -20,17 +20,16 @@
 //!
 //! See [`crate::scanner::metadata::hardlink`] for the control file format.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
 use crate::scanner::metadata::{
-    HardlinkControlFileReader, HardlinkEntry, HardlinkFileEntry, HardlinkInodeEntry,
+    HardlinkControlFileReader, HardlinkEntry,
     MetaRepoReader,
 };
 
@@ -69,6 +68,7 @@ pub struct HardlinkStatsSnapshot {
 
 /// Represents a group of hardlinked files sharing the same inode.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct HardlinkGroup {
     inode: u64,
     device: u64,
@@ -78,6 +78,7 @@ struct HardlinkGroup {
 
 /// Information about a file in a hardlink group.
 #[derive(Debug)]
+#[allow(dead_code)]
 struct HardlinkFileInfo {
     meta_fid: u32,
     meta_offset: u32,
@@ -176,7 +177,7 @@ fn read_hardlink_groups(
                 if let Some(ref mut group) = current_group {
                     // Get metadata to find the source path
                     match meta_repo.get_fmeta((file_entry.meta_fid, file_entry.meta_offset)) {
-                        Ok(fmeta) => {
+                        Ok(_fmeta) => {
                             // Build source and destination paths
                             let src_path = PathBuf::from(&file_entry.path);
                             let dst_path = make_relative_and_join(
@@ -338,7 +339,7 @@ fn create_hardlink(target_path: &Path, link_path: &Path) -> io::Result<()> {
 }
 
 /// Restores file metadata (timestamps, permissions) for a hardlinked file.
-fn restore_file_metadata(file_info: &HardlinkFileInfo) -> io::Result<()> {
+fn restore_file_metadata(_file_info: &HardlinkFileInfo) -> io::Result<()> {
     // Note: For hardlinks, we can't restore permissions separately since
     // they share the same inode. However, we can restore timestamps.
     
@@ -392,8 +393,6 @@ pub fn run_hardlink_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::TempDir;
 
     #[test]
     fn test_make_relative_and_join() {

@@ -1,10 +1,11 @@
-use std::{fs::{self, OpenOptions}, io, path::PathBuf, sync::{Arc, Mutex}, thread};
-use log::{debug, info, warn, error};
+use std::{fs, io, path::PathBuf, sync::{Arc, Mutex}, thread};
+use log::{info, error};
+use crate::scanner::metadata::{DirDiff, FileDiff};
 
 use crate::scanner::{
     ScanWorkerContext,
     metadata::{
-        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, DirDiff, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FileDiff, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
+        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
         generate_incremental_control_files,
     },
     models::DirBatchScanResult, options::TargetDirOption

@@ -2,6 +2,7 @@ use std::path::Path;
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
+#[allow(dead_code)]
 pub struct FileMeta {
     pub path: String,
     #[cfg(unix)]
@@ -28,6 +29,7 @@ pub struct FileMeta {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(dead_code)]
 fn get_xattrs(path: &Path) -> Option<std::collections::HashMap<String, Vec<u8>>> {
     match xattr::list(path) {
         Ok(attrs) => {
@@ -45,6 +47,7 @@ fn get_xattrs(path: &Path) -> Option<std::collections::HashMap<String, Vec<u8>>>
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 fn get_acl_text(path: &Path) -> Option<String> {
     use exacl::getfacl;
     match getfacl(path, None) {
@@ -65,6 +68,7 @@ fn get_acl_text(path: &Path) -> Option<String> {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 fn fill_unix_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
     use std::os::unix::fs::MetadataExt;
     meta.mode = Some(md.mode());
@@ -202,6 +206,7 @@ fn fill_windows_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
     }
 }
 
+#[allow(dead_code)]
 pub fn read_file_meta<P: AsRef<Path>>(path: P) -> std::io::Result<FileMeta> {
     let path = path.as_ref();
     let md = std::fs::metadata(path)?;

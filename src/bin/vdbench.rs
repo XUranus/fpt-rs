@@ -1,7 +1,6 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -146,7 +145,6 @@ fn main() {
     }
     
     let start = Instant::now();
-    let last_report = Arc::new(AtomicU64::new(0));
 
     // Create root directory
     let root = PathBuf::from(&opts.output);

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nfs3_client::nfs3_types::nfs3::{
-    GETATTR3args, Nfs3Result, READ3args, diropargs3, filename3, nfs_fh3,
+    Nfs3Result, READ3args, diropargs3, filename3, nfs_fh3,
 };
 use tokio::sync::RwLock;
 

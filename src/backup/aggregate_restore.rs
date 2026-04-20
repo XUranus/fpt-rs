@@ -6,20 +6,16 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::Mutex;
 
-use log::{debug, error, info, warn};
+use base64::Engine as _;
+use log::{debug, info, warn};
 
 use crate::backup::aggregate::AggregateRestoreInfo;
 use crate::backup::aggregate_index::AggregateIndex;
-use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, TargetHandleState};
-use crate::backup::stats::BackupStats;
-use crate::backup::SharedState;
 
 /// Per-directory restore information
 struct DirRestoreInfo {
@@ -62,6 +58,7 @@ impl DirRestoreInfo {
 
 /// Engine for performing aggregate restores.
 pub struct AggregateRestoreEngine {
+    #[allow(dead_code)]
     source_base: PathBuf,
     /// Cache of directory info by source directory path
     dir_info: Mutex<HashMap<String, DirRestoreInfo>>,
@@ -329,7 +326,7 @@ impl From<crate::backup::aggregate_index::AggregateIndexError> for AggregateRest
 #[cfg(target_os = "linux")]
 fn restore_xattrs(path: &Path, xattrs: &str) {
     // Parse xattrs from base64-encoded string
-    if let Ok(decoded) = base64::decode(xattrs) {
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(xattrs) {
         // Simple format: name\0value\0name\0value\0
         let mut parts = decoded.split(|&b| b == 0);
         while let Some(name) = parts.next() {

@@ -47,6 +47,7 @@ pub enum DeleteEntryType {
 }
 
 impl DeleteEntryType {
+    #[allow(dead_code)]
     fn as_char(&self) -> char {
         match self {
             DeleteEntryType::Dir => 'D',
@@ -251,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_delete_control_file_roundtrip() {
-        let mut temp_file = NamedTempFile::new().unwrap();
+        let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path().to_path_buf();
 
         // Write test data

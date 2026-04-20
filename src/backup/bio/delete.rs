@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
-use crate::scanner::metadata::{DeleteControlFileReader, DeleteEntry, DeleteEntryType};
+use crate::scanner::metadata::{DeleteControlFileReader, DeleteEntryType};
 
 /// Statistics for the delete backup phase.
 #[derive(Debug, Default)]
@@ -170,8 +170,7 @@ pub fn process_deletes(
                     debug!("Deleted directory: {:?}", target_path);
                     stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(e) => {
-                    // Directory might not be empty, try recursive delete
+                Err(_e) => {
                     match std::fs::remove_dir_all(&target_path) {
                         Ok(()) => {
                             debug!("Recursively deleted directory: {:?}", target_path);
@@ -246,7 +245,6 @@ pub fn run_delete_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     #[test]
     fn test_make_relative_and_join() {

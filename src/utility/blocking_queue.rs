@@ -47,7 +47,7 @@
 //! - Spurious wakeups are handled by re-checking queue state in loops.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Condvar, Mutex};
 
 /// A thread-safe, bounded blocking queue.
 ///

@@ -26,7 +26,7 @@ use std::{
     },
     thread::JoinHandle,
 };
-use log::{debug, info, warn, error};
+use log::{info, error};
 
 use crate::scanner::metadata::HardlinkIndex;
 

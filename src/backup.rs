@@ -90,6 +90,7 @@ pub struct BackupTask {
 }
 
 pub struct RunningBackup {
+    #[allow(dead_code)]
     option : BackupOption,
     stats : Arc<BackupStats>,
     hardlink_stats : Option<HardlinkStatsSnapshot>,
@@ -243,7 +244,7 @@ impl BackupOption {
     }
 }
 
-struct SharedState {
+pub(crate) struct SharedState {
     pub entry_produce_done : AtomicBool,
     pub reader_done : AtomicBool,
     pub writer_done : AtomicBool,
@@ -713,6 +714,7 @@ pub struct RestoreTask {
 
 /// Represents a running restore operation.
 pub struct RunningRestore {
+    #[allow(dead_code)]
     option: RestoreOption,
     stats: Arc<Mutex<RestoreStats>>,
     terminate_handle: thread::JoinHandle<()>,

@@ -89,6 +89,7 @@ pub struct FileControlBlock {
 #[derive(Debug)]
 pub struct DirControlBlock {
     /// Full metadata of the source dir.
+    #[allow(dead_code)]
     pub meta: Box<DirMeta>,
     /// Absolute path to the source file.
     pub src_path: PathBuf,

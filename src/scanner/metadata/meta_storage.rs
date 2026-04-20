@@ -23,7 +23,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use bincode::{serialize, deserialize};
-use log::info;
 
 use super::filemeta::{DirMeta, FileMeta};
 
@@ -53,6 +52,7 @@ pub type MetaEntryLocator = (u32, u32);
 /// Not thread-safe. Use external synchronization if shared across threads.
 pub struct MetaFileWriter {
     /// Path to the metadata file.
+    #[allow(dead_code)]
     path: PathBuf,
     /// Buffered writer to reduce syscalls.
     fwriter: BufWriter<File>,
@@ -212,6 +212,7 @@ pub enum MetaVariant {
 /// Reader for a single metadata file supporting random access by offset.
 pub struct MetaFileReader {
     /// Path to the metadata file (for diagnostics).
+    #[allow(dead_code)]
     path: PathBuf,
     /// Underlying file handle.
     file: File,

@@ -28,12 +28,9 @@
 //! Each shard processor handles one control file independently,
 //! enabling parallel I/O and CPU utilization.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::thread;
 
-use crate::backup::stats::BackupStats;
 use crate::scanner::metadata::ShardedControlInfo;
 
 /// Configuration for sharded control file processing.
@@ -135,7 +132,7 @@ impl ShardedControlProcessor {
             
             // Create worker threads
             for chunk in shard_files.chunks((shard_files.len() + concurrency - 1) / concurrency) {
-                let config = &self.config;
+                let _config = &self.config;
                 let handle = s.spawn(move || {
                     let mut chunk_results = Vec::new();
                     

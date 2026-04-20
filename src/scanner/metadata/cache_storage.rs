@@ -46,6 +46,7 @@ const DIR_CACHE_PREFIX: &str = "dcache";
 /// Not thread-safe. Use external synchronization if shared across threads.
 pub struct BinObjectSeqWriter<T: Serialize + FixedSize> {
     /// Path to the output file.
+    #[allow(dead_code)]
     path: PathBuf,
     /// Buffered writer to reduce syscalls.
     fwriter: BufWriter<File>,
@@ -148,6 +149,7 @@ impl DirCacheWriter {
 /// Reader for random access to fixed-size objects in a binary file.
 pub struct BinObjectRandomReader<T: DeserializeOwned + FixedSize> {
     /// Path to the input file (for diagnostics).
+    #[allow(dead_code)]
     path: PathBuf,
     /// Underlying file handle.
     file: File,

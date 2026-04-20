@@ -78,7 +78,7 @@ use std::{
 };
 
 use bincode::{deserialize_from, serialize_into};
-use log::{debug, error, info, warn};
+use log::{debug};
 
 /// Errors that can occur during spill queue operations.
 #[derive(Debug)]
