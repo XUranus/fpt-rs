@@ -129,39 +129,24 @@ impl SmbScanner {
             }
         };
 
-        let dir_info = match dir.query_info::<FileAllInformation>().await {
-            Ok(info) => info,
-            Err(e) => {
-                log::error!("SMB query_info failed for {}: {}", task.path, e);
-                let _ = dir.close().await;
-                if let Some(seed) = task.seed {
-                    return DirScanOutput {
-                        batch: Some(DirBatchScanResult {
-                            dir: smb_seed_to_dir_meta(&seed, &task.path, self.devno),
-                            files: Vec::new(),
-                            partial: false,
-                            complete: true,
-                        }),
-                        children: Vec::new(),
-                    };
+        let batch_dir = if let Some(seed) = &task.seed {
+            smb_seed_to_dir_meta(seed, &task.path, self.devno)
+        } else {
+            match dir.query_info::<FileAllInformation>().await {
+                Ok(info) => smb_all_info_to_dir_meta(&info, &task.path, self.devno),
+                Err(e) => {
+                    log::error!("SMB query_info failed for {}: {}", task.path, e);
+                    let _ = dir.close().await;
+                    return DirScanOutput { batch: None, children: Vec::new() };
                 }
-                return DirScanOutput { batch: None, children: Vec::new() };
             }
         };
-
-        let dir_name = task
-            .path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&task.path)
-            .to_string();
         let mut batch = DirBatchScanResult {
-            dir: smb_all_info_to_dir_meta(&dir_info, &task.path, self.devno),
+            dir: batch_dir,
             files: Vec::new(),
             partial: false,
             complete: true,
         };
-        batch.dir.common.name = dir_name;
         let mut children = Vec::new();
 
         let dir = Arc::new(dir);
