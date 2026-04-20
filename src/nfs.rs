@@ -266,13 +266,13 @@ impl NfsLocation {
                     if let Some(v) = kv.strip_prefix("sub=") {
                         sub = v.to_string();
                     } else if let Some(v) = kv.strip_prefix("uid=") {
-                        uid = v.parse::<u32>().map_err(|_| {
-                            format!("invalid uid in NFS URL: '{v}'")
-                        })?;
+                        uid = v
+                            .parse::<u32>()
+                            .map_err(|_| format!("invalid uid in NFS URL: '{v}'"))?;
                     } else if let Some(v) = kv.strip_prefix("gid=") {
-                        gid = v.parse::<u32>().map_err(|_| {
-                            format!("invalid gid in NFS URL: '{v}'")
-                        })?;
+                        gid = v
+                            .parse::<u32>()
+                            .map_err(|_| format!("invalid gid in NFS URL: '{v}'"))?;
                     }
                 }
 

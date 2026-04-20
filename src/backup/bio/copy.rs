@@ -14,16 +14,28 @@
 //! - **Scalability**: Configurable number of I/O threads for parallelism.
 //! - **Observability**: Detailed statistics tracking via `BackupStats`.
 
-use crate::{backup::{SharedState, fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState, TargetHandleState}, stats::BackupStats, aggregate_engine::{AggregateBackupEngine, AggregateBackupState, fcb_to_pending_file}}, scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader}};
-use std::{fs::File, path::{Path, PathBuf}, sync::mpsc::RecvTimeoutError, time::Duration};
+use crate::{
+    backup::{
+        aggregate_engine::{fcb_to_pending_file, AggregateBackupEngine, AggregateBackupState},
+        fcb::{
+            ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState,
+            TargetHandleState,
+        },
+        stats::BackupStats,
+        SharedState,
+    },
+    scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader},
+};
+use log::{debug, error, info, warn};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
-use std::sync::{
-    atomic::{Ordering},
-    mpsc,
-    Arc,
+use std::sync::{atomic::Ordering, mpsc, Arc};
+use std::{
+    fs::File,
+    path::{Path, PathBuf},
+    sync::mpsc::RecvTimeoutError,
+    time::Duration,
 };
-use log::{debug, info, warn, error};
 
 /// A blocking I/O task for the source (reader) side.
 #[derive(Debug)]
@@ -85,11 +97,11 @@ pub enum BioError {
 pub fn spawn_file_entry_producer(
     control_file: PathBuf,
     meta_dir: PathBuf,
-    source_dir_base : PathBuf,
-    target_dir_base : PathBuf,
+    source_dir_base: PathBuf,
+    target_dir_base: PathBuf,
     fcb_producer_tx: mpsc::Sender<ControlBlockVarient>,
-    shared_state : Arc<SharedState>) -> std::thread::JoinHandle<()>
-{
+    shared_state: Arc<SharedState>,
+) -> std::thread::JoinHandle<()> {
     let meta_repo_reader = MetaRepoReader::new(meta_dir).unwrap();
     std::thread::spawn(move || {
         let control_reader = ControlFileReader::open(control_file).unwrap();
@@ -100,31 +112,50 @@ pub fn spawn_file_entry_producer(
             let entry = entry.unwrap();
             let item = match entry {
                 ControlEntry::Dir(dentry) => {
-                    let dmeta = meta_repo_reader.get_dmeta((dentry.meta_fid, dentry.meta_offset)).unwrap();
+                    let dmeta = meta_repo_reader
+                        .get_dmeta((dentry.meta_fid, dentry.meta_offset))
+                        .unwrap();
                     let mut dcb = DirControlBlock::from(dmeta);
-                    dcb.src_path = resolve_local_source_path(&source_dir_base, &logical_source_root, &dentry.path);
+                    dcb.src_path = resolve_local_source_path(
+                        &source_dir_base,
+                        &logical_source_root,
+                        &dentry.path,
+                    );
                     dcb.dst_path = logical_target_path(target_dir_base.clone(), &dentry.path);
                     dirpath = dentry.path.into();
                     ControlBlockVarient::DirControlBlock(dcb)
-                },
+                }
                 ControlEntry::File(fentry) => {
-                    let fmeta = meta_repo_reader.get_fmeta((fentry.meta_fid, fentry.meta_offset)).unwrap();
+                    let fmeta = meta_repo_reader
+                        .get_fmeta((fentry.meta_fid, fentry.meta_offset))
+                        .unwrap();
                     let mut fcb: FileControlBlock = FileControlBlock::from(fmeta);
-                    fcb.src_path = resolve_local_source_path(&source_dir_base, &logical_source_root, &dirpath.to_string_lossy())
-                        .join(fentry.name.clone());
-                    let relative_dir = logical_target_path(target_dir_base.clone(), &dirpath.to_string_lossy());
+                    fcb.src_path = resolve_local_source_path(
+                        &source_dir_base,
+                        &logical_source_root,
+                        &dirpath.to_string_lossy(),
+                    )
+                    .join(fentry.name.clone());
+                    let relative_dir =
+                        logical_target_path(target_dir_base.clone(), &dirpath.to_string_lossy());
                     fcb.dst_path = relative_dir.join(fentry.name.clone());
                     ControlBlockVarient::FileControlBlock(fcb)
                 }
             };
             fcb_producer_tx.send(item).unwrap();
         }
-        shared_state.entry_produce_done.store(true, Ordering::Relaxed);
+        shared_state
+            .entry_produce_done
+            .store(true, Ordering::Relaxed);
         info!("file entry producer thread end.");
     })
 }
 
-fn resolve_local_source_path(source_root: &Path, logical_source_root: &Path, control_path: &str) -> PathBuf {
+fn resolve_local_source_path(
+    source_root: &Path,
+    logical_source_root: &Path,
+    control_path: &str,
+) -> PathBuf {
     let control_path = PathBuf::from(control_path);
     if control_path.starts_with(source_root) {
         return control_path;
@@ -142,11 +173,9 @@ fn logical_target_path(target_root: PathBuf, control_path: &str) -> PathBuf {
         PathBuf::from(control_path)
             .strip_prefix("/")
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(|_| PathBuf::from(control_path))
+            .unwrap_or_else(|_| PathBuf::from(control_path)),
     )
 }
-
-
 
 // === Reader Control Thread ===
 
@@ -158,9 +187,8 @@ pub fn spawn_reader(
     reader_rx: mpsc::Receiver<ControlBlockVarient>,
     reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
     writer_tx: mpsc::Sender<ControlBlockVarient>,
-    shared_state : Arc<SharedState>
+    shared_state: Arc<SharedState>,
 ) -> std::thread::JoinHandle<()> {
-
     std::thread::spawn(move || {
         loop {
             let result = reader_rx.recv_timeout(Duration::from_millis(100));
@@ -179,10 +207,12 @@ pub fn spawn_reader(
                             } else {
                                 match fcb.src_state {
                                     SourceHandleState::Inited => {
-                                        let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                        let _ =
+                                            reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
                                     }
                                     SourceHandleState::Opened => {
-                                        let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                        let _ =
+                                            reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
                                     }
                                     // Read/PartialRead/Closed states are handled by writer or completion
                                     _ => {}
@@ -190,14 +220,18 @@ pub fn spawn_reader(
                             }
                         }
                     }
-                },
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     if shared_state.entry_produce_done.load(Ordering::Relaxed)
-                        && shared_state.active_reader_io_workers.load(Ordering::Relaxed) == 0 {
+                        && shared_state
+                            .active_reader_io_workers
+                            .load(Ordering::Relaxed)
+                            == 0
+                    {
                         shared_state.reader_done.store(true, Ordering::Relaxed);
                         break;
                     }
-                },
+                }
                 Err(RecvTimeoutError::Disconnected) => {
                     break;
                 }
@@ -213,11 +247,10 @@ pub fn spawn_reader_with_aggregation(
     reader_rx: mpsc::Receiver<ControlBlockVarient>,
     reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
     writer_tx: mpsc::Sender<ControlBlockVarient>,
-    shared_state : Arc<SharedState>,
+    shared_state: Arc<SharedState>,
     aggregate_engine: Arc<AggregateBackupEngine>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
-
     std::thread::spawn(move || {
         // Create aggregate state for buffering files
         let agg_state = Arc::new(AggregateBackupState::new(aggregate_engine));
@@ -263,27 +296,43 @@ pub fn spawn_reader_with_aggregation(
                                     }
 
                                     let pending = fcb_to_pending_file(&fcb);
-                                    let dir_path = fcb.src_path.parent()
+                                    let dir_path = fcb
+                                        .src_path
+                                        .parent()
                                         .map(|p| p.to_string_lossy().to_string())
                                         .unwrap_or_default();
 
                                     // Add to buffer
-                                    if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
+                                    if let Some((dir, files)) =
+                                        agg_state.add_file(&dir_path, pending)
+                                    {
                                         // Buffer is full, create blob - count files NOW when they are written
                                         let file_count = files.len() as u64;
-                                        let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+                                        let bytes_in_blob: u64 =
+                                            files.iter().map(|f| f.data.len() as u64).sum();
 
                                         match agg_state.engine.create_blob(&dir, files) {
                                             Ok(blob_meta) => {
-                                                info!("Created blob {} for dir {} with {} files",
-                                                    blob_meta.blob_name, dir, blob_meta.file_count);
+                                                info!(
+                                                    "Created blob {} for dir {} with {} files",
+                                                    blob_meta.blob_name, dir, blob_meta.file_count
+                                                );
                                                 // Update stats for aggregated files when blob is created
-                                                stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
-                                                stats.bytes_copied.fetch_add(bytes_in_blob, Ordering::Relaxed);
+                                                stats
+                                                    .files_copied
+                                                    .fetch_add(file_count, Ordering::Relaxed);
+                                                stats
+                                                    .bytes_copied
+                                                    .fetch_add(bytes_in_blob, Ordering::Relaxed);
                                             }
                                             Err(e) => {
-                                                error!("Failed to create blob for dir {}: {}", dir, e);
-                                                stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
+                                                error!(
+                                                    "Failed to create blob for dir {}: {}",
+                                                    dir, e
+                                                );
+                                                stats
+                                                    .files_failed
+                                                    .fetch_add(file_count, Ordering::Relaxed);
                                             }
                                         }
                                     }
@@ -294,10 +343,12 @@ pub fn spawn_reader_with_aggregation(
                                     // File should be aggregated but not yet read - send to reader
                                     match fcb.src_state {
                                         SourceHandleState::Inited => {
-                                            let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                            let _ = reader_io_pool_tx
+                                                .send(ReaderBioTask::OpenSource(fcb));
                                         }
                                         SourceHandleState::Opened => {
-                                            let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                            let _ = reader_io_pool_tx
+                                                .send(ReaderBioTask::ReadSource(fcb));
                                         }
                                         _ => {}
                                     }
@@ -305,10 +356,12 @@ pub fn spawn_reader_with_aggregation(
                                     // Large file - normal backup pipeline
                                     match fcb.src_state {
                                         SourceHandleState::Inited => {
-                                            let _ = reader_io_pool_tx.send(ReaderBioTask::OpenSource(fcb));
+                                            let _ = reader_io_pool_tx
+                                                .send(ReaderBioTask::OpenSource(fcb));
                                         }
                                         SourceHandleState::Opened => {
-                                            let _ = reader_io_pool_tx.send(ReaderBioTask::ReadSource(fcb));
+                                            let _ = reader_io_pool_tx
+                                                .send(ReaderBioTask::ReadSource(fcb));
                                         }
                                         _ => {}
                                     }
@@ -316,27 +369,39 @@ pub fn spawn_reader_with_aggregation(
                             }
                         }
                     }
-                },
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     if shared_state.entry_produce_done.load(Ordering::Relaxed)
-                        && shared_state.active_reader_io_workers.load(Ordering::Relaxed) == 0 {
+                        && shared_state
+                            .active_reader_io_workers
+                            .load(Ordering::Relaxed)
+                            == 0
+                    {
                         // Flush remaining aggregate buffers before exiting
                         let remaining = agg_state.flush_all();
                         for (dir, files) in remaining {
                             if !files.is_empty() {
                                 let file_count = files.len() as u64;
-                                let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+                                let bytes_in_blob: u64 =
+                                    files.iter().map(|f| f.data.len() as u64).sum();
 
                                 match agg_state.engine.create_blob(&dir, files) {
                                     Ok(blob_meta) => {
-                                        info!("Created final blob {} for dir {} with {} files",
-                                            blob_meta.blob_name, dir, blob_meta.file_count);
+                                        info!(
+                                            "Created final blob {} for dir {} with {} files",
+                                            blob_meta.blob_name, dir, blob_meta.file_count
+                                        );
                                         // Update stats for aggregated files
                                         stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
-                                        stats.bytes_copied.fetch_add(bytes_in_blob, Ordering::Relaxed);
+                                        stats
+                                            .bytes_copied
+                                            .fetch_add(bytes_in_blob, Ordering::Relaxed);
                                     }
                                     Err(e) => {
-                                        error!("Failed to create final blob for dir {}: {}", dir, e);
+                                        error!(
+                                            "Failed to create final blob for dir {}: {}",
+                                            dir, e
+                                        );
                                         stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
                                     }
                                 }
@@ -453,7 +518,7 @@ pub fn spawn_reader_io_pool(
     task_rx: Arc<Mutex<mpsc::Receiver<ReaderBioTask>>>,
     result_tx: mpsc::Sender<ReaderBioResult>,
     num_threads: usize,
-    shared_state : Arc<SharedState>
+    shared_state: Arc<SharedState>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(num_threads);
     for i in 0..num_threads {
@@ -471,14 +536,18 @@ pub fn spawn_reader_io_pool(
 
                 match task {
                     Ok(task) => {
-                        shared_state.active_reader_io_workers.fetch_add(1, Ordering::Relaxed);
+                        shared_state
+                            .active_reader_io_workers
+                            .fetch_add(1, Ordering::Relaxed);
                         let result = match task {
                             ReaderBioTask::OpenSource(fcb) => open_source(fcb),
                             ReaderBioTask::ReadSource(fcb) => read_source(fcb),
                             ReaderBioTask::CloseSource(fcb) => close_source(fcb),
                         };
                         let _ = result_tx.send(result);
-                        shared_state.active_reader_io_workers.fetch_sub(1, Ordering::Relaxed);
+                        shared_state
+                            .active_reader_io_workers
+                            .fetch_sub(1, Ordering::Relaxed);
                     }
                     Err(_) => break, // Channel closed
                 }
@@ -499,7 +568,7 @@ pub fn spawn_reader_io_pool(
 pub fn spawn_writer(
     writer_rx: mpsc::Receiver<ControlBlockVarient>,
     writer_io_pool_tx: mpsc::Sender<WriterBioTask>,
-    shared_state : Arc<SharedState>,
+    shared_state: Arc<SharedState>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -512,7 +581,10 @@ pub fn spawn_writer(
                             // Create the directory explicitly
                             debug!("Creating directory: {:?}", dcb.dst_path);
                             if let Err(e) = std::fs::create_dir_all(&dcb.dst_path) {
-                                error!("Failed to create target directory {:?}: {}", dcb.dst_path, e);
+                                error!(
+                                    "Failed to create target directory {:?}: {}",
+                                    dcb.dst_path, e
+                                );
                                 stats.dirs_failed.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 stats.dirs_created.fetch_add(1, Ordering::Relaxed);
@@ -531,14 +603,18 @@ pub fn spawn_writer(
                             }
                         }
                     }
-                },
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     if shared_state.reader_done.load(Ordering::Relaxed)
-                        && shared_state.active_writer_io_workers.load(Ordering::Relaxed) == 0 {
+                        && shared_state
+                            .active_writer_io_workers
+                            .load(Ordering::Relaxed)
+                            == 0
+                    {
                         shared_state.writer_done.store(true, Ordering::Relaxed);
                         break;
                     }
-                },
+                }
                 Err(RecvTimeoutError::Disconnected) => {
                     break;
                 }
@@ -567,7 +643,9 @@ pub fn spawn_writer_io_result_poll(
                     // Check if this is a symlink that was already written (symlinks are created in open_target)
                     if fcb.dst_state == TargetHandleState::Written {
                         stats.files_copied.fetch_add(1, Ordering::Relaxed);
-                        stats.bytes_copied.fetch_add(fcb.meta.size, Ordering::Relaxed);
+                        stats
+                            .bytes_copied
+                            .fetch_add(fcb.meta.size, Ordering::Relaxed);
                     }
                     let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
@@ -579,7 +657,9 @@ pub fn spawn_writer_io_result_poll(
                     if fcb.dst_offset >= fcb.meta.size {
                         fcb.dst_state = TargetHandleState::Written;
                         stats.files_copied.fetch_add(1, Ordering::Relaxed);
-                        stats.bytes_copied.fetch_add(fcb.meta.size, Ordering::Relaxed);
+                        stats
+                            .bytes_copied
+                            .fetch_add(fcb.meta.size, Ordering::Relaxed);
                     }
                     let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
@@ -606,7 +686,7 @@ pub fn spawn_writer_io_pool(
     task_rx: Arc<Mutex<mpsc::Receiver<WriterBioTask>>>,
     result_tx: mpsc::Sender<WriterBioResult>,
     num_threads: usize,
-    shared_state : Arc<SharedState>
+    shared_state: Arc<SharedState>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     let mut handles = Vec::with_capacity(num_threads);
     for i in 0..num_threads {
@@ -623,13 +703,17 @@ pub fn spawn_writer_io_pool(
 
                 match task {
                     Ok(task) => {
-                        shared_state.active_writer_io_workers.fetch_add(1, Ordering::Relaxed);
+                        shared_state
+                            .active_writer_io_workers
+                            .fetch_add(1, Ordering::Relaxed);
                         let result = match task {
                             WriterBioTask::OpenTarget(fcb) => open_target(fcb),
                             WriterBioTask::WriteTarget(fcb) => write_target(fcb),
                             WriterBioTask::CloseTarget(fcb) => close_target(fcb),
                         };
-                        shared_state.active_writer_io_workers.fetch_sub(1, Ordering::Relaxed);
+                        shared_state
+                            .active_writer_io_workers
+                            .fetch_sub(1, Ordering::Relaxed);
                         let _ = result_tx.send(result);
                     }
                     Err(_) => break,
@@ -683,17 +767,24 @@ fn open_source(mut fcb: FileControlBlock) -> ReaderBioResult {
 }
 
 fn read_source(mut fcb: FileControlBlock) -> ReaderBioResult {
-    let mut file = fcb.src_handle.take().expect("Source handle missing in ReadSource");
+    let mut file = fcb
+        .src_handle
+        .take()
+        .expect("Source handle missing in ReadSource");
     let offset = fcb.src_offset;
 
     if let Err(e) = file.seek(SeekFrom::Start(offset as u64)) {
-        error!("Failed to seek in source file {:?} at {}: {}", fcb.src_path, offset, e);
+        error!(
+            "Failed to seek in source file {:?} at {}: {}",
+            fcb.src_path, offset, e
+        );
         return ReaderBioResult::ReadSource(Err(BioError::Unknown(e)));
     }
 
     // Ensure buffer is sized appropriately
     if fcb.buffer.len() == 0 {
-        fcb.buffer.resize(fcb.meta.size.saturating_sub(offset) as usize, 0);
+        fcb.buffer
+            .resize(fcb.meta.size.saturating_sub(offset) as usize, 0);
     }
 
     match file.read(&mut fcb.buffer) {
@@ -730,25 +821,32 @@ fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
                 return WriterBioResult::OpenTarget(Err(BioError::Unknown(e)));
             }
         }
-        
+
         // Create the symlink
         if let Err(e) = create_symlink(&fcb.src_path, &fcb.dst_path, symlink_target) {
-            error!("Failed to create symlink {:?} -> {}: {}", fcb.dst_path, symlink_target, e);
+            error!(
+                "Failed to create symlink {:?} -> {}: {}",
+                fcb.dst_path, symlink_target, e
+            );
             return WriterBioResult::OpenTarget(Err(BioError::Unknown(e)));
         }
-        
+
         // Restore ACLs and xattrs for symlinks too
         #[cfg(target_os = "linux")]
         {
             restore_xattrs(&fcb.dst_path, &fcb.meta.common.xattributes);
-            restore_acl(&fcb.dst_path, &fcb.meta.common.posix_access_acl, &fcb.meta.common.posix_default_acl);
+            restore_acl(
+                &fcb.dst_path,
+                &fcb.meta.common.posix_access_acl,
+                &fcb.meta.common.posix_default_acl,
+            );
         }
-        
+
         // Mark as written (symlinks don't need content copying)
         fcb.dst_state = TargetHandleState::Written;
         return WriterBioResult::OpenTarget(Ok(fcb));
     }
-    
+
     // Create parent directories if needed
     if let Some(parent) = fcb.dst_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -757,7 +855,10 @@ fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
         }
     }
 
-    debug!("Copying file: {:?} -> {:?} ({} bytes)", fcb.src_path, fcb.dst_path, fcb.meta.size);
+    debug!(
+        "Copying file: {:?} -> {:?} ({} bytes)",
+        fcb.src_path, fcb.dst_path, fcb.meta.size
+    );
     debug!("open dst {:?}", fcb.dst_path);
     // Use create_new(true) to avoid overwriting existing files?
     match File::create(&fcb.dst_path) {
@@ -774,12 +875,18 @@ fn open_target(mut fcb: FileControlBlock) -> WriterBioResult {
 }
 
 fn write_target(mut fcb: FileControlBlock) -> WriterBioResult {
-    let mut file = fcb.dst_handle.take().expect("Target handle missing in WriteTarget");
+    let mut file = fcb
+        .dst_handle
+        .take()
+        .expect("Target handle missing in WriteTarget");
     let offset = fcb.dst_offset;
     let buffer_len = fcb.buffer.len();
 
     if let Err(e) = file.seek(SeekFrom::Start(offset as u64)) {
-        error!("Failed to seek in target file {:?} at {}: {}", fcb.dst_path, offset, e);
+        error!(
+            "Failed to seek in target file {:?} at {}: {}",
+            fcb.dst_path, offset, e
+        );
         return WriterBioResult::WriteTarget(Err(BioError::Unknown(e)));
     }
 
@@ -804,7 +911,7 @@ fn write_target(mut fcb: FileControlBlock) -> WriterBioResult {
 #[cfg(target_os = "linux")]
 fn restore_xattrs(path: &PathBuf, xattrs: &Option<String>) {
     use base64::Engine as _;
-    
+
     if let Some(xattr_str) = xattrs {
         for line in xattr_str.lines() {
             if let Some((name, b64_value)) = line.split_once('=') {
@@ -825,9 +932,9 @@ fn restore_xattrs(_path: &PathBuf, _xattrs: &Option<String>) {}
 #[cfg(target_os = "linux")]
 fn restore_acl(path: &PathBuf, access_acl: &Option<String>, default_acl: &Option<String>) {
     use exacl::{setfacl, AclEntry};
-    
+
     let mut acl_entries = Vec::new();
-    
+
     // Parse and add access ACL entries
     if let Some(acl_str) = access_acl {
         for line in acl_str.lines() {
@@ -836,7 +943,7 @@ fn restore_acl(path: &PathBuf, access_acl: &Option<String>, default_acl: &Option
             }
         }
     }
-    
+
     // Parse and add default ACL entries (for directories)
     if let Some(acl_str) = default_acl {
         for line in acl_str.lines() {
@@ -845,7 +952,7 @@ fn restore_acl(path: &PathBuf, access_acl: &Option<String>, default_acl: &Option
             }
         }
     }
-    
+
     if !acl_entries.is_empty() {
         if let Err(e) = setfacl(&[path.as_path()], &acl_entries, None) {
             error!("Failed to set ACL on {:?}: {}", path, e);
@@ -862,7 +969,7 @@ fn create_symlink(_src_path: &PathBuf, dst_path: &PathBuf, target: &str) -> io::
     if dst_path.exists() {
         std::fs::remove_file(dst_path)?;
     }
-    
+
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(target, dst_path)
@@ -881,14 +988,18 @@ fn create_symlink(_src_path: &PathBuf, dst_path: &PathBuf, target: &str) -> io::
 
 fn close_target(mut fcb: FileControlBlock) -> WriterBioResult {
     drop(fcb.dst_handle.take()); // Close file if open
-    
+
     // Restore metadata (ACLs, xattrs) after file is closed
     #[cfg(target_os = "linux")]
     {
         restore_xattrs(&fcb.dst_path, &fcb.meta.common.xattributes);
-        restore_acl(&fcb.dst_path, &fcb.meta.common.posix_access_acl, &fcb.meta.common.posix_default_acl);
+        restore_acl(
+            &fcb.dst_path,
+            &fcb.meta.common.posix_access_acl,
+            &fcb.meta.common.posix_default_acl,
+        );
     }
-    
+
     fcb.dst_state = TargetHandleState::Closed;
     WriterBioResult::CloseTarget(Ok(fcb))
 }

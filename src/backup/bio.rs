@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, mpsc};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
 use log::info;
@@ -10,8 +10,8 @@ use crate::backup::aggregate_engine;
 use crate::backup::fcb::ControlBlockVarient;
 use crate::backup::stats::BackupStats;
 use crate::backup::{
-    SharedState,
     bio::copy::{ReaderBioResult, ReaderBioTask, WriterBioResult, WriterBioTask},
+    SharedState,
 };
 
 pub mod copy;
@@ -40,8 +40,7 @@ pub(crate) fn spawn_local_backup_pipeline(
         let aggregate_engine = if enable_aggregation {
             info!(
                 "Aggregation enabled: max_blob_size={}, file_threshold={}",
-                aggregate_config.max_blob_size,
-                aggregate_config.file_threshold
+                aggregate_config.max_blob_size, aggregate_config.file_threshold
             );
 
             match aggregate_engine::AggregateBackupEngine::new(
@@ -51,7 +50,10 @@ pub(crate) fn spawn_local_backup_pipeline(
             ) {
                 Ok(engine) => Some(Arc::new(engine)),
                 Err(e) => {
-                    eprintln!("Failed to create aggregate engine: {}. Continuing without aggregation.", e);
+                    eprintln!(
+                        "Failed to create aggregate engine: {}. Continuing without aggregation.",
+                        e
+                    );
                     None
                 }
             }
@@ -132,8 +134,11 @@ pub(crate) fn spawn_local_backup_pipeline(
             worker_count,
             Arc::clone(&shared_state),
         );
-        let writer_io_result_poll =
-            copy::spawn_writer_io_result_poll(writer_io_result_rx, fcb_writer_tx, Arc::clone(&stats));
+        let writer_io_result_poll = copy::spawn_writer_io_result_poll(
+            writer_io_result_rx,
+            fcb_writer_tx,
+            Arc::clone(&stats),
+        );
 
         entry_producer_handle.join().unwrap();
         reader_handle.join().unwrap();
@@ -159,7 +164,12 @@ pub(crate) fn spawn_local_backup_pipeline(
 
         if enable_hardlink_phase {
             info!("Starting hardlink phase...");
-            match hardlink::run_hardlink_phase(&ctrl_dir, &meta_dir, &source_dir_base, &target_dir_base) {
+            match hardlink::run_hardlink_phase(
+                &ctrl_dir,
+                &meta_dir,
+                &source_dir_base,
+                &target_dir_base,
+            ) {
                 Ok(hl_stats) => {
                     info!(
                         "Hardlink phase completed: {} created, {} failed",

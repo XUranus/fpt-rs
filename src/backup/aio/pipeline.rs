@@ -6,13 +6,13 @@
 //! - a [`TargetWriter`] implementation
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use log::{debug, error, info};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{mpsc, Semaphore};
 
-use crate::backup::aio::entry::{EntryMapping, produce_entries};
+use crate::backup::aio::entry::{produce_entries, EntryMapping};
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
 use crate::backup::fcb::ControlBlockVarient;
 use crate::backup::stats::BackupStats;

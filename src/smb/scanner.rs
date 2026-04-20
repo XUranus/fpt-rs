@@ -4,21 +4,24 @@
 //! `DirBatchScanResult` batches as the local and NFS scanners so the existing
 //! metadata/control-file pipeline can be reused unchanged.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures_util::StreamExt;
-use smb_client::{CreateDisposition, CreateOptions, DirAccessMask, Directory, FileAccessMask, FileAllInformation, FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath};
+use smb_client::{
+    CreateDisposition, CreateOptions, DirAccessMask, Directory, FileAccessMask, FileAllInformation,
+    FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath,
+};
 use tokio::sync::mpsc;
 
 use crate::scanner::models::DirBatchScanResult;
 use crate::scanner::options::ScanOption;
-use crate::smb::SmbLocation;
 use crate::smb::fstat::{
-    SmbDirSeed, share_devno, smb_all_info_to_dir_meta, smb_dir_info_to_file_meta,
-    smb_dir_seed_from_entry, smb_seed_to_dir_meta,
+    share_devno, smb_all_info_to_dir_meta, smb_dir_info_to_file_meta, smb_dir_seed_from_entry,
+    smb_seed_to_dir_meta, SmbDirSeed,
 };
+use crate::smb::SmbLocation;
 
 #[derive(Clone)]
 pub struct SmbScanner {
@@ -45,26 +48,34 @@ struct SmbScanMetrics {
 impl SmbScanMetrics {
     fn add_dir_open(&self, started: Instant) {
         self.dir_open_calls.fetch_add(1, Ordering::Relaxed);
-        self.dir_open_ns
-            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+        self.dir_open_ns.fetch_add(
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
     }
 
     fn add_dir_query_info(&self, started: Instant) {
         self.dir_query_info_calls.fetch_add(1, Ordering::Relaxed);
-        self.dir_query_info_ns
-            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+        self.dir_query_info_ns.fetch_add(
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
     }
 
     fn add_dir_query(&self, started: Instant) {
         self.dir_query_calls.fetch_add(1, Ordering::Relaxed);
-        self.dir_query_ns
-            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+        self.dir_query_ns.fetch_add(
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
     }
 
     fn add_link_count(&self, started: Instant) {
         self.link_count_calls.fetch_add(1, Ordering::Relaxed);
-        self.link_count_ns
-            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+        self.link_count_ns.fetch_add(
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Ordering::Relaxed,
+        );
     }
 
     fn log_summary(&self) {
@@ -141,7 +152,11 @@ impl SmbScanner {
         tx: mpsc::Sender<DirBatchScanResult>,
     ) -> Result<(), String> {
         let root_unc = self.location.root_unc_path()?;
-        let root_path = self.location.synthetic_root().to_string_lossy().into_owned();
+        let root_path = self
+            .location
+            .synthetic_root()
+            .to_string_lossy()
+            .into_owned();
         let mut pending = vec![DirTask {
             unc: root_unc,
             path: root_path,
@@ -177,11 +192,7 @@ impl SmbScanner {
         Ok(())
     }
 
-    async fn scan_one_dir(
-        &self,
-        task: DirTask,
-        scan_option: &ScanOption,
-    ) -> DirScanOutput {
+    async fn scan_one_dir(&self, task: DirTask, scan_option: &ScanOption) -> DirScanOutput {
         let dir_access = if task.seed.is_some() {
             DirAccessMask::new().with_list_directory(true)
         } else {
@@ -213,7 +224,10 @@ impl SmbScanner {
                         children: Vec::new(),
                     };
                 }
-                return DirScanOutput { batch: None, children: Vec::new() };
+                return DirScanOutput {
+                    batch: None,
+                    children: Vec::new(),
+                };
             }
         };
         self.metrics.add_dir_open(open_started);
@@ -223,7 +237,10 @@ impl SmbScanner {
             other => {
                 log::warn!("SMB path {} did not resolve to a directory", task.path);
                 let _ = close_resource(other).await;
-                return DirScanOutput { batch: None, children: Vec::new() };
+                return DirScanOutput {
+                    batch: None,
+                    children: Vec::new(),
+                };
             }
         };
 
@@ -240,7 +257,10 @@ impl SmbScanner {
                     self.metrics.add_dir_query_info(query_info_started);
                     log::error!("SMB query_info failed for {}: {}", task.path, e);
                     drop(dir);
-                    return DirScanOutput { batch: None, children: Vec::new() };
+                    return DirScanOutput {
+                        batch: None,
+                        children: Vec::new(),
+                    };
                 }
             }
         };
@@ -313,12 +333,9 @@ impl SmbScanner {
                     1
                 };
 
-                batch.files.push(smb_dir_info_to_file_meta(
-                    &entry,
-                    self.devno,
-                    None,
-                    links,
-                ));
+                batch
+                    .files
+                    .push(smb_dir_info_to_file_meta(&entry, self.devno, None, links));
             }
         }
 
@@ -331,10 +348,13 @@ impl SmbScanner {
 
     async fn query_link_count(&self, path: &UncPath) -> Result<u64, String> {
         let started = Instant::now();
-        let open_args = FileCreateArgs::make_open_existing(
-            FileAccessMask::new().with_generic_read(true),
-        );
-        let resource = self.client.create_file(path, &open_args).await.map_err(|e| e.to_string())?;
+        let open_args =
+            FileCreateArgs::make_open_existing(FileAccessMask::new().with_generic_read(true));
+        let resource = self
+            .client
+            .create_file(path, &open_args)
+            .await
+            .map_err(|e| e.to_string())?;
         let links = match &resource {
             Resource::File(file) => {
                 let standard = file
@@ -369,7 +389,10 @@ fn should_skip(
         return true;
     }
 
-    scan_option.meta_option.skip_entries.contains(&name.to_string())
+    scan_option
+        .meta_option
+        .skip_entries
+        .contains(&name.to_string())
 }
 
 async fn close_resource(resource: Resource) -> Result<(), String> {

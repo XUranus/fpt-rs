@@ -11,15 +11,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use log::{debug, error, info, warn};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{mpsc, Semaphore};
 
-use crate::backup::RestorePolicy;
-use crate::backup::RestoreStats;
 use crate::backup::aggregate_index::AggregateIndex;
 use crate::backup::aggregate_restore::AggregateRestoreEngine;
-use crate::backup::aio::entry::{EntryMapping, produce_entries};
+use crate::backup::aio::entry::{produce_entries, EntryMapping};
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
 use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState};
+use crate::backup::RestorePolicy;
+use crate::backup::RestoreStats;
 
 #[derive(Clone)]
 pub struct LocalRepoRestoreSource {
@@ -44,7 +44,10 @@ impl SourceReader for LocalRepoRestoreSource {
     fn read_file(
         &self,
         mut fcb: FileControlBlock,
-    ) -> futures_util::future::BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<FileControlBlock, (FileControlBlock, String)>,
+    > {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.src_path.clone();
@@ -62,9 +65,7 @@ impl SourceReader for LocalRepoRestoreSource {
                 .to_string_lossy()
                 .to_string();
 
-            let restore_info = repo_dir
-                .join(".AGGR_DIR")
-                .join("AGGREGATE_IDX.sqlite");
+            let restore_info = repo_dir.join(".AGGR_DIR").join("AGGREGATE_IDX.sqlite");
             let aggregate_info = if restore_info.exists() {
                 let index = AggregateIndex::open(&restore_info)
                     .map_err(|e| format!("open aggregate index {}: {e}", restore_info.display()));
@@ -72,7 +73,9 @@ impl SourceReader for LocalRepoRestoreSource {
                     Ok(index) => index
                         .query_file(&file_name, &source_dir_key)
                         .or_else(|_| index.query_file(&file_name, &dir_key))
-                        .map_err(|e| format!("query aggregate index {}: {e}", restore_info.display())),
+                        .map_err(|e| {
+                            format!("query aggregate index {}: {e}", restore_info.display())
+                        }),
                     Err(e) => Err(e),
                 }
             } else {

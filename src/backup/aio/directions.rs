@@ -1,16 +1,17 @@
 //! Thin direction wrappers over the generic async copy executor.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Instant;
 
 use log::{debug, error, info};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{mpsc, Semaphore};
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::aio::aggregation::AggregatingTarget;
-use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::entry::produce_entries;
+use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
 use crate::backup::aio::transport::{LocalSource, LocalTarget, TargetWriter};
 use crate::backup::fcb::ControlBlockVarient;
@@ -43,7 +44,8 @@ pub async fn run_local_to_nfs_copy_pipeline(
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
+    let mapping =
+        EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
     let target = NfsTarget {
         pool: Arc::clone(&pool),
         dir_cache: new_dir_handle_cache(),
@@ -76,7 +78,8 @@ pub async fn run_local_to_smb_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
+    let mapping =
+        EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
     let target = SmbTarget {
         location,
         pool,
@@ -272,6 +275,7 @@ async fn run_smb_to_smb_streaming_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
 ) {
+    let pipeline_started = Instant::now();
     let _ = smb_source_base;
     let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let dir_target = SmbTarget {
@@ -282,17 +286,17 @@ async fn run_smb_to_smb_streaming_pipeline(
     let task_sem = Arc::new(Semaphore::new(SMB_MAX_CONCURRENT_TASKS.max(1)));
     let (entry_tx, mut entry_rx) = mpsc::channel::<ControlBlockVarient>(256);
     let target_dir_cache = dir_target.dir_cache.clone();
+    let copy_metrics = Arc::new(crate::smb::aio::SmbCopyMetrics::default());
+    let mut dir_entries = 0u64;
+    let mut file_entries = 0u64;
+    let dispatch_started = Instant::now();
+    let mut dir_paths = Vec::new();
+    let mut file_jobs = Vec::new();
 
     let producer_handle = {
         let entry_tx = entry_tx.clone();
         tokio::task::spawn_blocking(move || {
-            produce_entries(
-                control_file,
-                meta_dir,
-                mapping,
-                entry_tx,
-                "SMB->SMB",
-            );
+            produce_entries(control_file, meta_dir, mapping, entry_tx, "SMB->SMB");
         })
     };
     drop(entry_tx);
@@ -302,81 +306,105 @@ async fn run_smb_to_smb_streaming_pipeline(
     while let Some(item) = entry_rx.recv().await {
         match item {
             ControlBlockVarient::DirControlBlock(dcb) => {
-                let target2 = dir_target.clone();
-                let stats2 = Arc::clone(&stats);
-                let task_sem2 = Arc::clone(&task_sem);
-                let path = dcb.dst_path.clone();
-                debug!("SMB->SMB: mkdir {:?}", path);
-
-                task_handles.push(tokio::spawn(async move {
-                    let _permit = task_sem2.acquire_owned().await.unwrap();
-                    match target2.create_dir(path.clone()).await {
-                        Ok(()) => {
-                            stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            error!("SMB->SMB: mkdir {:?}: {e}", path);
-                            stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }));
+                dir_entries += 1;
+                dir_paths.push(dcb.dst_path);
             }
             ControlBlockVarient::FileControlBlock(fcb) => {
+                file_entries += 1;
                 if fcb.meta.common.symlink_target_path.is_some() {
                     debug!("SMB->SMB: skipping symlink {:?}", fcb.src_path);
                     continue;
                 }
 
-                let source_pool2 = Arc::clone(&source_pool);
-                let target_pool2 = Arc::clone(&target_pool);
-                let source_location2 = source_location.clone();
-                let target_location2 = target_location.clone();
-                let target_dir_cache2 = target_dir_cache.clone();
-                let stats2 = Arc::clone(&stats);
-                let task_sem2 = Arc::clone(&task_sem);
                 let read_path = fcb.src_path.clone();
                 let write_path = fcb.dst_path.clone();
                 let src_rel = fcb.src_path.to_string_lossy().replace('\\', "/");
                 let dst_rel = fcb.dst_path.to_string_lossy().replace('\\', "/");
                 let file_size = fcb.meta.size;
-
-                task_handles.push(tokio::spawn(async move {
-                    let _permit = task_sem2.acquire_owned().await.unwrap();
-                    match crate::smb::aio::copy_relative_file_streaming(
-                        &source_pool2,
-                        &source_location2,
-                        &src_rel,
-                        &target_pool2,
-                        &target_location2,
-                        &target_dir_cache2,
-                        &dst_rel,
-                    )
-                    .await
-                    {
-                        Ok(()) => {
-                            debug!("SMB->SMB: copied {:?} -> {:?}", read_path, write_path);
-                            stats2.files_copied.fetch_add(1, Ordering::Relaxed);
-                            stats2.bytes_copied.fetch_add(file_size, Ordering::Relaxed);
-                        }
-                        Err(msg) => {
-                            error!("SMB->SMB: write {:?}: {msg}", write_path);
-                            stats2.files_failed.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }));
+                file_jobs.push((read_path, write_path, src_rel, dst_rel, file_size));
             }
         }
     }
+    let dispatch_elapsed = dispatch_started.elapsed();
 
+    let producer_wait_started = Instant::now();
     if let Err(e) = producer_handle.await {
         error!("SMB->SMB: entry producer panicked: {e}");
     }
+    let producer_wait_elapsed = producer_wait_started.elapsed();
 
+    let mkdir_started = Instant::now();
+    for path in dir_paths {
+        let target2 = dir_target.clone();
+        let stats2 = Arc::clone(&stats);
+        let task_sem2 = Arc::clone(&task_sem);
+        debug!("SMB->SMB: mkdir {:?}", path);
+
+        task_handles.push(tokio::spawn(async move {
+            let _permit = task_sem2.acquire_owned().await.unwrap();
+            match target2.create_dir(path.clone()).await {
+                Ok(()) => {
+                    stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(e) => {
+                    error!("SMB->SMB: mkdir {:?}: {e}", path);
+                    stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
     for h in task_handles {
         if let Err(e) = h.await {
-            error!("SMB->SMB: task panicked: {e}");
+            error!("SMB->SMB: mkdir task panicked: {e}");
         }
     }
+    let mkdir_elapsed = mkdir_started.elapsed();
+
+    let copy_started = Instant::now();
+    let mut task_handles = Vec::new();
+    for (read_path, write_path, src_rel, dst_rel, file_size) in file_jobs {
+        let source_pool2 = Arc::clone(&source_pool);
+        let target_pool2 = Arc::clone(&target_pool);
+        let source_location2 = source_location.clone();
+        let target_location2 = target_location.clone();
+        let target_dir_cache2 = target_dir_cache.clone();
+        let stats2 = Arc::clone(&stats);
+        let copy_metrics2 = Arc::clone(&copy_metrics);
+        let task_sem2 = Arc::clone(&task_sem);
+
+        task_handles.push(tokio::spawn(async move {
+            let _permit = task_sem2.acquire_owned().await.unwrap();
+            match crate::smb::aio::copy_relative_file_streaming(
+                &source_pool2,
+                &source_location2,
+                &src_rel,
+                &target_pool2,
+                &target_location2,
+                &target_dir_cache2,
+                &dst_rel,
+                false,
+                Some(copy_metrics2),
+            )
+            .await
+            {
+                Ok(()) => {
+                    debug!("SMB->SMB: copied {:?} -> {:?}", read_path, write_path);
+                    stats2.files_copied.fetch_add(1, Ordering::Relaxed);
+                    stats2.bytes_copied.fetch_add(file_size, Ordering::Relaxed);
+                }
+                Err(msg) => {
+                    error!("SMB->SMB: write {:?}: {msg}", write_path);
+                    stats2.files_failed.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+    for h in task_handles {
+        if let Err(e) = h.await {
+            error!("SMB->SMB: copy task panicked: {e}");
+        }
+    }
+    let copy_elapsed = copy_started.elapsed();
 
     if let Err(e) = source_pool.close().await {
         error!("SMB->SMB: source finalization failed: {e}");
@@ -392,6 +420,28 @@ async fn run_smb_to_smb_streaming_pipeline(
         stats.dirs_created.load(Ordering::Relaxed),
         stats.files_failed.load(Ordering::Relaxed),
     );
+    info!(
+        "SMB->SMB timing: total={}, dispatch={} for {} file entries and {} dir entries, producer_wait={}, mkdir_wait={}, copy_wait={}, copy_ops: {}",
+        format_elapsed(pipeline_started.elapsed()),
+        format_elapsed(dispatch_elapsed),
+        file_entries,
+        dir_entries,
+        format_elapsed(producer_wait_elapsed),
+        format_elapsed(mkdir_elapsed),
+        format_elapsed(copy_elapsed),
+        copy_metrics.timing_summary(),
+    );
+}
+
+#[cfg(feature = "smb")]
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    let millis = elapsed.subsec_millis();
+    if secs >= 60 {
+        format!("{}m {}.{:03}s", secs / 60, secs % 60, millis)
+    } else {
+        format!("{}.{:03}s", secs, millis)
+    }
 }
 
 #[cfg(all(feature = "nfs", feature = "smb"))]

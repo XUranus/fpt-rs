@@ -97,11 +97,10 @@ pub struct DirControlBlock {
     pub dst_path: PathBuf,
 }
 
-
 #[derive(Debug)]
 pub enum ControlBlockVarient {
     FileControlBlock(FileControlBlock),
-    DirControlBlock(DirControlBlock)
+    DirControlBlock(DirControlBlock),
 }
 
 impl From<FileMeta> for FileControlBlock {
@@ -135,7 +134,6 @@ impl From<FileMeta> for FileControlBlock {
     }
 }
 
-
 impl From<DirMeta> for DirControlBlock {
     /// Creates a new `DirControlBlock` from dir metadata.
     ///
@@ -144,7 +142,7 @@ impl From<DirMeta> for DirControlBlock {
         Self {
             meta: Box::new(dmeta),
             src_path: PathBuf::new(),
-            dst_path: PathBuf::new()
+            dst_path: PathBuf::new(),
         }
     }
 }

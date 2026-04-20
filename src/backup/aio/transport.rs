@@ -1,6 +1,7 @@
 //! Transport adapters for the generic async backup pipeline.
 
 use std::path::PathBuf;
+#[cfg(any(feature = "nfs", feature = "smb"))]
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
@@ -10,24 +11,37 @@ use crate::backup::aio::local_fs::{read_local_file, write_local_file};
 use crate::backup::fcb::{FileControlBlock, SourceHandleState};
 
 pub trait SourceReader: Clone + Send + Sync + 'static {
-    fn read_file(&self, fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>>;
+    fn read_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>>;
 
-    fn finish(&self) -> BoxFuture<'static, Result<(), String>> { Box::pin(async { Ok(()) }) }
+    fn finish(&self) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 pub trait TargetWriter: Clone + Send + Sync + 'static {
     fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>>;
 
-    fn write_file(&self, fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>>;
+    fn write_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>>;
 
-    fn finish(&self) -> BoxFuture<'static, Result<(), String>> { Box::pin(async { Ok(()) }) }
+    fn finish(&self) -> BoxFuture<'static, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct LocalSource;
 
 impl SourceReader for LocalSource {
-    fn read_file(&self, mut fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+    fn read_file(
+        &self,
+        mut fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
         Box::pin(async move {
             let src_path = fcb.src_path.clone();
             let meta_size = fcb.meta.size;
@@ -58,13 +72,19 @@ impl TargetWriter for LocalTarget {
     fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>> {
         let full_path = self.base.join(path);
         Box::pin(async move {
-            task::spawn_blocking(move || std::fs::create_dir_all(&full_path).map_err(|e| format!("mkdir {:?}: {e}", full_path)))
-                .await
-                .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")))
+            task::spawn_blocking(move || {
+                std::fs::create_dir_all(&full_path)
+                    .map_err(|e| format!("mkdir {:?}: {e}", full_path))
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")))
         })
     }
 
-    fn write_file(&self, fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+    fn write_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
         let dst_path = self.base.join(&fcb.dst_path);
         let buf = fcb.buffer.clone();
         Box::pin(async move {
@@ -91,8 +111,11 @@ pub struct NfsSource {
 
 #[cfg(feature = "nfs")]
 impl SourceReader for NfsSource {
-    fn read_file(&self, fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
-        use crate::nfs::aio::reader::{NfsReaderResult, nfs_read_task};
+    fn read_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+        use crate::nfs::aio::reader::{nfs_read_task, NfsReaderResult};
         let this = self.clone();
         Box::pin(async move {
             match nfs_read_task(
@@ -137,8 +160,11 @@ impl TargetWriter for NfsTarget {
         })
     }
 
-    fn write_file(&self, fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
-        use crate::nfs::aio::writer::{NfsWriterResult, nfs_write_task};
+    fn write_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+        use crate::nfs::aio::writer::{nfs_write_task, NfsWriterResult};
         let this = self.clone();
         Box::pin(async move {
             match nfs_write_task(
@@ -166,12 +192,22 @@ pub struct SmbSource {
 
 #[cfg(feature = "smb")]
 impl SourceReader for SmbSource {
-    fn read_file(&self, mut fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+    fn read_file(
+        &self,
+        mut fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.src_path.to_string_lossy().replace('\\', "/");
             let client = this.pool.client();
-            match crate::smb::aio::read_relative_file(&client, &this.location, &rel_path, fcb.meta.size).await {
+            match crate::smb::aio::read_relative_file(
+                &client,
+                &this.location,
+                &rel_path,
+                fcb.meta.size,
+            )
+            .await
+            {
                 Ok(buf) => {
                     fcb.buffer_len = buf.len();
                     fcb.buffer = buf;
@@ -213,7 +249,10 @@ impl TargetWriter for SmbTarget {
         })
     }
 
-    fn write_file(&self, fcb: FileControlBlock) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+    fn write_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.dst_path.to_string_lossy().replace('\\', "/");

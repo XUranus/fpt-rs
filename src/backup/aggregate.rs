@@ -25,8 +25,8 @@
 //! 2. Read blob file and extract specific byte ranges
 //! 3. Write extracted files to destination
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Metadata for a single file within an aggregate blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +80,7 @@ impl Default for AggregateConfig {
         Self {
             enabled: false,
             max_blob_size: 64 * 1024 * 1024, // 64MB
-            file_threshold: 1024 * 1024,      // 1MB
+            file_threshold: 1024 * 1024,     // 1MB
         }
     }
 }
@@ -227,10 +227,10 @@ pub struct SnowflakeIdGenerator {
 impl SnowflakeIdGenerator {
     /// Custom epoch: 2024-01-01 00:00:00 UTC in milliseconds
     const BIFROST_EPOCH: u64 = 1704067200000;
-    
+
     /// Maximum sequence number (12 bits)
     const MAX_SEQUENCE: u16 = 4095;
-    
+
     /// Creates a new Snowflake ID generator.
     /// process_id should be unique per process (0-1023).
     pub fn new(process_id: u16) -> Self {
@@ -241,14 +241,14 @@ impl SnowflakeIdGenerator {
             epoch: Self::BIFROST_EPOCH,
         }
     }
-    
+
     /// Creates a new Snowflake ID generator with default process ID.
     /// Uses process ID derived from current process ID modulo 1024.
     pub fn default() -> Self {
         let pid = std::process::id() as u16 & 0x3FF;
         Self::new(pid)
     }
-    
+
     /// Gets current timestamp in milliseconds since epoch.
     fn current_timestamp(&self) -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -258,7 +258,7 @@ impl SnowflakeIdGenerator {
             .as_millis() as u64;
         now.saturating_sub(self.epoch)
     }
-    
+
     /// Waits until the next millisecond.
     fn wait_next_millis(&self, last: u64) -> u64 {
         let mut timestamp = self.current_timestamp();
@@ -268,9 +268,9 @@ impl SnowflakeIdGenerator {
         }
         timestamp
     }
-    
+
     /// Generates a new unique 64-bit ID.
-    /// 
+    ///
     /// ID structure (64 bits):
     /// - 41 bits: Timestamp (milliseconds since epoch, ~69 years)
     /// - 10 bits: Process ID (0-1023, unique per process)
@@ -278,12 +278,12 @@ impl SnowflakeIdGenerator {
     /// - 1 bit: Reserved (0)
     pub fn next_id(&mut self) -> u64 {
         let mut timestamp = self.current_timestamp();
-        
+
         if timestamp < self.last_timestamp {
             // Clock moved backwards, wait until we catch up
             timestamp = self.wait_next_millis(self.last_timestamp);
         }
-        
+
         if timestamp == self.last_timestamp {
             // Same millisecond, increment sequence
             self.sequence += 1;
@@ -296,14 +296,14 @@ impl SnowflakeIdGenerator {
             // New millisecond, reset sequence
             self.sequence = 0;
         }
-        
+
         self.last_timestamp = timestamp;
-        
+
         // Compose the ID
         // | 41 bits timestamp | 10 bits process | 12 bits sequence | 1 bit reserved |
         (timestamp << 23) | ((self.process_id as u64) << 12) | (self.sequence as u64)
     }
-    
+
     /// Generates a unique blob filename.
     pub fn generate_blob_name(&mut self) -> String {
         format!("{:016x}.bifrost.blob", self.next_id())
@@ -322,14 +322,14 @@ impl ThreadSafeSnowflake {
             inner: std::sync::Mutex::new(SnowflakeIdGenerator::new(process_id)),
         }
     }
-    
+
     /// Creates a new thread-safe Snowflake generator with default process ID.
     pub fn default() -> Self {
         Self {
             inner: std::sync::Mutex::new(SnowflakeIdGenerator::default()),
         }
     }
-    
+
     /// Generates a new unique blob filename.
     pub fn generate_blob_name(&self) -> String {
         let mut generator = self.inner.lock().unwrap();

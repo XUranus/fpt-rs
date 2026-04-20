@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use tempfile::NamedTempFile;
 
 use crate::backup::aggregate::{
-    AggregateBlobMeta, AggregateConfig, PendingFile, ThreadSafeSnowflake, should_aggregate,
+    should_aggregate, AggregateBlobMeta, AggregateConfig, PendingFile, ThreadSafeSnowflake,
 };
 use crate::backup::aggregate_index::AggregateIndex;
 use crate::backup::aio::transport::TargetWriter;
@@ -112,7 +112,10 @@ impl<T: TargetWriter> AggregatingTarget<T> {
         Ok(blob_meta)
     }
 
-    async fn flush_indexes(&self, snapshot: Vec<(String, Vec<AggregateBlobMeta>)>) -> Result<(), String> {
+    async fn flush_indexes(
+        &self,
+        snapshot: Vec<(String, Vec<AggregateBlobMeta>)>,
+    ) -> Result<(), String> {
         for (dir_key, blobs) in snapshot {
             if blobs.is_empty() {
                 continue;
@@ -130,7 +133,9 @@ impl<T: TargetWriter> AggregatingTarget<T> {
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
 
-            let idx_path = Path::new(&dir_key).join(".AGGR_DIR").join("AGGREGATE_IDX.sqlite");
+            let idx_path = Path::new(&dir_key)
+                .join(".AGGR_DIR")
+                .join("AGGREGATE_IDX.sqlite");
             let idx_fcb = synthetic_fcb(idx_path, bytes, 0o644);
             self.inner.write_file(idx_fcb).await.map_err(|(_, e)| e)?;
         }
@@ -139,12 +144,21 @@ impl<T: TargetWriter> AggregatingTarget<T> {
 }
 
 impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
-    fn create_dir(&self, path: PathBuf) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
+    fn create_dir(
+        &self,
+        path: PathBuf,
+    ) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
         let this = self.clone();
         Box::pin(async move { this.inner.create_dir(path).await })
     }
 
-    fn write_file(&self, fcb: FileControlBlock) -> futures_util::future::BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+    fn write_file(
+        &self,
+        fcb: FileControlBlock,
+    ) -> futures_util::future::BoxFuture<
+        'static,
+        Result<FileControlBlock, (FileControlBlock, String)>,
+    > {
         let this = self.clone();
         Box::pin(async move {
             if !this.should_aggregate_fcb(&fcb) {
@@ -169,7 +183,9 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
 
             let to_flush = {
                 let mut state = this.state.lock().unwrap();
-                let dir_state = state.entry(dir_key.clone()).or_insert_with(DirAggregationState::new);
+                let dir_state = state
+                    .entry(dir_key.clone())
+                    .or_insert_with(DirAggregationState::new);
                 dir_state.pending_size += pending.data.len() as u64;
                 dir_state.pending_files.push(pending);
                 dir_state.pending_size >= this.config.max_blob_size
@@ -228,7 +244,10 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
 
             let snapshot: Vec<(String, Vec<AggregateBlobMeta>)> = {
                 let state = this.state.lock().unwrap();
-                state.iter().map(|(k, v)| (k.clone(), v.blobs.clone())).collect()
+                state
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.blobs.clone()))
+                    .collect()
             };
             this.flush_indexes(snapshot).await?;
             this.inner.finish().await

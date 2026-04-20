@@ -24,8 +24,8 @@
 //! subtasks finish, the [`PostJob`] copies D\_REPO (if NFS target was *not*
 //! used for direct writes), M\_REPO, and C\_REPO to the final destination.
 
-use std::path::{Path, PathBuf};
 use std::io;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -56,11 +56,7 @@ pub struct RepoLayout {
 
 impl RepoLayout {
     /// Create a new [`RepoLayout`] rooted at `base_dir/COPY_{format}_{type}_{uuid}`.
-    pub fn new(
-        base_dir: &Path,
-        format_tag: &str,
-        type_tag: &str,
-    ) -> Self {
+    pub fn new(base_dir: &Path, format_tag: &str, type_tag: &str) -> Self {
         let uuid = Uuid::new_v4().to_string();
         let folder = format!("COPY_{format_tag}_{type_tag}_{uuid}");
         let copy_root = base_dir.join(folder);
@@ -80,14 +76,22 @@ impl RepoLayout {
     }
 
     fn from_root(copy_root: PathBuf, copy_uuid: String) -> Self {
-        let d_repo     = copy_root.join("D_REPO");
-        let m_repo     = copy_root.join("M_REPO");
-        let c_repo     = copy_root.join("C_REPO");
-        let meta_dir   = m_repo.join("meta");
-        let ctrl_dir   = c_repo.join("ctrl");
-        let logs_dir   = c_repo.join("logs");
+        let d_repo = copy_root.join("D_REPO");
+        let m_repo = copy_root.join("M_REPO");
+        let c_repo = copy_root.join("C_REPO");
+        let meta_dir = m_repo.join("meta");
+        let ctrl_dir = c_repo.join("ctrl");
+        let logs_dir = c_repo.join("logs");
         let status_dir = c_repo.join("status");
-        Self { copy_root, copy_uuid, d_repo, meta_dir, ctrl_dir, logs_dir, status_dir }
+        Self {
+            copy_root,
+            copy_uuid,
+            d_repo,
+            meta_dir,
+            ctrl_dir,
+            logs_dir,
+            status_dir,
+        }
     }
 
     /// Create all repo directories on the local filesystem.
@@ -116,7 +120,9 @@ impl RepoLayout {
     /// Remove a named status sentinel file (silently ignores missing files).
     pub fn remove_status(&self, name: &str) -> io::Result<()> {
         let p = self.status_dir.join(name);
-        if p.exists() { std::fs::remove_file(p)?; }
+        if p.exists() {
+            std::fs::remove_file(p)?;
+        }
         Ok(())
     }
 
@@ -173,12 +179,16 @@ pub struct TempRepoConfig {
 
 impl Default for TempRepoConfig {
     fn default() -> Self {
-        Self { temp_base: PathBuf::from("/tmp/bifrost") }
+        Self {
+            temp_base: PathBuf::from("/tmp/bifrost"),
+        }
     }
 }
 
 impl TempRepoConfig {
     pub fn new(temp_base: impl Into<PathBuf>) -> Self {
-        Self { temp_base: temp_base.into() }
+        Self {
+            temp_base: temp_base.into(),
+        }
     }
 }

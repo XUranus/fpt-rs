@@ -22,14 +22,14 @@
 //! - **Range-based file enumeration** for a given directory (via `files_count`,
 //!   `fcache_fid`, and `fcache_offset` in `DirCacheEntry`).
 
-use sha2::{Sha256, Digest};
 use bincode;
+use sha2::{Digest, Sha256};
 
 use super::{DirMeta, FileMeta, MetaEntryLocator};
 
 /// A trait for types with a known compile-time size.
 ///
-/// Used to solve the serialization padding size mismatch issue, 
+/// Used to solve the serialization padding size mismatch issue,
 /// and document the expected on-disk size of index entries.
 pub trait FixedSize {
     /// The size of the type in bytes.

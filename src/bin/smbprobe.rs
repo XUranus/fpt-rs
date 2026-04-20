@@ -42,10 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("step=open_root");
         let access = smb_client::FileAccessMask::new().with_generic_read(true);
         let resource = tree
-            .open_existing(
-                location.root_unc_path()?.path().unwrap_or(""),
-                access,
-            )
+            .open_existing(location.root_unc_path()?.path().unwrap_or(""), access)
             .await?;
         match resource {
             smb_client::Resource::Directory(dir) => {

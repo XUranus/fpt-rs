@@ -17,12 +17,12 @@ use uuid::Uuid;
 
 use crate::backup::RestorePolicy;
 use crate::frame::location::DataLocation;
-use crate::frame::postjob::RestorePostJob;
 use crate::frame::postjob::BackupManifest;
+use crate::frame::postjob::RestorePostJob;
 use crate::frame::prereq::RestorePrereqJob;
 use crate::frame::repo::{RepoLayout, TempRepoConfig};
 use crate::frame::subtask::{
-    SubtaskConfig, SubtaskError, find_restore_control_files, run_restore_subtask,
+    find_restore_control_files, run_restore_subtask, SubtaskConfig, SubtaskError,
 };
 use crate::frame::traits::{BackupRestoreJob, JobResult};
 
@@ -47,7 +47,7 @@ pub struct RestoreJobConfig {
 impl Default for RestoreJobConfig {
     fn default() -> Self {
         Self {
-            copy_source:    DataLocation::Local(PathBuf::new()),
+            copy_source: DataLocation::Local(PathBuf::new()),
             restore_target: DataLocation::Local(PathBuf::new()),
             policy: RestorePolicy::Replace,
             temp_config: TempRepoConfig::default(),
@@ -63,7 +63,10 @@ impl Default for RestoreJobConfig {
 #[derive(Debug)]
 pub enum RestoreJobError {
     Prereq(crate::frame::prereq::PrereqError),
-    Subtask { subtask_id: String, error: SubtaskError },
+    Subtask {
+        subtask_id: String,
+        error: SubtaskError,
+    },
     PostJob(crate::frame::postjob::PostJobError),
     MissingManifest(PathBuf),
     Io(std::io::Error),
@@ -72,16 +75,15 @@ pub enum RestoreJobError {
 impl std::fmt::Display for RestoreJobError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RestoreJobError::Prereq(e) =>
-                write!(f, "prerequisite failed: {e}"),
-            RestoreJobError::Subtask { subtask_id, error } =>
-                write!(f, "subtask {subtask_id} failed: {error}"),
-            RestoreJobError::PostJob(e) =>
-                write!(f, "post-job failed: {e}"),
-            RestoreJobError::MissingManifest(p) =>
-                write!(f, "manifest.json not found in {}", p.display()),
-            RestoreJobError::Io(e) =>
-                write!(f, "I/O error: {e}"),
+            RestoreJobError::Prereq(e) => write!(f, "prerequisite failed: {e}"),
+            RestoreJobError::Subtask { subtask_id, error } => {
+                write!(f, "subtask {subtask_id} failed: {error}")
+            }
+            RestoreJobError::PostJob(e) => write!(f, "post-job failed: {e}"),
+            RestoreJobError::MissingManifest(p) => {
+                write!(f, "manifest.json not found in {}", p.display())
+            }
+            RestoreJobError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
 }
@@ -101,7 +103,9 @@ pub struct FileRestoreJob {
 }
 
 impl FileRestoreJob {
-    pub fn new(config: RestoreJobConfig) -> Self { Self { config } }
+    pub fn new(config: RestoreJobConfig) -> Self {
+        Self { config }
+    }
 }
 
 impl BackupRestoreJob for FileRestoreJob {
@@ -115,30 +119,29 @@ impl BackupRestoreJob for FileRestoreJob {
             DataLocation::Local(p) => p.clone(),
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(_) => {
-                std::fs::create_dir_all(&cfg.temp_config.temp_base)
-                    .map_err(RestoreJobError::Io)?;
-                let staging = cfg.temp_config.temp_base
+                std::fs::create_dir_all(&cfg.temp_config.temp_base).map_err(RestoreJobError::Io)?;
+                let staging = cfg
+                    .temp_config
+                    .temp_base
                     .join(format!("RESTORE_{}", Uuid::new_v4()));
-                std::fs::create_dir_all(&staging)
-                    .map_err(RestoreJobError::Io)?;
+                std::fs::create_dir_all(&staging).map_err(RestoreJobError::Io)?;
                 staging
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(_) => {
-                std::fs::create_dir_all(&cfg.temp_config.temp_base)
-                    .map_err(RestoreJobError::Io)?;
-                let staging = cfg.temp_config.temp_base
+                std::fs::create_dir_all(&cfg.temp_config.temp_base).map_err(RestoreJobError::Io)?;
+                let staging = cfg
+                    .temp_config
+                    .temp_base
                     .join(format!("RESTORE_{}", Uuid::new_v4()));
-                std::fs::create_dir_all(&staging)
-                    .map_err(RestoreJobError::Io)?;
+                std::fs::create_dir_all(&staging).map_err(RestoreJobError::Io)?;
                 staging
             }
         };
 
         let repo = RepoLayout::from_existing(local_copy_root.clone());
 
-        std::fs::create_dir_all(&repo.logs_dir)
-            .map_err(RestoreJobError::Io)?;
+        std::fs::create_dir_all(&repo.logs_dir).map_err(RestoreJobError::Io)?;
 
         crate::logging::add_route("bifrost::nfs", &repo.frame_log());
         crate::logging::add_route("bifrost::smb", &repo.frame_log());
@@ -160,26 +163,29 @@ impl BackupRestoreJob for FileRestoreJob {
 
         // ── Phase 2: Subtasks ─────────────────────────────────────────────────
         let manifest: BackupManifest = serde_json::from_str(
-            &std::fs::read_to_string(repo.manifest_path()).map_err(RestoreJobError::Io)?
-        ).map_err(|e| RestoreJobError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+            &std::fs::read_to_string(repo.manifest_path()).map_err(RestoreJobError::Io)?,
+        )
+        .map_err(|e| {
+            RestoreJobError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })?;
         let restore_source_base = parse_manifest_source_base(&manifest.source);
 
         let ctrl_files = find_restore_control_files(&repo.ctrl_dir);
         log::info!("{} restore control file(s) found", ctrl_files.len());
 
-        let local_restore_target: PathBuf = cfg.restore_target
+        let local_restore_target: PathBuf = cfg
+            .restore_target
             .local_path()
             .cloned()
             .unwrap_or_else(|| cfg.temp_config.temp_base.join("_restore_placeholder"));
 
         if let DataLocation::Local(_) = &cfg.restore_target {
-            std::fs::create_dir_all(&local_restore_target)
-                .map_err(RestoreJobError::Io)?;
+            std::fs::create_dir_all(&local_restore_target).map_err(RestoreJobError::Io)?;
         }
 
-        let mut subtasks_ok     = 0usize;
+        let mut subtasks_ok = 0usize;
         let mut subtasks_failed = 0usize;
-        let mut total_files     = 0u64;
+        let mut total_files = 0u64;
         let phase_order = ["copy", "hardlink", "delete", "mtime"];
 
         for phase in phase_order {
@@ -199,16 +205,17 @@ impl BackupRestoreJob for FileRestoreJob {
                 let subtask_uuid = Uuid::new_v4().to_string();
 
                 let subtask_cfg = SubtaskConfig {
-                    subtask_uuid:    subtask_uuid.clone(),
-                    control_file:    ctrl_file,
-                    source_dir:      repo.d_repo.clone(),
+                    subtask_uuid: subtask_uuid.clone(),
+                    control_file: ctrl_file,
+                    source_dir: repo.d_repo.clone(),
                     aggregate_config: crate::backup::aggregate::AggregateConfig::default(),
                     enable_hardlink: false,
-                    enable_delete:   false,
-                    enable_mtime:    false,
-                    backup_source:   DataLocation::Local(PathBuf::new()), // unused for restore
-                    backup_target:   DataLocation::Local(PathBuf::new()), // unused for restore
-                    restore_target:  cfg.restore_target.clone(),
+                    enable_delete: false,
+                    enable_mtime: false,
+                    smb_connection_count: 2,
+                    backup_source: DataLocation::Local(PathBuf::new()), // unused for restore
+                    backup_target: DataLocation::Local(PathBuf::new()), // unused for restore
+                    restore_target: cfg.restore_target.clone(),
                     restore_source_base: restore_source_base.clone(),
                 };
 
@@ -239,16 +246,15 @@ impl BackupRestoreJob for FileRestoreJob {
         }
 
         // ── Phase 3: Post-job ─────────────────────────────────────────────────
-        RestorePostJob::run()
-            .map_err(RestoreJobError::PostJob)?;
+        RestorePostJob::run().map_err(RestoreJobError::PostJob)?;
 
         Ok(JobResult {
-            copy_uuid:       String::new(), // restore does not produce a new copy UUID
-            copy_root:       local_restore_target,
+            copy_uuid: String::new(), // restore does not produce a new copy UUID
+            copy_root: local_restore_target,
             subtasks_ok,
             subtasks_failed,
             total_files,
-            total_dirs:      0,
+            total_dirs: 0,
             total_bytes: 0,
         })
     }

@@ -24,9 +24,7 @@ use crate::frame::postjob::{BackupManifest, BackupPostJob, SubtaskRecord};
 use crate::frame::prereq::BackupPrereqJob;
 use crate::frame::repo::{RepoLayout, TempRepoConfig};
 use crate::frame::scan::{ScanConfig, ScanJob};
-use crate::frame::subtask::{
-    SubtaskConfig, find_backup_control_files, run_backup_subtask,
-};
+use crate::frame::subtask::{find_backup_control_files, run_backup_subtask, SubtaskConfig};
 use crate::frame::traits::{BackupRestoreJob, JobResult};
 
 // ---------------------------------------------------------------------------
@@ -53,11 +51,12 @@ pub struct BackupJobConfig {
     pub scan_config: ScanConfig,
 
     // ── Subtask settings ─────────────────────────────────────────────────────
-    pub aggregate_config:        AggregateConfig,
-    pub enable_hardlink:         bool,
-    pub enable_delete:           bool,
-    pub enable_mtime:            bool,
+    pub aggregate_config: AggregateConfig,
+    pub enable_hardlink: bool,
+    pub enable_delete: bool,
+    pub enable_mtime: bool,
     pub max_concurrent_subtasks: usize,
+    pub smb_connection_count: usize,
 
     // ── Incremental ──────────────────────────────────────────────────────────
     pub incremental_base: Option<PathBuf>,
@@ -70,17 +69,18 @@ pub struct BackupJobConfig {
 impl Default for BackupJobConfig {
     fn default() -> Self {
         Self {
-            source:   DataLocation::Local(PathBuf::new()),
-            target:   DataLocation::Local(PathBuf::new()),
+            source: DataLocation::Local(PathBuf::new()),
+            target: DataLocation::Local(PathBuf::new()),
             format_tag: "COMMON".to_string(),
-            type_tag:   "FULL".to_string(),
+            type_tag: "FULL".to_string(),
             temp_config: TempRepoConfig::default(),
             scan_config: ScanConfig::default(),
             aggregate_config: AggregateConfig::default(),
             enable_hardlink: false,
-            enable_delete:   false,
-            enable_mtime:    false,
+            enable_delete: false,
+            enable_mtime: false,
             max_concurrent_subtasks: 4,
+            smb_connection_count: 2,
             incremental_base: None,
             verbose: 0,
         }
@@ -95,7 +95,10 @@ impl Default for BackupJobConfig {
 pub enum BackupJobError {
     Prereq(crate::frame::prereq::PrereqError),
     Scan(crate::frame::scan::ScanError),
-    Subtask { subtask_id: String, error: crate::frame::subtask::SubtaskError },
+    Subtask {
+        subtask_id: String,
+        error: crate::frame::subtask::SubtaskError,
+    },
     PostJob(crate::frame::postjob::PostJobError),
     Io(std::io::Error),
 }
@@ -103,16 +106,13 @@ pub enum BackupJobError {
 impl std::fmt::Display for BackupJobError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BackupJobError::Prereq(e) =>
-                write!(f, "prerequisite failed: {e}"),
-            BackupJobError::Scan(e) =>
-                write!(f, "scan failed: {e}"),
-            BackupJobError::Subtask { subtask_id, error } =>
-                write!(f, "subtask {subtask_id} failed: {error}"),
-            BackupJobError::PostJob(e) =>
-                write!(f, "post-job failed: {e}"),
-            BackupJobError::Io(e) =>
-                write!(f, "I/O error: {e}"),
+            BackupJobError::Prereq(e) => write!(f, "prerequisite failed: {e}"),
+            BackupJobError::Scan(e) => write!(f, "scan failed: {e}"),
+            BackupJobError::Subtask { subtask_id, error } => {
+                write!(f, "subtask {subtask_id} failed: {error}")
+            }
+            BackupJobError::PostJob(e) => write!(f, "post-job failed: {e}"),
+            BackupJobError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
 }
@@ -132,7 +132,9 @@ pub struct FileBackupJob {
 }
 
 impl FileBackupJob {
-    pub fn new(config: BackupJobConfig) -> Self { Self { config } }
+    pub fn new(config: BackupJobConfig) -> Self {
+        Self { config }
+    }
 }
 
 impl BackupRestoreJob for FileBackupJob {
@@ -148,14 +150,12 @@ impl BackupRestoreJob for FileBackupJob {
             DataLocation::Local(p) => p.clone(),
             #[cfg(feature = "nfs")]
             DataLocation::Nfs(_) => {
-                std::fs::create_dir_all(&cfg.temp_config.temp_base)
-                    .map_err(BackupJobError::Io)?;
+                std::fs::create_dir_all(&cfg.temp_config.temp_base).map_err(BackupJobError::Io)?;
                 cfg.temp_config.temp_base.clone()
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(_) => {
-                std::fs::create_dir_all(&cfg.temp_config.temp_base)
-                    .map_err(BackupJobError::Io)?;
+                std::fs::create_dir_all(&cfg.temp_config.temp_base).map_err(BackupJobError::Io)?;
                 cfg.temp_config.temp_base.clone()
             }
         };
@@ -164,8 +164,7 @@ impl BackupRestoreJob for FileBackupJob {
 
         // Create the logs/ directory early so we can route library module logs
         // to files immediately — before Phase 1 runs and emits bifrost::* logs.
-        std::fs::create_dir_all(&repo.logs_dir)
-            .map_err(BackupJobError::Io)?;
+        std::fs::create_dir_all(&repo.logs_dir).map_err(BackupJobError::Io)?;
 
         crate::logging::init(cfg.verbose);
         crate::logging::add_route("bifrost::scanner", &repo.scan_log());
@@ -187,7 +186,9 @@ impl BackupRestoreJob for FileBackupJob {
 
         log::info!(
             "Backup job started  source={}  target={}  copy_uuid={}",
-            cfg.source, cfg.target, repo.copy_uuid
+            cfg.source,
+            cfg.target,
+            repo.copy_uuid
         );
 
         // ── Phase 2: Scan ─────────────────────────────────────────────────────
@@ -209,19 +210,23 @@ impl BackupRestoreJob for FileBackupJob {
 
         // ── Phase 3: Subtasks ─────────────────────────────────────────────────
         let ctrl_files = find_backup_control_files(&repo.ctrl_dir);
-        log::info!("=== Phase 3: Subtasks ({} control file(s)) ===", ctrl_files.len());
+        log::info!(
+            "=== Phase 3: Subtasks ({} control file(s)) ===",
+            ctrl_files.len()
+        );
 
         let mut subtask_records: Vec<SubtaskRecord> = Vec::new();
-        let mut subtasks_ok     = 0usize;
+        let mut subtasks_ok = 0usize;
         let mut subtasks_failed = 0usize;
-        let mut total_files     = 0u64;
-        let mut total_bytes     = 0u64;
+        let mut total_files = 0u64;
+        let mut total_bytes = 0u64;
 
         let mut handles: Vec<(String, thread::JoinHandle<_>)> = Vec::new();
 
         for ctrl_file in ctrl_files {
             let subtask_uuid = Uuid::new_v4().to_string();
-            let ctrl_name    = ctrl_file.file_name()
+            let ctrl_name = ctrl_file
+                .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
 
@@ -243,16 +248,17 @@ impl BackupRestoreJob for FileBackupJob {
             crate::logging::add_route("smb", &repo.subtask_log(&subtask_uuid));
 
             let subtask_cfg = SubtaskConfig {
-                subtask_uuid:    subtask_uuid.clone(),
-                control_file:    ctrl_file.clone(),
-                source_dir:      cfg.source.base_path(),
+                subtask_uuid: subtask_uuid.clone(),
+                control_file: ctrl_file.clone(),
+                source_dir: cfg.source.base_path(),
                 aggregate_config: cfg.aggregate_config.clone(),
-                enable_hardlink:  cfg.enable_hardlink,
-                enable_delete:    cfg.enable_delete,
-                enable_mtime:     cfg.enable_mtime,
-                backup_source:    cfg.source.clone(),
-                backup_target:    cfg.target.clone(),
-                restore_target:   DataLocation::Local(PathBuf::new()), // unused for backup
+                enable_hardlink: cfg.enable_hardlink,
+                enable_delete: cfg.enable_delete,
+                enable_mtime: cfg.enable_mtime,
+                smb_connection_count: cfg.smb_connection_count,
+                backup_source: cfg.source.clone(),
+                backup_target: cfg.target.clone(),
+                restore_target: DataLocation::Local(PathBuf::new()), // unused for backup
                 restore_source_base: PathBuf::new(),
             };
 
@@ -262,10 +268,10 @@ impl BackupRestoreJob for FileBackupJob {
             let handle = thread::spawn(move || run_backup_subtask(&subtask_cfg, &repo_clone));
 
             subtask_records.push(SubtaskRecord {
-                id:           subtask_uuid.clone(),
+                id: subtask_uuid.clone(),
                 control_file: format!("C_REPO/ctrl/{ctrl_name}"),
-                log_file:     format!("C_REPO/logs/{subtask_uuid}.log"),
-                succeeded:    false,
+                log_file: format!("C_REPO/logs/{subtask_uuid}.log"),
+                succeeded: false,
             });
 
             handles.push((subtask_uuid, handle));
@@ -291,11 +297,14 @@ impl BackupRestoreJob for FileBackupJob {
                     total_bytes += stats.bytes_transferred;
                     let _ = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING"));
                     let _ = repo.create_status(&format!("SUBTASK_{subtask_uuid}.DONE"));
-                    if let Some(r) = subtask_records.get_mut(i) { r.succeeded = true; }
+                    if let Some(r) = subtask_records.get_mut(i) {
+                        r.succeeded = true;
+                    }
 
                     log::info!(
                         "Subtask {subtask_uuid} OK  files={}  bytes={}",
-                        stats.files_transferred, stats.bytes_transferred
+                        stats.files_transferred,
+                        stats.bytes_transferred
                     );
                 }
                 Err(e) => {
@@ -310,17 +319,18 @@ impl BackupRestoreJob for FileBackupJob {
         // ── Phase 4: Post-job ─────────────────────────────────────────────────
         log::info!("=== Phase 4: Post-job ===");
         let manifest = BackupManifest {
-            version:    "1.0".to_string(),
-            copy_uuid:  repo.copy_uuid.clone(),
-            copy_type:  cfg.type_tag.to_lowercase(),
-            format:     cfg.format_tag.to_lowercase(),
-            source:     cfg.source.to_string(),
-            target:     cfg.target.to_string(),
+            version: "1.0".to_string(),
+            copy_uuid: repo.copy_uuid.clone(),
+            copy_type: cfg.type_tag.to_lowercase(),
+            format: cfg.format_tag.to_lowercase(),
+            source: cfg.source.to_string(),
+            target: cfg.target.to_string(),
             created_at: chrono::Local::now().to_rfc3339(),
-            base_copy:  cfg.incremental_base
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().into_owned()),
-            subtasks:   subtask_records,
+            base_copy: cfg
+                .incremental_base
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            subtasks: subtask_records,
         };
 
         BackupPostJob::new(&cfg.target, &repo, &manifest)
@@ -333,12 +343,12 @@ impl BackupRestoreJob for FileBackupJob {
         );
 
         Ok(JobResult {
-            copy_uuid:       repo.copy_uuid.clone(),
-            copy_root:       repo.copy_root.clone(),
+            copy_uuid: repo.copy_uuid.clone(),
+            copy_root: repo.copy_root.clone(),
             subtasks_ok,
             subtasks_failed,
             total_files,
-            total_dirs:      scan_stats.total_dirs,
+            total_dirs: scan_stats.total_dirs,
             total_bytes,
         })
     }

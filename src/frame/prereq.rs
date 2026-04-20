@@ -43,15 +43,15 @@ pub enum PrereqError {
 impl std::fmt::Display for PrereqError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PrereqError::DirCreate(e)       => write!(f, "failed to create directory: {e}"),
-            PrereqError::SourceNotFound(s)  => write!(f, "source not found: {s}"),
-            PrereqError::InvalidCopyDir(s)  => write!(f, "invalid copy directory: {s}"),
+            PrereqError::DirCreate(e) => write!(f, "failed to create directory: {e}"),
+            PrereqError::SourceNotFound(s) => write!(f, "source not found: {s}"),
+            PrereqError::InvalidCopyDir(s) => write!(f, "invalid copy directory: {s}"),
             #[cfg(feature = "nfs")]
-            PrereqError::NfsConnect(e)      => write!(f, "NFS connection failed: {e}"),
+            PrereqError::NfsConnect(e) => write!(f, "NFS connection failed: {e}"),
             #[cfg(feature = "smb")]
-            PrereqError::SmbConnect(s)      => write!(f, "SMB connection failed: {s}"),
-            PrereqError::Unsupported(s)     => write!(f, "unsupported: {s}"),
-            PrereqError::Io(e)              => write!(f, "I/O error: {e}"),
+            PrereqError::SmbConnect(s) => write!(f, "SMB connection failed: {s}"),
+            PrereqError::Unsupported(s) => write!(f, "unsupported: {s}"),
+            PrereqError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
 }
@@ -59,12 +59,16 @@ impl std::fmt::Display for PrereqError {
 impl std::error::Error for PrereqError {}
 
 impl From<io::Error> for PrereqError {
-    fn from(e: io::Error) -> Self { PrereqError::Io(e) }
+    fn from(e: io::Error) -> Self {
+        PrereqError::Io(e)
+    }
 }
 
 #[cfg(feature = "nfs")]
 impl From<crate::nfs::NfsError> for PrereqError {
-    fn from(e: crate::nfs::NfsError) -> Self { PrereqError::NfsConnect(e) }
+    fn from(e: crate::nfs::NfsError) -> Self {
+        PrereqError::NfsConnect(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +88,11 @@ pub struct BackupPrereqJob<'a> {
 
 impl<'a> BackupPrereqJob<'a> {
     pub fn new(source: &'a DataLocation, target: &'a DataLocation, repo: &'a RepoLayout) -> Self {
-        Self { source, target, repo }
+        Self {
+            source,
+            target,
+            repo,
+        }
     }
 
     /// Run all prerequisite checks and create local directories.
@@ -92,7 +100,10 @@ impl<'a> BackupPrereqJob<'a> {
     /// For an NFS source this also verifies the TCP connection can be
     /// established (async; must be awaited inside a Tokio context).
     pub fn run_sync(&self) -> Result<(), PrereqError> {
-        log::info!("Prereq: creating repo directories at {:?}", self.repo.copy_root);
+        log::info!(
+            "Prereq: creating repo directories at {:?}",
+            self.repo.copy_root
+        );
 
         // 1. Create local repo directories (always needed)
         self.repo.create_dirs().map_err(PrereqError::DirCreate)?;
@@ -119,7 +130,8 @@ impl<'a> BackupPrereqJob<'a> {
                     .map_err(PrereqError::Io)?;
                 let loc_clone = loc.clone();
                 rt.block_on(async {
-                    let _pool = crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await
+                    let _pool = crate::nfs::connection::NfsConnectionPool::new(&loc_clone)
+                        .await
                         .map_err(PrereqError::NfsConnect)?;
                     log::info!("Prereq: NFS reachable (export={})", loc_clone.export);
                     Ok::<(), PrereqError>(())
@@ -127,7 +139,10 @@ impl<'a> BackupPrereqJob<'a> {
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(ref loc) => {
-                log::info!("Prereq: verifying SMB connectivity to {}", loc.display_string());
+                log::info!(
+                    "Prereq: verifying SMB connectivity to {}",
+                    loc.display_string()
+                );
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -155,7 +170,8 @@ impl<'a> BackupPrereqJob<'a> {
                     .map_err(PrereqError::Io)?;
                 let loc_clone = loc.clone();
                 rt.block_on(async {
-                    let _pool = crate::nfs::connection::NfsConnectionPool::new(&loc_clone).await
+                    let _pool = crate::nfs::connection::NfsConnectionPool::new(&loc_clone)
+                        .await
                         .map_err(PrereqError::NfsConnect)?;
                     log::info!("Prereq: NFS reachable (export={})", loc_clone.export);
                     Ok::<(), PrereqError>(())
@@ -163,7 +179,10 @@ impl<'a> BackupPrereqJob<'a> {
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(ref loc) => {
-                log::info!("Prereq: verifying SMB target connectivity to {}", loc.display_string());
+                log::info!(
+                    "Prereq: verifying SMB target connectivity to {}",
+                    loc.display_string()
+                );
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -202,7 +221,10 @@ pub struct RestorePrereqJob<'a> {
 
 impl<'a> RestorePrereqJob<'a> {
     pub fn new(copy_source: &'a DataLocation, local_repo: &'a RepoLayout) -> Self {
-        Self { copy_source, local_repo }
+        Self {
+            copy_source,
+            local_repo,
+        }
     }
 
     /// Run all prerequisite steps.
@@ -210,7 +232,9 @@ impl<'a> RestorePrereqJob<'a> {
     /// * Local copy → verify existence, nothing to copy.
     /// * NFS copy → fetch M\_REPO and C\_REPO via BIO-compatible NFS reads.
     pub fn run_sync(&self) -> Result<(), PrereqError> {
-        self.local_repo.create_dirs().map_err(PrereqError::DirCreate)?;
+        self.local_repo
+            .create_dirs()
+            .map_err(PrereqError::DirCreate)?;
 
         match self.copy_source {
             DataLocation::Local(src_root) => {

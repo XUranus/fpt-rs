@@ -1,11 +1,11 @@
+use base64::Engine as _;
+use clap::Parser;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use clap::Parser;
-use sha2::{Sha256, Digest};
 use walkdir::WalkDir;
-use base64::Engine as _;
 
 #[derive(Parser)]
 #[command(name = "fsdiff", version = "1.0", author = "Bifrost")]
@@ -38,7 +38,7 @@ struct Args {
     /// Compare extended attributes (xattrs)
     #[arg(long)]
     compare_xattrs: bool,
-    
+
     /// Compare directory mtime (modification time)
     #[arg(long)]
     compare_mtime: bool,
@@ -110,17 +110,29 @@ impl DiffReport {
                 println!("  ! {} files with size mismatch", self.size_mismatch.len());
             }
             if !self.checksum_mismatch.is_empty() {
-                println!("  ! {} files with checksum mismatch", self.checksum_mismatch.len());
+                println!(
+                    "  ! {} files with checksum mismatch",
+                    self.checksum_mismatch.len()
+                );
             }
             if !self.symlink_mismatch.is_empty() {
-                println!("  ! {} files with symlink mismatch", self.symlink_mismatch.len());
+                println!(
+                    "  ! {} files with symlink mismatch",
+                    self.symlink_mismatch.len()
+                );
             }
             if !self.mtime_mismatch.is_empty() {
-                println!("  ! {} directories with mtime mismatch", self.mtime_mismatch.len());
+                println!(
+                    "  ! {} directories with mtime mismatch",
+                    self.mtime_mismatch.len()
+                );
             }
             println!("\nResult: DIFFERENCES FOUND");
         } else {
-            println!("\nResult: DIRECTORIES ARE IDENTICAL ({} files checked)", self.identical.len());
+            println!(
+                "\nResult: DIRECTORIES ARE IDENTICAL ({} files checked)",
+                self.identical.len()
+            );
         }
     }
 
@@ -143,8 +155,12 @@ impl DiffReport {
         if !self.size_mismatch.is_empty() {
             println!("\n--- Files with size mismatch ---");
             for (path, src_size, tgt_size) in &self.size_mismatch {
-                println!("  ! {} ({} vs {} bytes)", 
-                    path.display(), src_size, tgt_size);
+                println!(
+                    "  ! {} ({} vs {} bytes)",
+                    path.display(),
+                    src_size,
+                    tgt_size
+                );
             }
         }
 
@@ -167,15 +183,19 @@ impl DiffReport {
                 }
             }
         }
-        
+
         if !self.mtime_mismatch.is_empty() {
             println!("\n--- Directories with mtime mismatch ---");
             for (path, src_mtime, tgt_mtime) in &self.mtime_mismatch {
-                println!("  ! {} (mtime: {} vs {})", 
-                    path.display(), src_mtime, tgt_mtime);
+                println!(
+                    "  ! {} (mtime: {} vs {})",
+                    path.display(),
+                    src_mtime,
+                    tgt_mtime
+                );
             }
         }
-        
+
         // Note: Identical files are not listed to reduce output noise
     }
 }
@@ -185,7 +205,7 @@ fn calculate_checksum(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
-    
+
     loop {
         let bytes_read = file.read(&mut buffer)?;
         if bytes_read == 0 {
@@ -193,7 +213,7 @@ fn calculate_checksum(path: &Path) -> io::Result<String> {
         }
         hasher.update(&buffer[..bytes_read]);
     }
-    
+
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -203,7 +223,8 @@ fn get_acl_text(path: &Path) -> Option<String> {
     use exacl::getfacl;
     match getfacl(path, None) {
         Ok(acl_entries) => {
-            let text = acl_entries.iter()
+            let text = acl_entries
+                .iter()
                 .map(|e| e.to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -260,11 +281,11 @@ fn collect_files(
     compare_mtime: bool,
 ) -> io::Result<HashMap<PathBuf, FileInfo>> {
     let mut files = HashMap::new();
-    
+
     let walker = WalkDir::new(base_path)
         .follow_links(follow_links)
         .into_iter();
-    
+
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
         let metadata = if follow_links {
@@ -272,17 +293,15 @@ fn collect_files(
         } else {
             fs::symlink_metadata(path)
         };
-        
+
         let metadata = match metadata {
             Ok(m) => m,
             Err(_) => continue,
         };
-        
+
         // Get relative path from base
-        let relative_path = path.strip_prefix(base_path)
-            .unwrap_or(path)
-            .to_path_buf();
-        
+        let relative_path = path.strip_prefix(base_path).unwrap_or(path).to_path_buf();
+
         // Apply additional prefix stripping if requested
         let relative_path = match strip_prefix {
             Some(prefix) => {
@@ -300,33 +319,33 @@ fn collect_files(
             }
             None => relative_path,
         };
-        
+
         let is_symlink = entry.file_type().is_symlink();
         let symlink_target = if is_symlink {
             fs::read_link(path).ok()
         } else {
             None
         };
-        
+
         // Calculate checksum for regular files
         let checksum = if metadata.is_file() && !is_symlink {
             calculate_checksum(path).ok()
         } else {
             None
         };
-        
+
         #[cfg(target_os = "linux")]
         let (acl, xattrs) = if compare_acl || compare_xattrs {
             (get_acl_text(path), get_xattrs_text(path))
         } else {
             (None, None)
         };
-        
+
         #[cfg(not(target_os = "linux"))]
         let (acl, xattrs) = (None, None);
-        
+
         let is_dir = metadata.is_dir();
-        
+
         // Get mtime from metadata
         #[cfg(unix)]
         let mtime = if compare_mtime {
@@ -335,10 +354,10 @@ fn collect_files(
         } else {
             0
         };
-        
+
         #[cfg(not(unix))]
         let mtime = 0u64;
-        
+
         files.insert(
             relative_path,
             FileInfo {
@@ -356,7 +375,7 @@ fn collect_files(
             },
         );
     }
-    
+
     Ok(files)
 }
 
@@ -376,24 +395,38 @@ fn compare_directories(
     if let Some(prefix) = source_strip_prefix {
         println!("  Stripping prefix: {}", prefix.display());
     }
-    let source_files = collect_files(source_path, follow_links, source_strip_prefix, compare_acl, compare_xattrs, compare_mtime)?;
+    let source_files = collect_files(
+        source_path,
+        follow_links,
+        source_strip_prefix,
+        compare_acl,
+        compare_xattrs,
+        compare_mtime,
+    )?;
     println!("  Found {} entries", source_files.len());
-    
+
     println!("Scanning target directory: {}", target_path.display());
     if let Some(prefix) = target_strip_prefix {
         println!("  Stripping prefix: {}", prefix.display());
     }
-    let target_files = collect_files(target_path, follow_links, target_strip_prefix, compare_acl, compare_xattrs, compare_mtime)?;
+    let target_files = collect_files(
+        target_path,
+        follow_links,
+        target_strip_prefix,
+        compare_acl,
+        compare_xattrs,
+        compare_mtime,
+    )?;
     println!("  Found {} entries", target_files.len());
-    
+
     let mut report = DiffReport::new();
-    
+
     // Check for files in source but not in target, and compare existing files
     for (rel_path, src_info) in &source_files {
         if verbose {
             println!("Comparing: {}", rel_path.display());
         }
-        
+
         match target_files.get(rel_path) {
             None => {
                 report.source_only.push(rel_path.clone());
@@ -420,70 +453,78 @@ fn compare_directories(
                 } else {
                     // Both are regular files, compare size and checksum
                     if src_info.size != tgt_info.size {
-                        report.size_mismatch.push((
-                            rel_path.clone(),
-                            src_info.size,
-                            tgt_info.size,
-                        ));
+                        report
+                            .size_mismatch
+                            .push((rel_path.clone(), src_info.size, tgt_info.size));
                     } else if src_info.checksum != tgt_info.checksum {
                         report.checksum_mismatch.push(rel_path.clone());
                     } else {
                         report.identical.push(rel_path.clone());
                     }
                 }
-                
+
                 // Compare mtime for directories if requested
                 if compare_mtime && src_info.is_dir && src_info.mtime != tgt_info.mtime {
-                    report.mtime_mismatch.push((
-                        rel_path.clone(),
-                        src_info.mtime,
-                        tgt_info.mtime,
-                    ));
+                    report
+                        .mtime_mismatch
+                        .push((rel_path.clone(), src_info.mtime, tgt_info.mtime));
                 }
             }
         }
     }
-    
+
     // Check for files in target but not in source
     for rel_path in target_files.keys() {
         if !source_files.contains_key(rel_path) {
             report.target_only.push(rel_path.clone());
         }
     }
-    
+
     Ok(report)
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
-    
+
     // Validate source directory
     if !args.source.exists() {
-        eprintln!("Error: Source directory does not exist: {}", args.source.display());
+        eprintln!(
+            "Error: Source directory does not exist: {}",
+            args.source.display()
+        );
         std::process::exit(1);
     }
-    
+
     if !args.source.is_dir() {
-        eprintln!("Error: Source path is not a directory: {}", args.source.display());
+        eprintln!(
+            "Error: Source path is not a directory: {}",
+            args.source.display()
+        );
         std::process::exit(1);
     }
-    
+
     // Validate target directory
     if !args.target.exists() {
-        eprintln!("Error: Target directory does not exist: {}", args.target.display());
+        eprintln!(
+            "Error: Target directory does not exist: {}",
+            args.target.display()
+        );
         std::process::exit(1);
     }
-    
+
     if !args.target.is_dir() {
-        eprintln!("Error: Target path is not a directory: {}", args.target.display());
+        eprintln!(
+            "Error: Target path is not a directory: {}",
+            args.target.display()
+        );
         std::process::exit(1);
     }
-    
+
     println!("=== Directory Comparison ===");
     println!("Source: {}", args.source.display());
     println!("Target: {}", args.target.display());
     println!();
-    
+
     let report = compare_directories(
         &args.source,
         &args.target,
@@ -495,14 +536,14 @@ fn main() -> io::Result<()> {
         args.compare_mtime,
         args.verbose,
     )?;
-    
+
     report.print_details();
     report.print_summary();
-    
+
     // Exit with error code if differences found
     if report.has_differences() {
         std::process::exit(1);
     }
-    
+
     Ok(())
 }

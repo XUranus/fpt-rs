@@ -9,8 +9,8 @@
 //! Both types write metadata and control files to the **local** M_REPO /
 //! C_REPO directories supplied in [`ScannerConfig`].
 
-use std::path::PathBuf;
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::frame::traits::{FileScanner, ScanStats};
 use crate::scanner::options::ScanOption;
@@ -39,10 +39,10 @@ pub struct ScannerConfig {
 impl Default for ScannerConfig {
     fn default() -> Self {
         Self {
-            ctrl_dir:      PathBuf::from("/tmp/bifrost/ctrl"),
-            meta_dir:      PathBuf::from("/tmp/bifrost/meta"),
-            worker_count:  4,
-            writer_count:  1,
+            ctrl_dir: PathBuf::from("/tmp/bifrost/ctrl"),
+            meta_dir: PathBuf::from("/tmp/bifrost/meta"),
+            worker_count: 4,
+            writer_count: 1,
             prev_meta_dir: None,
             stats_only: false,
         }
@@ -58,10 +58,22 @@ impl ScannerConfig {
         }
     }
 
-    pub fn worker_count(mut self, n: usize) -> Self { self.worker_count = n; self }
-    pub fn writer_count(mut self, n: usize) -> Self { self.writer_count = n; self }
-    pub fn prev_meta_dir(mut self, p: Option<PathBuf>) -> Self { self.prev_meta_dir = p; self }
-    pub fn stats_only(mut self, enabled: bool) -> Self { self.stats_only = enabled; self }
+    pub fn worker_count(mut self, n: usize) -> Self {
+        self.worker_count = n;
+        self
+    }
+    pub fn writer_count(mut self, n: usize) -> Self {
+        self.writer_count = n;
+        self
+    }
+    pub fn prev_meta_dir(mut self, p: Option<PathBuf>) -> Self {
+        self.prev_meta_dir = p;
+        self
+    }
+    pub fn stats_only(mut self, enabled: bool) -> Self {
+        self.stats_only = enabled;
+        self
+    }
 
     /// Build a [`ScanOption`] from this config.
     pub(crate) fn to_scan_option(
@@ -96,7 +108,7 @@ impl fmt::Display for LocalScanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LocalScanError::Enqueue(s) => write!(f, "enqueue error: {s}"),
-            LocalScanError::Start(e)   => write!(f, "scanner start error: {e}"),
+            LocalScanError::Start(e) => write!(f, "scanner start error: {e}"),
         }
     }
 }
@@ -104,7 +116,9 @@ impl fmt::Display for LocalScanError {
 impl std::error::Error for LocalScanError {}
 
 impl From<crate::scanner::ScanError> for LocalScanError {
-    fn from(e: crate::scanner::ScanError) -> Self { LocalScanError::Start(e) }
+    fn from(e: crate::scanner::ScanError) -> Self {
+        LocalScanError::Start(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -124,7 +138,10 @@ pub struct LocalFileScanner {
 
 impl LocalFileScanner {
     pub fn new(source: impl Into<PathBuf>, config: ScannerConfig) -> Self {
-        Self { source: source.into(), config }
+        Self {
+            source: source.into(),
+            config,
+        }
     }
 }
 
@@ -134,19 +151,20 @@ impl FileScanner for LocalFileScanner {
     fn scan(&self) -> Result<ScanStats, LocalScanError> {
         use crate::scanner::Scanner;
 
-        let scan_option = self.config.to_scan_option(
-            self.source.clone(),
-            "/",
-            "local",
-        );
+        let scan_option = self
+            .config
+            .to_scan_option(self.source.clone(), "/", "local");
         let mut scanner = Scanner::new(scan_option);
-        scanner.enqueue_path(self.source.clone())
+        scanner
+            .enqueue_path(self.source.clone())
             .map_err(|e| LocalScanError::Enqueue(e.to_string()))?;
 
         let running = scanner.start()?;
 
         loop {
-            if running.complete() { break; }
+            if running.complete() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
 
@@ -154,8 +172,8 @@ impl FileScanner for LocalFileScanner {
         running.wait();
 
         Ok(ScanStats {
-            total_files:      snap.tot_files,
-            total_dirs:       snap.tot_dirs,
+            total_files: snap.tot_files,
+            total_dirs: snap.tot_dirs,
             total_size_bytes: snap.tot_size,
         })
     }
@@ -185,7 +203,7 @@ mod nfs_impl {
     impl fmt::Display for NfsScanError {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
-                NfsScanError::Scan(s)    => write!(f, "NFS scan error: {s}"),
+                NfsScanError::Scan(s) => write!(f, "NFS scan error: {s}"),
                 NfsScanError::Runtime(e) => write!(f, "runtime error: {e}"),
             }
         }
@@ -217,14 +235,20 @@ mod nfs_impl {
             let base_path = if self.source.sub_path.is_empty() {
                 PathBuf::from(&self.source.export)
             } else {
-                PathBuf::from(&self.source.export).join(self.source.sub_path.trim_start_matches('/'))
+                PathBuf::from(&self.source.export)
+                    .join(self.source.sub_path.trim_start_matches('/'))
             };
-            let control_base = base_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base_path.clone());
+            let control_base = base_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| base_path.clone());
             let logical_root = base_path
                 .file_name()
                 .map(|n| format!("/{}", n.to_string_lossy()))
                 .unwrap_or_else(|| "/".to_string());
-            let scan_option = self.config.to_scan_option(control_base, logical_root, "nfs");
+            let scan_option = self
+                .config
+                .to_scan_option(control_base, logical_root, "nfs");
 
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -232,13 +256,13 @@ mod nfs_impl {
                 .build()
                 .map_err(NfsScanError::Runtime)?;
 
-            let (tot_files, tot_dirs, tot_size) = rt.block_on(
-                crate::scanner::run_nfs_scan(&self.source, scan_option)
-            ).map_err(NfsScanError::Scan)?;
+            let (tot_files, tot_dirs, tot_size) = rt
+                .block_on(crate::scanner::run_nfs_scan(&self.source, scan_option))
+                .map_err(NfsScanError::Scan)?;
 
             Ok(ScanStats {
-                total_files:      tot_files,
-                total_dirs:       tot_dirs,
+                total_files: tot_files,
+                total_dirs: tot_dirs,
                 total_size_bytes: tot_size,
             })
         }
@@ -289,12 +313,17 @@ mod smb_impl {
 
         fn scan(&self) -> Result<ScanStats, SmbScanError> {
             let base_path = self.source.synthetic_root();
-            let control_base = base_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base_path.clone());
+            let control_base = base_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| base_path.clone());
             let logical_root = base_path
                 .file_name()
                 .map(|n| format!("/{}", n.to_string_lossy()))
                 .unwrap_or_else(|| "/".to_string());
-            let scan_option = self.config.to_scan_option(control_base, logical_root, "smb");
+            let scan_option = self
+                .config
+                .to_scan_option(control_base, logical_root, "smb");
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .worker_threads(self.config.worker_count.max(1))

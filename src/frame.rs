@@ -57,44 +57,38 @@
 //! - [`DataLocation`] — where the user's data lives (local path or NFS URL).
 //! - [`RepoLayout`] / [`TempRepoConfig`] — local staging area description.
 
-pub mod traits;
+pub mod backup_impls;
+pub mod backup_job;
 pub mod location;
-pub mod repo;
+pub mod postjob;
 pub mod prereq;
+pub mod repo;
+pub mod restore_impls;
+pub mod restore_job;
 pub mod scan;
 pub mod scanner_impls;
-pub mod backup_impls;
-pub mod restore_impls;
 pub mod subtask;
-pub mod postjob;
-pub mod backup_job;
-pub mod restore_job;
+pub mod traits;
 
 // ── Core traits ──────────────────────────────────────────────────────────────
 pub use traits::{
-    BackupRestoreJob,
-    FileBackup,
-    FileRestore,
-    FileScanner,
-    JobResult,
-    ScanStats,
-    TransferStats,
+    BackupRestoreJob, FileBackup, FileRestore, FileScanner, JobResult, ScanStats, TransferStats,
 };
 
 // ── Scanner implementations ───────────────────────────────────────────────────
-pub use scanner_impls::{LocalFileScanner, ScannerConfig};
 #[cfg(feature = "nfs")]
 pub use scanner_impls::NfsFileScanner;
+pub use scanner_impls::{LocalFileScanner, ScannerConfig};
 
 // ── Backup implementations ────────────────────────────────────────────────────
-pub use backup_impls::{BackupConfig, LocalFileBackup};
 #[cfg(feature = "nfs")]
 pub use backup_impls::NfsFileBackup;
+pub use backup_impls::{BackupConfig, LocalFileBackup};
 
 // ── Restore implementations ───────────────────────────────────────────────────
-pub use restore_impls::{RestoreConfig, LocalFileRestore};
 #[cfg(feature = "nfs")]
 pub use restore_impls::NfsFileRestore;
+pub use restore_impls::{LocalFileRestore, RestoreConfig};
 
 // ── Infrastructure ────────────────────────────────────────────────────────────
 pub use location::DataLocation;
@@ -102,18 +96,18 @@ pub use repo::{RepoLayout, TempRepoConfig};
 
 // ── Job orchestrators (canonical + legacy aliases) ────────────────────────────
 pub use backup_job::{
-    BackupJobConfig,
-    BackupJobError,
-    FileBackupJob,
     // legacy aliases
     BackupJob,
+    BackupJobConfig,
+    BackupJobError,
     BackupJobResult,
+    FileBackupJob,
 };
 pub use restore_job::{
-    RestoreJobConfig,
-    RestoreJobError,
     FileRestoreJob,
     // legacy aliases
     RestoreJob,
+    RestoreJobConfig,
+    RestoreJobError,
     RestoreJobResult,
 };

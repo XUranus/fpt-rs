@@ -69,16 +69,15 @@
 
 use std::{
     collections::VecDeque,
-    fs,
-    fmt,
+    fmt, fs,
     fs::File,
     io::{BufReader, BufWriter, Write},
-    path::{PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
 use bincode::{deserialize_from, serialize_into};
-use log::{debug};
+use log::debug;
 
 /// Errors that can occur during spill queue operations.
 #[derive(Debug)]
@@ -108,7 +107,7 @@ impl fmt::Display for SpillQueueError {
         match self {
             SpillQueueError::Io(e) => write!(f, "I/O Error: {}", e),
             SpillQueueError::Serialization(e) => write!(f, "Serialization failed: {}", e),
-            SpillQueueError::InvalidConfig => write!(f, "Invalid config")
+            SpillQueueError::InvalidConfig => write!(f, "Invalid config"),
         }
     }
 }
@@ -178,7 +177,9 @@ where
         if memory_lower_bound >= memory_upper_bound {
             return Err(SpillQueueError::InvalidConfig);
         }
-        if spill_load_batch_size == 0 || spill_load_batch_size > (memory_upper_bound - memory_lower_bound) {
+        if spill_load_batch_size == 0
+            || spill_load_batch_size > (memory_upper_bound - memory_lower_bound)
+        {
             return Err(SpillQueueError::InvalidConfig);
         }
 
@@ -317,7 +318,9 @@ where
         if memory_lower_bound >= memory_upper_bound {
             return Err(SpillQueueError::InvalidConfig);
         }
-        if spill_load_batch_size == 0 || spill_load_batch_size > (memory_upper_bound - memory_lower_bound) {
+        if spill_load_batch_size == 0
+            || spill_load_batch_size > (memory_upper_bound - memory_lower_bound)
+        {
             return Err(SpillQueueError::InvalidConfig);
         }
 
@@ -402,11 +405,17 @@ where
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
-                    && entry.file_name().to_string_lossy() == format!("{}.qcache.bin", self.front_cache_id)
+                    && entry.file_name().to_string_lossy()
+                        == format!("{}.qcache.bin", self.front_cache_id)
             })
             .collect();
 
-        assert_eq!(cache_entries.len(), 1, "Expected exactly one cache file for front ID {}", self.front_cache_id);
+        assert_eq!(
+            cache_entries.len(),
+            1,
+            "Expected exactly one cache file for front ID {}",
+            self.front_cache_id
+        );
 
         let earliest = &cache_entries[0];
         debug!("Loading from cache file: {:?}", earliest.path());
@@ -499,6 +508,7 @@ mod tests {
 
         assert!(SpillQueue::<String>::new(cache_dir.clone(), 3, 3, 1).is_err()); // lower >= upper
         assert!(SpillQueue::<String>::new(cache_dir.clone(), 5, 2, 4).is_err()); // batch too big (4 > 3)
-        assert!(SpillQueue::<String>::new(cache_dir.clone(), 5, 2, 0).is_err()); // batch = 0
+        assert!(SpillQueue::<String>::new(cache_dir.clone(), 5, 2, 0).is_err());
+        // batch = 0
     }
 }

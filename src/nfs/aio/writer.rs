@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nfs3_client::nfs3_types::nfs3::{
-    CREATE3args, MKDIR3args, Nfs3Option, Nfs3Result, SETATTR3args,
-    WRITE3args, createhow3, diropargs3, filename3, nfs_fh3, sattr3,
-    sattrguard3, set_gid3, set_mtime, set_mode3, set_uid3, stable_how, nfsstat3,
+    createhow3, diropargs3, filename3, nfs_fh3, nfsstat3, sattr3, sattrguard3, set_gid3, set_mode3,
+    set_mtime, set_uid3, stable_how, CREATE3args, MKDIR3args, Nfs3Option, Nfs3Result, SETATTR3args,
+    WRITE3args,
 };
 use nfs3_client::nfs3_types::xdr_codec::Opaque;
 use tokio::sync::RwLock;
@@ -69,10 +69,7 @@ pub async fn nfs_write_task(
     let dir_fh = match get_or_create_dir(&pool, &dir_cache, &parent, &root_fh).await {
         Ok(fh) => fh,
         Err(e) => {
-            return NfsWriterResult::Failed(
-                fcb,
-                format!("mkdir ancestors of {parent}: {e}"),
-            );
+            return NfsWriterResult::Failed(fcb, format!("mkdir ancestors of {parent}: {e}"));
         }
     };
 
@@ -125,16 +122,10 @@ pub async fn nfs_write_task(
             }
         },
         Ok(Nfs3Result::Err((stat, _))) => {
-            return NfsWriterResult::Failed(
-                fcb,
-                format!("create {dst_path:?}: NFS error {stat}"),
-            );
+            return NfsWriterResult::Failed(fcb, format!("create {dst_path:?}: NFS error {stat}"));
         }
         Err(e) => {
-            return NfsWriterResult::Failed(
-                fcb,
-                format!("create {dst_path:?}: {e}"),
-            );
+            return NfsWriterResult::Failed(fcb, format!("create {dst_path:?}: {e}"));
         }
     };
 
@@ -152,7 +143,10 @@ pub async fn nfs_write_task(
         let write_res = retry_nfs_op(
             || async {
                 let mut conn = pool.acquire().await;
-                log::debug!("NFS WRITE RPC: path={dst_path:?} offset={written} len={}", chunk.len());
+                log::debug!(
+                    "NFS WRITE RPC: path={dst_path:?} offset={written} len={}",
+                    chunk.len()
+                );
                 conn.write(&WRITE3args {
                     file: file_fh.clone(),
                     offset: written as u64,
@@ -268,7 +262,11 @@ pub async fn get_or_create_dir(
     }
 
     // Slow path: walk path components from root, creating missing dirs.
-    let components: Vec<&str> = path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let components: Vec<&str> = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut current_fh = root_fh.clone();
     let mut current_path = String::new();
 
@@ -380,7 +378,10 @@ async fn mkdir_one(
                 drop(conn);
                 match try_lookup(pool, parent_fh, name).await {
                     Ok(Some(fh)) => Ok(fh),
-                    Ok(None) => Err(NfsError::Nfs(stat, format!("mkdir {name}: exist but lookup found nothing"))),
+                    Ok(None) => Err(NfsError::Nfs(
+                        stat,
+                        format!("mkdir {name}: exist but lookup found nothing"),
+                    )),
                     Err(e) => Err(e),
                 }
             } else {
@@ -425,7 +426,7 @@ fn file_meta_to_sattr3(fcb: &FileControlBlock) -> sattr3 {
 
     sattr3 {
         mode: set_mode3::Some(meta.mode),
-        uid: set_uid3::Some(0),   // NFS clients typically use uid 0 (root)
+        uid: set_uid3::Some(0), // NFS clients typically use uid 0 (root)
         gid: set_gid3::Some(0),
         size: nfs3_client::nfs3_types::nfs3::set_size3::None,
         atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
@@ -461,10 +462,13 @@ pub async fn nfs_create_and_write(
     nfs_path: std::path::PathBuf,
     data: Vec<u8>,
 ) -> Result<(), NfsError> {
-    log::debug!("NFS create_and_write: path={nfs_path:?} size={}", data.len());
+    log::debug!(
+        "NFS create_and_write: path={nfs_path:?} size={}",
+        data.len()
+    );
 
-    let dir_cache   = new_dir_handle_cache();
-    let root_fh     = pool.root_fh();
+    let dir_cache = new_dir_handle_cache();
+    let root_fh = pool.root_fh();
     let write_chunk = pool.server_wtmax;
 
     // Ensure parent directories exist.
@@ -508,7 +512,9 @@ pub async fn nfs_create_and_write(
         Nfs3Result::Ok(ok) => match ok.obj {
             Nfs3Option::Some(fh) => fh,
             Nfs3Option::None => {
-                return Err(NfsError::Path(format!("CREATE returned no FH for {nfs_path:?}")));
+                return Err(NfsError::Path(format!(
+                    "CREATE returned no FH for {nfs_path:?}"
+                )));
             }
         },
         Nfs3Result::Err((stat, _)) => {
@@ -520,7 +526,10 @@ pub async fn nfs_create_and_write(
     let chunk_size = write_chunk as usize;
     let mut offset: u64 = 0;
     for slice in data.chunks(chunk_size.max(1)) {
-        log::debug!("NFS WRITE RPC: path={nfs_path:?} offset={offset} len={}", slice.len());
+        log::debug!(
+            "NFS WRITE RPC: path={nfs_path:?} offset={offset} len={}",
+            slice.len()
+        );
         let write_res = {
             let mut conn = pool.acquire().await;
             conn.write(&WRITE3args {
@@ -535,9 +544,10 @@ pub async fn nfs_create_and_write(
         match write_res {
             Ok(Nfs3Result::Ok(_)) => {}
             Ok(Nfs3Result::Err((stat, _))) => {
-                return Err(NfsError::Nfs(stat, format!(
-                    "WRITE {nfs_path:?} at {offset}"
-                )));
+                return Err(NfsError::Nfs(
+                    stat,
+                    format!("WRITE {nfs_path:?} at {offset}"),
+                ));
             }
             Err(e) => return Err(NfsError::Transport(e)),
         }

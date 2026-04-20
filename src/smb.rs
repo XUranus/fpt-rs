@@ -6,9 +6,9 @@
 
 use std::path::PathBuf;
 
+pub mod aio;
 pub mod fstat;
 pub mod scanner;
-pub mod aio;
 
 /// Connection information for a single SMB share root.
 ///
@@ -38,10 +38,7 @@ impl std::fmt::Debug for SmbLocation {
             .field("sub_path", &self.sub_path)
             .field("port", &self.port)
             .field("username", &self.username)
-            .field(
-                "password",
-                &self.password.as_ref().map(|_| "<redacted>"),
-            )
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }
@@ -73,11 +70,7 @@ impl SmbLocation {
         self
     }
 
-    pub fn credentials(
-        mut self,
-        username: Option<String>,
-        password: Option<String>,
-    ) -> Self {
+    pub fn credentials(mut self, username: Option<String>, password: Option<String>) -> Self {
         self.username = username;
         self.password = password;
         self
@@ -110,7 +103,8 @@ impl SmbLocation {
     }
 
     fn parse_slash_form(rest: &str) -> Result<Self, String> {
-        let (authority, path_and_query) = split_once_required(rest, '/', "SMB URL missing share path")?;
+        let (authority, path_and_query) =
+            split_once_required(rest, '/', "SMB URL missing share path")?;
         if authority.is_empty() {
             return Err("SMB URL missing host".to_string());
         }
@@ -272,12 +266,14 @@ pub fn client_config(location: &SmbLocation) -> smb_client::ClientConfig {
 }
 
 fn normalize_segmentish_path(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_matches('/')
-        .to_string()
+    path.replace('\\', "/").trim_matches('/').to_string()
 }
 
-fn split_once_required<'a>(input: &'a str, c: char, err: &str) -> Result<(&'a str, &'a str), String> {
+fn split_once_required<'a>(
+    input: &'a str,
+    c: char,
+    err: &str,
+) -> Result<(&'a str, &'a str), String> {
     match input.find(c) {
         Some(idx) => Ok((&input[..idx], &input[idx + 1..])),
         None => Err(err.to_string()),
@@ -337,7 +333,8 @@ mod tests {
 
     #[test]
     fn parse_smb_url_form() {
-        let loc = SmbLocation::from_url("smb://127.0.0.1/share/root/path?username=u&password=p").unwrap();
+        let loc =
+            SmbLocation::from_url("smb://127.0.0.1/share/root/path?username=u&password=p").unwrap();
         assert_eq!(loc.host, "127.0.0.1");
         assert_eq!(loc.share, "share");
         assert_eq!(loc.sub_path, "root/path");
@@ -347,7 +344,8 @@ mod tests {
 
     #[test]
     fn parse_smb_uncish_form() {
-        let loc = SmbLocation::from_url(r"smb:\\127.0.0.1\share\root\path?username=u?password=p").unwrap();
+        let loc = SmbLocation::from_url(r"smb:\\127.0.0.1\share\root\path?username=u?password=p")
+            .unwrap();
         assert_eq!(loc.host, "127.0.0.1");
         assert_eq!(loc.share, "share");
         assert_eq!(loc.sub_path, "root/path");

@@ -18,11 +18,11 @@
 //! This system enables efficient random access to metadata via `MetaEntryLocator`,
 //! which encodes the file ID and byte offset of a record within the repository.
 
+use bincode::{deserialize, serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use bincode::{serialize, deserialize};
 
 use super::filemeta::{DirMeta, FileMeta};
 
@@ -65,10 +65,7 @@ impl MetaFileWriter {
     ///
     /// If the file exists, writing continues at the end.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Self {
             path: path.as_ref().to_path_buf(),
             fwriter: BufWriter::new(file),
@@ -84,7 +81,10 @@ impl MetaFileWriter {
     /// Writes a `DirMeta` record and returns its starting offset.
     pub fn write_dirmeta(&mut self, dir: &DirMeta) -> io::Result<u32> {
         let payload = serialize(dir).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Serialization failed: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Serialization failed: {}", e),
+            )
         })?;
         let offset = self.offset;
         self.write_entry(TAG_DIR, &payload)?;
@@ -94,7 +94,10 @@ impl MetaFileWriter {
     /// Writes a `FileMeta` record and returns its starting offset.
     pub fn write_filemeta(&mut self, file: &FileMeta) -> io::Result<u32> {
         let payload = serialize(file).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Serialization failed: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Serialization failed: {}", e),
+            )
         })?;
         let offset = self.offset;
         self.write_entry(TAG_FILE, &payload)?;
@@ -107,7 +110,8 @@ impl MetaFileWriter {
         assert!(record_size <= u32::MAX as usize, "Record too large");
 
         self.fwriter.write_all(&[tag])?;
-        self.fwriter.write_all(&(payload.len() as u32).to_le_bytes())?;
+        self.fwriter
+            .write_all(&(payload.len() as u32).to_le_bytes())?;
         self.fwriter.write_all(payload)?;
         self.offset += record_size as u32;
         Ok(())
@@ -165,7 +169,8 @@ impl MetaRepoWriter {
 
     /// Returns the path of the currently active metadata file.
     fn current_file_path(&self) -> PathBuf {
-        self.base_dir.join(format!("meta_{}.dat", self.current_file_id))
+        self.base_dir
+            .join(format!("meta_{}.dat", self.current_file_id))
     }
 
     /// Checks if a new metadata file should be started based on available space.

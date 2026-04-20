@@ -28,7 +28,6 @@ use std::path::Path;
 use crate::frame::location::DataLocation;
 use crate::frame::repo::RepoLayout;
 
-
 // ---------------------------------------------------------------------------
 // PostJobError
 // ---------------------------------------------------------------------------
@@ -51,13 +50,13 @@ pub enum PostJobError {
 impl std::fmt::Display for PostJobError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PostJobError::Io(e)            => write!(f, "I/O error: {e}"),
+            PostJobError::Io(e) => write!(f, "I/O error: {e}"),
             PostJobError::ManifestWrite(s) => write!(f, "manifest write error: {s}"),
             #[cfg(feature = "nfs")]
-            PostJobError::NfsUpload(s)     => write!(f, "NFS upload error: {s}"),
+            PostJobError::NfsUpload(s) => write!(f, "NFS upload error: {s}"),
             #[cfg(feature = "smb")]
-            PostJobError::SmbUpload(s)     => write!(f, "SMB upload error: {s}"),
-            PostJobError::Unsupported(s)   => write!(f, "unsupported: {s}"),
+            PostJobError::SmbUpload(s) => write!(f, "SMB upload error: {s}"),
+            PostJobError::Unsupported(s) => write!(f, "unsupported: {s}"),
         }
     }
 }
@@ -65,7 +64,9 @@ impl std::fmt::Display for PostJobError {
 impl std::error::Error for PostJobError {}
 
 impl From<io::Error> for PostJobError {
-    fn from(e: io::Error) -> Self { PostJobError::Io(e) }
+    fn from(e: io::Error) -> Self {
+        PostJobError::Io(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,24 +91,24 @@ pub struct BackupPostJob<'a> {
 /// for restore or inspection.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BackupManifest {
-    pub version:      String,
-    pub copy_uuid:    String,
-    pub copy_type:    String,   // "full" | "incremental"
-    pub format:       String,   // "common" | "aggregated"
-    pub source:       String,   // DataLocation::display_string()
-    pub target:       String,   // DataLocation::display_string()
-    pub created_at:   String,
-    pub base_copy:    Option<String>,
-    pub subtasks:     Vec<SubtaskRecord>,
+    pub version: String,
+    pub copy_uuid: String,
+    pub copy_type: String, // "full" | "incremental"
+    pub format: String,    // "common" | "aggregated"
+    pub source: String,    // DataLocation::display_string()
+    pub target: String,    // DataLocation::display_string()
+    pub created_at: String,
+    pub base_copy: Option<String>,
+    pub subtasks: Vec<SubtaskRecord>,
 }
 
 /// One entry in the manifest's subtask list.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct SubtaskRecord {
-    pub id:           String,
-    pub control_file: String,   // relative path inside the copy
-    pub log_file:     String,   // relative path inside the copy
-    pub succeeded:    bool,
+    pub id: String,
+    pub control_file: String, // relative path inside the copy
+    pub log_file: String,     // relative path inside the copy
+    pub succeeded: bool,
 }
 
 impl<'a> BackupPostJob<'a> {
@@ -116,7 +117,11 @@ impl<'a> BackupPostJob<'a> {
         local_repo: &'a RepoLayout,
         manifest: &'a BackupManifest,
     ) -> Self {
-        Self { target, local_repo, manifest }
+        Self {
+            target,
+            local_repo,
+            manifest,
+        }
     }
 
     /// Run the post-job.
@@ -151,39 +156,53 @@ impl<'a> BackupPostJob<'a> {
                     .build()
                     .map_err(|e| PostJobError::Io(e))?;
 
-                let copy_folder = self.local_repo.copy_root
+                let copy_folder = self
+                    .local_repo
+                    .copy_root
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("COPY_UNKNOWN")
                     .to_string();
 
                 let nfs_loc_clone = nfs_loc.clone();
-                let m_repo   = self.local_repo.copy_root.join("M_REPO");
-                let c_repo   = self.local_repo.copy_root.join("C_REPO");
+                let m_repo = self.local_repo.copy_root.join("M_REPO");
+                let c_repo = self.local_repo.copy_root.join("C_REPO");
                 let manifest = self.local_repo.manifest_path();
 
                 rt.block_on(async move {
-                    log::info!("Post-job: uploading M_REPO ({}) → NFS:{}/{}/M_REPO",
-                        m_repo.display(), nfs_loc_clone.export, copy_folder);
+                    log::info!(
+                        "Post-job: uploading M_REPO ({}) → NFS:{}/{}/M_REPO",
+                        m_repo.display(),
+                        nfs_loc_clone.export,
+                        copy_folder
+                    );
                     upload_local_dir_to_nfs(
                         &m_repo,
                         &nfs_loc_clone,
                         &format!("{copy_folder}/M_REPO"),
-                    ).await?;
-                    log::info!("Post-job: uploading C_REPO ({}) → NFS:{}/{}/C_REPO",
-                        c_repo.display(), nfs_loc_clone.export, copy_folder);
+                    )
+                    .await?;
+                    log::info!(
+                        "Post-job: uploading C_REPO ({}) → NFS:{}/{}/C_REPO",
+                        c_repo.display(),
+                        nfs_loc_clone.export,
+                        copy_folder
+                    );
                     upload_local_dir_to_nfs(
                         &c_repo,
                         &nfs_loc_clone,
                         &format!("{copy_folder}/C_REPO"),
-                    ).await?;
+                    )
+                    .await?;
                     log::info!("Post-job: uploading manifest.json");
                     upload_file_to_nfs(
                         &manifest,
                         &nfs_loc_clone,
                         &format!("{copy_folder}/manifest.json"),
-                    ).await
-                }).map_err(PostJobError::NfsUpload)?;
+                    )
+                    .await
+                })
+                .map_err(PostJobError::NfsUpload)?;
                 log::info!("Post-job: NFS upload complete");
             }
             #[cfg(feature = "smb")]
@@ -195,7 +214,9 @@ impl<'a> BackupPostJob<'a> {
                     .build()
                     .map_err(PostJobError::Io)?;
 
-                let copy_folder = self.local_repo.copy_root
+                let copy_folder = self
+                    .local_repo
+                    .copy_root
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("COPY_UNKNOWN")
@@ -225,7 +246,8 @@ impl<'a> BackupPostJob<'a> {
                         &format!("{copy_folder}/manifest.json"),
                     )
                     .await
-                }).map_err(PostJobError::SmbUpload)?;
+                })
+                .map_err(PostJobError::SmbUpload)?;
                 log::info!("Post-job: SMB upload complete");
             }
         }
@@ -271,7 +293,7 @@ async fn upload_local_dir_to_nfs(
         .map_err(|e| format!("read_dir {}: {e}", local_dir.display()))?;
     for entry in entries.flatten() {
         let child_name = entry.file_name().to_string_lossy().into_owned();
-        let child_nfs  = format!("{nfs_sub_path}/{child_name}");
+        let child_nfs = format!("{nfs_sub_path}/{child_name}");
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             let child_path = entry.path();
             let f = upload_local_dir_to_nfs(&child_path, nfs_loc, &child_nfs);
@@ -293,19 +315,21 @@ async fn upload_file_to_nfs(
 ) -> Result<(), String> {
     use crate::nfs::NfsConnectionPool;
 
-    let data = std::fs::read(local_file)
-        .map_err(|e| format!("read {}: {e}", local_file.display()))?;
+    let data =
+        std::fs::read(local_file).map_err(|e| format!("read {}: {e}", local_file.display()))?;
 
-    log::debug!("Uploading file: {:?} -> {} ({} bytes)", local_file, nfs_path, data.len());
+    log::debug!(
+        "Uploading file: {:?} -> {} ({} bytes)",
+        local_file,
+        nfs_path,
+        data.len()
+    );
 
-    let pool = NfsConnectionPool::new(nfs_loc).await
+    let pool = NfsConnectionPool::new(nfs_loc)
+        .await
         .map_err(|e| format!("NFS connect: {e}"))?;
 
-    crate::nfs::aio::writer::nfs_create_and_write(
-        pool,
-        std::path::PathBuf::from(nfs_path),
-        data,
-    )
-    .await
-    .map_err(|e| format!("NFS write {nfs_path}: {e}"))
+    crate::nfs::aio::writer::nfs_create_and_write(pool, std::path::PathBuf::from(nfs_path), data)
+        .await
+        .map_err(|e| format!("NFS write {nfs_path}: {e}"))
 }

@@ -1,3 +1,5 @@
+use clap::Parser;
+use crossbeam::channel;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -5,23 +7,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use clap::Parser;
-use crossbeam::channel;
 
 /// Parse human-readable size string (e.g., "1G", "10M", "512K") to bytes
 fn parse_size(s: &str) -> Result<u64, String> {
     let s = s.trim().to_uppercase();
-    
+
     // Find the numeric part and unit part
-    let (num_part, unit_part) = s.chars()
+    let (num_part, unit_part) = s
+        .chars()
         .enumerate()
         .find(|(_, c)| !c.is_ascii_digit() && *c != '.')
         .map(|(i, _)| s.split_at(i))
         .unwrap_or((&s, ""));
-    
-    let num: f64 = num_part.parse()
+
+    let num: f64 = num_part
+        .parse()
         .map_err(|_| format!("Invalid number: {}", num_part))?;
-    
+
     let multiplier = match unit_part.trim() {
         "" | "B" => 1u64,
         "K" | "KB" => 1024u64,
@@ -30,7 +32,7 @@ fn parse_size(s: &str) -> Result<u64, String> {
         "T" | "TB" => 1024u64 * 1024 * 1024 * 1024,
         _ => return Err(format!("Unknown unit: {}", unit_part)),
     };
-    
+
     let result = (num * multiplier as f64) as u64;
     Ok(result)
 }
@@ -71,23 +73,23 @@ struct Opts {
 fn estimate_total(opts: &Opts) -> (u64, u64, u64) {
     let mut total_dirs = 0u64;
     let mut total_files = 0u64;
-    
+
     // At each level, we create dirs directories
     // Level 0: 1 directory (root)
     // Level 1: dirs directories
     // Level 2: dirs^2 directories
     // ... up to depth levels
-    
+
     let dirs_per_level = opts.dirs as u64;
     let files_per_dir = opts.files as u64;
     let depth = opts.depth;
-    
+
     for level in 0..depth {
         let dir_count_at_level = dirs_per_level.pow(level as u32);
         total_dirs += dir_count_at_level;
         total_files += dir_count_at_level * files_per_dir;
     }
-    
+
     let total_size = total_files * opts.size;
     (total_dirs, total_files, total_size)
 }
@@ -97,12 +99,12 @@ fn format_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB", "PB"];
     let mut size = bytes as f64;
     let mut unit_idx = 0;
-    
+
     while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
         size /= 1024.0;
         unit_idx += 1;
     }
-    
+
     format!("{:.2} {}", size, UNITS[unit_idx])
 }
 
@@ -111,25 +113,29 @@ fn confirm_generation(total_dirs: u64, total_files: u64, total_size: u64) -> boo
     println!("\n=== Generation Estimate ===");
     println!("Total directories: {}", total_dirs);
     println!("Total files:       {}", total_files);
-    println!("Total size:        {} ({} bytes)", format_bytes(total_size), total_size);
+    println!(
+        "Total size:        {} ({} bytes)",
+        format_bytes(total_size),
+        total_size
+    );
     println!();
-    
+
     print!("Do you want to proceed? [y/N]: ");
     io::stdout().flush().unwrap();
-    
+
     let mut input = String::new();
     io::stdin().read_line(&mut input).unwrap();
-    
+
     let input = input.trim().to_lowercase();
     input == "y" || input == "yes"
 }
 
 fn main() {
     let opts = Opts::parse();
-    
+
     // Calculate and display estimate
     let (total_dirs, total_files, total_size) = estimate_total(&opts);
-    
+
     // Ask for confirmation unless -y flag is set
     if !opts.yes {
         if !confirm_generation(total_dirs, total_files, total_size) {
@@ -140,10 +146,14 @@ fn main() {
         println!("=== Generation Estimate ===");
         println!("Total directories: {}", total_dirs);
         println!("Total files:       {}", total_files);
-        println!("Total size:        {} ({} bytes)", format_bytes(total_size), total_size);
+        println!(
+            "Total size:        {} ({} bytes)",
+            format_bytes(total_size),
+            total_size
+        );
         println!("Skipping confirmation (yes flag set).\n");
     }
-    
+
     let start = Instant::now();
 
     // Create root directory
@@ -211,7 +221,7 @@ fn main() {
                                 tx.send((subdir, current_depth + 1)).unwrap();
                             }
                         }
-                        
+
                         // Mark current work as done
                         pending.fetch_sub(1, Ordering::SeqCst);
                     }
@@ -241,14 +251,14 @@ fn main() {
     let report_handle = thread::spawn(move || {
         let mut last_files = 0u64;
         let mut last_report_time = Instant::now();
-        
+
         loop {
             thread::sleep(Duration::from_secs(1));
-            
+
             let files = file_count_report.load(Ordering::Relaxed);
             let dirs = dir_count_report.load(Ordering::Relaxed);
             let size = total_size_report.load(Ordering::Relaxed);
-            
+
             // Exit if we've generated all expected files
             if files >= total_files && files > 0 {
                 let elapsed = start.elapsed().as_secs();
@@ -261,12 +271,12 @@ fn main() {
                 );
                 break;
             }
-            
+
             // Print progress every 5 seconds or when there's progress
             let now = Instant::now();
-            let should_report = now.duration_since(last_report_time).as_secs() >= 5 
+            let should_report = now.duration_since(last_report_time).as_secs() >= 5
                 || (files != last_files && files > 0);
-            
+
             if should_report {
                 let elapsed = start.elapsed().as_secs();
                 println!(
@@ -279,9 +289,12 @@ fn main() {
                 last_report_time = now;
                 last_files = files;
             }
-            
+
             // Check if work is done (no progress in last 5 seconds and files > 0)
-            if files == last_files && files > 0 && now.duration_since(last_report_time).as_secs() >= 5 {
+            if files == last_files
+                && files > 0
+                && now.duration_since(last_report_time).as_secs() >= 5
+            {
                 break;
             }
         }
@@ -292,7 +305,7 @@ fn main() {
     for handle in handles {
         handle.join().unwrap();
     }
-    
+
     // Wait for reporter to finish
     let _ = report_handle.join();
 
@@ -301,16 +314,24 @@ fn main() {
     let final_dirs = dir_count.load(Ordering::Relaxed);
     let final_files = file_count.load(Ordering::Relaxed);
     let final_size = total_size.load(Ordering::Relaxed);
-    
+
     println!("\n=== Generation Complete ===");
     println!("Directories created: {}", final_dirs);
     println!("Files created:       {}", final_files);
-    println!("Total size:          {} ({} bytes)", format_bytes(final_size), final_size);
+    println!(
+        "Total size:          {} ({} bytes)",
+        format_bytes(final_size),
+        final_size
+    );
     println!("Time elapsed:        {:.2?}", elapsed);
-    
+
     if final_files > 0 {
         let files_per_sec = final_files as f64 / elapsed.as_secs_f64();
         let bytes_per_sec = final_size as f64 / elapsed.as_secs_f64();
-        println!("Throughput:          {:.0} files/sec, {}/sec", files_per_sec, format_bytes(bytes_per_sec as u64));
+        println!(
+            "Throughput:          {:.0} files/sec, {}/sec",
+            files_per_sec,
+            format_bytes(bytes_per_sec as u64)
+        );
     }
 }

@@ -20,11 +20,21 @@ struct Args {
     sources: Vec<String>,
 
     /// Control file output directory
-    #[arg(long, short = 'c', default_value = "/tmp/bifrost/ctrl", value_name = "DIR")]
+    #[arg(
+        long,
+        short = 'c',
+        default_value = "/tmp/bifrost/ctrl",
+        value_name = "DIR"
+    )]
     ctrl_dir: PathBuf,
 
     /// Metadata output directory
-    #[arg(long, short = 'm', default_value = "/tmp/bifrost/meta", value_name = "DIR")]
+    #[arg(
+        long,
+        short = 'm',
+        default_value = "/tmp/bifrost/meta",
+        value_name = "DIR"
+    )]
     meta_dir: PathBuf,
 
     /// Number of traversal worker threads (local) / concurrent RPC tasks (NFS/SMB)
@@ -36,7 +46,12 @@ struct Args {
     writers: usize,
 
     /// Temporary directory for spillable queues
-    #[arg(long, short = 't', default_value = "/tmp/bifrost/cache", value_name = "DIR")]
+    #[arg(
+        long,
+        short = 't',
+        default_value = "/tmp/bifrost/cache",
+        value_name = "DIR"
+    )]
     temp_dir: PathBuf,
 
     /// Follow symbolic links during scanning
@@ -143,12 +158,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total_start = Instant::now();
 
     for source in &args.sources {
-        let location = parse_data_location(
-            source,
-            args.nfs_connections,
-            args.nfs_uid,
-            args.nfs_gid,
-        )?;
+        let location =
+            parse_data_location(source, args.nfs_connections, args.nfs_uid, args.nfs_gid)?;
         let scan_option = build_scan_option(&args, &location);
 
         let started = Instant::now();
@@ -238,9 +249,9 @@ fn run_scan(
                 .enable_all()
                 .thread_name("bifrost-fsscan-nfs")
                 .build()?;
-            let (total_files, total_dirs, total_size_bytes) =
-                rt.block_on(bifrost::scanner::run_nfs_scan(loc, scan_option))
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let (total_files, total_dirs, total_size_bytes) = rt
+                .block_on(bifrost::scanner::run_nfs_scan(loc, scan_option))
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
                 total_dirs,
@@ -253,9 +264,9 @@ fn run_scan(
                 .enable_all()
                 .thread_name("bifrost-fsscan-smb")
                 .build()?;
-            let (total_files, total_dirs, total_size_bytes) =
-                rt.block_on(bifrost::scanner::run_smb_scan(loc, scan_option))
-                    .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+            let (total_files, total_dirs, total_size_bytes) = rt
+                .block_on(bifrost::scanner::run_smb_scan(loc, scan_option))
+                .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
                 total_dirs,

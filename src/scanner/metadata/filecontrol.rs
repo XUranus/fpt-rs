@@ -343,7 +343,10 @@ impl ControlFileReader {
     ///
     /// The tail keeps embedded spaces intact so filenames and paths can be reconstructed using
     /// the explicit length field written by `ControlFileWriter`.
-    fn split_prefix_fields<'a>(line: &'a str, field_count: usize) -> io::Result<(Vec<&'a str>, &'a str)> {
+    fn split_prefix_fields<'a>(
+        line: &'a str,
+        field_count: usize,
+    ) -> io::Result<(Vec<&'a str>, &'a str)> {
         let bytes = line.as_bytes();
         let mut fields = Vec::with_capacity(field_count);
         let mut idx = 0;
@@ -400,7 +403,11 @@ fn parse_control_header(header: &str) -> io::Result<ControlFileHeader> {
         file_count: kv.get("FILE").and_then(|v| v.parse().ok()).unwrap_or(0),
         dir_count: kv.get("DIRS").and_then(|v| v.parse().ok()).unwrap_or(0),
         time: kv.get("TIME").and_then(|v| v.parse().ok()).unwrap_or(0),
-        source_kind: kv.get("SOURCE_KIND").copied().unwrap_or("local").to_string(),
+        source_kind: kv
+            .get("SOURCE_KIND")
+            .copied()
+            .unwrap_or("local")
+            .to_string(),
         source_root: kv.get("SOURCE_ROOT").copied().unwrap_or("/").to_string(),
     })
 }
@@ -532,19 +539,23 @@ mod tests {
         let path = std::env::temp_dir().join(format!("bifrost_ctrl_{unique}.txt"));
 
         let mut writer = ControlFileWriter::new(&path).unwrap();
-        writer.write_dir(&DirControlEntry {
-            path: "/tmp/source dir".to_string(),
-            diff: DirDiff::MetaModified,
-            meta_fid: 1,
-            meta_offset: 2,
-            files_count: 3,
-        }).unwrap();
-        writer.write_file(&FileControlEntry {
-            name: "file with spaces.txt".to_string(),
-            diff: FileDiff::New,
-            meta_fid: 4,
-            meta_offset: 5,
-        }).unwrap();
+        writer
+            .write_dir(&DirControlEntry {
+                path: "/tmp/source dir".to_string(),
+                diff: DirDiff::MetaModified,
+                meta_fid: 1,
+                meta_offset: 2,
+                files_count: 3,
+            })
+            .unwrap();
+        writer
+            .write_file(&FileControlEntry {
+                name: "file with spaces.txt".to_string(),
+                diff: FileDiff::New,
+                meta_fid: 4,
+                meta_offset: 5,
+            })
+            .unwrap();
         writer.finish().unwrap();
 
         let entries: Vec<_> = ControlFileReader::open(&path)

@@ -47,13 +47,13 @@ pub enum ScanError {
 impl std::fmt::Display for ScanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScanError::LocalScan(e)   => write!(f, "local scan: {e}"),
+            ScanError::LocalScan(e) => write!(f, "local scan: {e}"),
             #[cfg(feature = "nfs")]
-            ScanError::NfsScan(e)     => write!(f, "NFS scan: {e}"),
+            ScanError::NfsScan(e) => write!(f, "NFS scan: {e}"),
             #[cfg(feature = "smb")]
-            ScanError::SmbScan(e)     => write!(f, "SMB scan: {e}"),
+            ScanError::SmbScan(e) => write!(f, "SMB scan: {e}"),
             ScanError::Unsupported(s) => write!(f, "unsupported: {s}"),
-            ScanError::Io(e)          => write!(f, "I/O error: {e}"),
+            ScanError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
 }
@@ -61,12 +61,16 @@ impl std::fmt::Display for ScanError {
 impl std::error::Error for ScanError {}
 
 impl From<crate::frame::scanner_impls::LocalScanError> for ScanError {
-    fn from(e: crate::frame::scanner_impls::LocalScanError) -> Self { ScanError::LocalScan(e) }
+    fn from(e: crate::frame::scanner_impls::LocalScanError) -> Self {
+        ScanError::LocalScan(e)
+    }
 }
 
 #[cfg(feature = "nfs")]
 impl From<crate::frame::scanner_impls::NfsScanError> for ScanError {
-    fn from(e: crate::frame::scanner_impls::NfsScanError) -> Self { ScanError::NfsScan(e) }
+    fn from(e: crate::frame::scanner_impls::NfsScanError) -> Self {
+        ScanError::NfsScan(e)
+    }
 }
 
 #[cfg(feature = "smb")]
@@ -100,8 +104,8 @@ pub struct ScanConfig {
 impl Default for ScanConfig {
     fn default() -> Self {
         Self {
-            worker_count:  4,
-            writer_count:  1,
+            worker_count: 4,
+            writer_count: 1,
             prev_meta_dir: None,
         }
     }
@@ -115,13 +119,17 @@ impl Default for ScanConfig {
 /// [`FileScanner`] implementation for the given [`DataLocation`].
 pub struct ScanJob<'a> {
     pub source: &'a DataLocation,
-    pub repo:   &'a RepoLayout,
+    pub repo: &'a RepoLayout,
     pub config: ScanConfig,
 }
 
 impl<'a> ScanJob<'a> {
     pub fn new(source: &'a DataLocation, repo: &'a RepoLayout, config: ScanConfig) -> Self {
-        Self { source, repo, config }
+        Self {
+            source,
+            repo,
+            config,
+        }
     }
 
     /// Build a [`ScannerConfig`] pointing at the local repo's ctrl/meta dirs.
@@ -134,7 +142,8 @@ impl<'a> ScanJob<'a> {
 
     /// Run the scan via a [`LocalFileScanner`] (blocking).
     pub fn run_local(&self) -> Result<ScanStats, ScanError> {
-        let source_path = self.source
+        let source_path = self
+            .source
             .local_path()
             .expect("run_local called on non-local source")
             .clone();
@@ -148,7 +157,8 @@ impl<'a> ScanJob<'a> {
     pub fn run_nfs(&self) -> Result<ScanStats, ScanError> {
         use crate::frame::scanner_impls::NfsFileScanner;
 
-        let nfs_loc = self.source
+        let nfs_loc = self
+            .source
             .nfs_location()
             .expect("run_nfs called on non-NFS source")
             .clone();
@@ -162,7 +172,8 @@ impl<'a> ScanJob<'a> {
     pub fn run_smb(&self) -> Result<ScanStats, ScanError> {
         use crate::frame::scanner_impls::SmbFileScanner;
 
-        let smb_loc = self.source
+        let smb_loc = self
+            .source
             .smb_location()
             .expect("run_smb called on non-SMB source")
             .clone();
@@ -176,9 +187,9 @@ impl<'a> ScanJob<'a> {
         match self.source {
             DataLocation::Local(_) => self.run_local(),
             #[cfg(feature = "nfs")]
-            DataLocation::Nfs(_)   => self.run_nfs(),
+            DataLocation::Nfs(_) => self.run_nfs(),
             #[cfg(feature = "smb")]
-            DataLocation::Smb(_)   => self.run_smb(),
+            DataLocation::Smb(_) => self.run_smb(),
         }
     }
 }

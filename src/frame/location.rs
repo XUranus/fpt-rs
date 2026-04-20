@@ -138,7 +138,12 @@ impl DataLocation {
                 if l.sub_path.is_empty() {
                     format!("nfs://{}{}", l.host, l.export)
                 } else {
-                    format!("nfs://{}{}/{}", l.host, l.export, l.sub_path.trim_start_matches('/'))
+                    format!(
+                        "nfs://{}{}/{}",
+                        l.host,
+                        l.export,
+                        l.sub_path.trim_start_matches('/')
+                    )
                 }
             }
             #[cfg(feature = "smb")]
@@ -173,9 +178,7 @@ impl DataLocation {
             return p.clone();
         }
         let base = self.base_path();
-        base.parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or(base)
+        base.parent().map(|p| p.to_path_buf()).unwrap_or(base)
     }
 
     /// Logical source root recorded in control-file headers.

@@ -90,13 +90,7 @@ impl MtimeControlFileWriter {
         writeln!(
             self.fwriter,
             "D {:08X} {} {:08X} {:08X} {:08X} {:016X} {:016X}",
-            path_len,
-            entry.path,
-            entry.mode,
-            entry.uid,
-            entry.gid,
-            entry.atime,
-            entry.mtime
+            path_len, entry.path, entry.mode, entry.uid, entry.gid, entry.atime, entry.mtime
         )?;
         self.dir_count += 1;
         Ok(())
@@ -251,25 +245,29 @@ mod tests {
         // Write test data
         {
             let mut writer = MtimeControlFileWriter::new(&path).unwrap();
-            
-            writer.write_dir(&MtimeDirEntry {
-                path: "/home/user/docs".to_string(),
-                mode: 0o40755,
-                uid: 1000,
-                gid: 1000,
-                atime: 1700000000,
-                mtime: 1700000000,
-            }).unwrap();
-            
-            writer.write_dir(&MtimeDirEntry {
-                path: "/home/user/src".to_string(),
-                mode: 0o40755,
-                uid: 1000,
-                gid: 1000,
-                atime: 1700000100,
-                mtime: 1700000100,
-            }).unwrap();
-            
+
+            writer
+                .write_dir(&MtimeDirEntry {
+                    path: "/home/user/docs".to_string(),
+                    mode: 0o40755,
+                    uid: 1000,
+                    gid: 1000,
+                    atime: 1700000000,
+                    mtime: 1700000000,
+                })
+                .unwrap();
+
+            writer
+                .write_dir(&MtimeDirEntry {
+                    path: "/home/user/src".to_string(),
+                    mode: 0o40755,
+                    uid: 1000,
+                    gid: 1000,
+                    atime: 1700000100,
+                    mtime: 1700000100,
+                })
+                .unwrap();
+
             writer.finish().unwrap();
         }
 
@@ -277,16 +275,16 @@ mod tests {
         {
             let reader = MtimeControlFileReader::open(&path).unwrap();
             let entries: Vec<_> = reader.collect::<Result<Vec<_>, _>>().unwrap();
-            
+
             assert_eq!(entries.len(), 2);
-            
+
             assert_eq!(entries[0].path, "/home/user/docs");
             assert_eq!(entries[0].mode, 0o40755);
             assert_eq!(entries[0].uid, 1000);
             assert_eq!(entries[0].gid, 1000);
             assert_eq!(entries[0].atime, 1700000000);
             assert_eq!(entries[0].mtime, 1700000000);
-            
+
             assert_eq!(entries[1].path, "/home/user/src");
             assert_eq!(entries[1].atime, 1700000100);
             assert_eq!(entries[1].mtime, 1700000100);

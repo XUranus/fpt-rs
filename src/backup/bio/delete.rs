@@ -116,8 +116,8 @@ pub fn process_deletes(
 
         // Calculate target path for files
         let target_path = make_relative_and_join(
-            source_dir_base, 
-            target_dir_base.to_path_buf(), 
+            source_dir_base,
+            target_dir_base.to_path_buf(),
             entry.path.clone(),
             logical_paths,
         );
@@ -157,10 +157,18 @@ pub fn process_deletes(
     // Delete directories (in reverse order to delete deepest first)
     dirs_to_delete.sort_by(|a, b| b.cmp(a)); // Reverse sort
     for dir_path in dirs_to_delete {
-        let target_path = make_relative_and_join(source_dir_base, target_dir_base.to_path_buf(), dir_path, logical_paths);
+        let target_path = make_relative_and_join(
+            source_dir_base,
+            target_dir_base.to_path_buf(),
+            dir_path,
+            logical_paths,
+        );
 
         if !target_path.exists() {
-            debug!("Target directory does not exist, skipping: {:?}", target_path);
+            debug!(
+                "Target directory does not exist, skipping: {:?}",
+                target_path
+            );
             stats.entries_skipped.fetch_add(1, Ordering::Relaxed);
             continue;
         }
@@ -172,18 +180,16 @@ pub fn process_deletes(
                     debug!("Deleted directory: {:?}", target_path);
                     stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(_e) => {
-                    match std::fs::remove_dir_all(&target_path) {
-                        Ok(()) => {
-                            debug!("Recursively deleted directory: {:?}", target_path);
-                            stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
-                        }
-                        Err(e) => {
-                            error!("Failed to delete directory {:?}: {}", target_path, e);
-                            stats.entries_failed.fetch_add(1, Ordering::Relaxed);
-                        }
+                Err(_e) => match std::fs::remove_dir_all(&target_path) {
+                    Ok(()) => {
+                        debug!("Recursively deleted directory: {:?}", target_path);
+                        stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
                     }
-                }
+                    Err(e) => {
+                        error!("Failed to delete directory {:?}: {}", target_path, e);
+                        stats.entries_failed.fetch_add(1, Ordering::Relaxed);
+                    }
+                },
             }
         } else {
             warn!("Target path is not a directory: {:?}", target_path);
@@ -220,13 +226,23 @@ fn make_relative_and_join(
             .unwrap_or(path_buf)
     } else if path_buf.is_absolute() {
         if logical_paths {
-            let rel = path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf);
+            let rel = path_buf
+                .strip_prefix("/")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(path_buf);
             return target_base.join(rel);
         }
         let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
-        let first_segment = path_buf.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+        let first_segment = path_buf
+            .strip_prefix("/")
+            .ok()
+            .and_then(|p| p.iter().next())
+            .and_then(|s| s.to_str());
         if logical_root_name.is_some() && logical_root_name == first_segment {
-            path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf)
+            path_buf
+                .strip_prefix("/")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(path_buf)
         } else {
             path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
         }
@@ -267,12 +283,8 @@ mod tests {
         assert_eq!(result, PathBuf::from("/backup/target/docs"));
 
         // Test with non-matching absolute path
-        let result = make_relative_and_join(
-            &base,
-            target.clone(),
-            "/other/path".to_string(),
-            false,
-        );
+        let result =
+            make_relative_and_join(&base, target.clone(), "/other/path".to_string(), false);
         assert_eq!(result, PathBuf::from("/backup/target/path"));
     }
 }

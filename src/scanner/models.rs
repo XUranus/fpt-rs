@@ -52,8 +52,8 @@ pub struct DirScanEntry {
 
 // Create new `DirScanEntry`
 impl DirScanEntry {
-    pub fn new(path : PathBuf, depth : usize) -> Self {
-        Self { path, depth}
+    pub fn new(path: PathBuf, depth: usize) -> Self {
+        Self { path, depth }
     }
 }
 
@@ -105,27 +105,32 @@ impl ScanStatistics {
 
     /// Atomically increments the total file size counter.
     pub fn add_file_size(&self, size: u64) {
-        self.tot_size.fetch_add(size, std::sync::atomic::Ordering::Relaxed);
+        self.tot_size
+            .fetch_add(size, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Atomically increments the successful file count.
     pub fn inc_files(&self) {
-        self.tot_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.tot_files
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Atomically increments the successful directory count.
     pub fn inc_dirs(&self) {
-        self.tot_dirs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.tot_dirs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Atomically increments the file error counter.
     pub fn inc_failed_files(&self) {
-        self.failed_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.failed_files
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Atomically increments the directory error counter.
     pub fn inc_failed_dirs(&self) {
-        self.failed_dirs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.failed_dirs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

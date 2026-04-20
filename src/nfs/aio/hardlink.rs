@@ -11,12 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
-use nfs3_client::nfs3_types::nfs3::{
-    LINK3args, Nfs3Result, diropargs3, filename3, nfs_fh3,
-};
+use nfs3_client::nfs3_types::nfs3::{diropargs3, filename3, nfs_fh3, LINK3args, Nfs3Result};
 
-use crate::nfs::aio::reader::{FileHandleCache, resolve_path};
-use crate::nfs::aio::writer::{DirHandleCache, get_or_create_dir};
+use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
+use crate::nfs::aio::writer::{get_or_create_dir, DirHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::scanner::metadata::{HardlinkControlFileReader, HardlinkEntry};
 
@@ -201,11 +199,19 @@ fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> Stri
         .unwrap_or_else(|_| {
             let p = Path::new(path);
             let logical_root_name = base.file_name().and_then(|n| n.to_str());
-            let first_segment = p.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+            let first_segment = p
+                .strip_prefix("/")
+                .ok()
+                .and_then(|p| p.iter().next())
+                .and_then(|s| s.to_str());
             if logical_root_name.is_some() && logical_root_name == first_segment {
-                p.strip_prefix("/").map(|r| r.to_path_buf()).unwrap_or_else(|_| PathBuf::from(path))
+                p.strip_prefix("/")
+                    .map(|r| r.to_path_buf())
+                    .unwrap_or_else(|_| PathBuf::from(path))
             } else {
-                p.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(path))
+                p.file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(path))
             }
         });
     let prefixed = if target_prefix.is_empty() {
@@ -218,7 +224,13 @@ fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> Stri
 
 fn split_path(path: &str) -> (String, String) {
     let p = Path::new(path);
-    let parent = p.parent().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
-    let name = p.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+    let parent = p
+        .parent()
+        .map(|x| x.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = p
+        .file_name()
+        .map(|x| x.to_string_lossy().into_owned())
+        .unwrap_or_default();
     (parent, name)
 }

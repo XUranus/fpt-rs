@@ -13,8 +13,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::backup::{BackupOption, BackupTask};
 use crate::backup::aggregate::AggregateConfig;
+use crate::backup::{BackupOption, BackupTask};
 use crate::frame::traits::{FileBackup, TransferStats};
 
 // ---------------------------------------------------------------------------
@@ -40,6 +40,8 @@ pub struct BackupConfig {
     pub aggregate_config: AggregateConfig,
     /// Override relative target prefix used for remote D_REPO writes.
     pub remote_target_prefix: Option<String>,
+    /// SMB client connections per SMB endpoint for async backup paths.
+    pub smb_connection_count: usize,
     /// Whether to run the hardlink phase.
     pub enable_hardlink: bool,
     /// Whether to run the delete phase.
@@ -50,35 +52,51 @@ pub struct BackupConfig {
 
 impl BackupConfig {
     pub fn new(
-        source_dir:       impl Into<PathBuf>,
+        source_dir: impl Into<PathBuf>,
         local_target_dir: impl Into<PathBuf>,
-        meta_dir:         impl Into<PathBuf>,
-        ctrl_dir:         impl Into<PathBuf>,
-        control_file:     impl Into<PathBuf>,
+        meta_dir: impl Into<PathBuf>,
+        ctrl_dir: impl Into<PathBuf>,
+        control_file: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            source_dir:       source_dir.into(),
+            source_dir: source_dir.into(),
             local_target_dir: local_target_dir.into(),
-            meta_dir:         meta_dir.into(),
-            ctrl_dir:         ctrl_dir.into(),
-            control_file:     control_file.into(),
+            meta_dir: meta_dir.into(),
+            ctrl_dir: ctrl_dir.into(),
+            control_file: control_file.into(),
             aggregate_config: AggregateConfig::default(),
             remote_target_prefix: None,
-            enable_hardlink:  false,
-            enable_delete:    false,
-            enable_mtime:     false,
+            smb_connection_count: 2,
+            enable_hardlink: false,
+            enable_delete: false,
+            enable_mtime: false,
         }
     }
 
     pub fn aggregate_config(mut self, cfg: AggregateConfig) -> Self {
-        self.aggregate_config = cfg; self
+        self.aggregate_config = cfg;
+        self
     }
     pub fn remote_target_prefix(mut self, prefix: Option<String>) -> Self {
-        self.remote_target_prefix = prefix; self
+        self.remote_target_prefix = prefix;
+        self
     }
-    pub fn enable_hardlink(mut self, v: bool) -> Self { self.enable_hardlink = v; self }
-    pub fn enable_delete(mut self, v: bool) -> Self   { self.enable_delete = v; self }
-    pub fn enable_mtime(mut self, v: bool) -> Self    { self.enable_mtime = v; self }
+    pub fn smb_connection_count(mut self, count: usize) -> Self {
+        self.smb_connection_count = count.max(1);
+        self
+    }
+    pub fn enable_hardlink(mut self, v: bool) -> Self {
+        self.enable_hardlink = v;
+        self
+    }
+    pub fn enable_delete(mut self, v: bool) -> Self {
+        self.enable_delete = v;
+        self
+    }
+    pub fn enable_mtime(mut self, v: bool) -> Self {
+        self.enable_mtime = v;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,10 +112,10 @@ pub enum BackupTaskError {
 impl fmt::Display for BackupTaskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BackupTaskError::Engine(s) =>
-                write!(f, "backup engine error: {s}"),
-            BackupTaskError::PartialFailure { files_failed } =>
-                write!(f, "{files_failed} file(s) failed to back up"),
+            BackupTaskError::Engine(s) => write!(f, "backup engine error: {s}"),
+            BackupTaskError::PartialFailure { files_failed } => {
+                write!(f, "{files_failed} file(s) failed to back up")
+            }
         }
     }
 }
@@ -116,7 +134,9 @@ pub struct LocalFileBackup {
 }
 
 impl LocalFileBackup {
-    pub fn new(config: BackupConfig) -> Self { Self { config } }
+    pub fn new(config: BackupConfig) -> Self {
+        Self { config }
+    }
 }
 
 impl FileBackup for LocalFileBackup {
@@ -144,6 +164,8 @@ impl FileBackup for LocalFileBackup {
 // NfsFileBackup
 // ---------------------------------------------------------------------------
 
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub use mixed_impl::{NfsSourceSmbTargetFileBackup, SmbSourceNfsTargetFileBackup};
 #[cfg(feature = "nfs")]
 pub use nfs_impl::NfsFileBackup;
 #[cfg(feature = "nfs")]
@@ -156,8 +178,6 @@ pub use smb_impl::SmbFileBackup;
 pub use smb_impl::SmbSourceFileBackup;
 #[cfg(feature = "smb")]
 pub use smb_impl::SmbSourceTargetFileBackup;
-#[cfg(all(feature = "nfs", feature = "smb"))]
-pub use mixed_impl::{NfsSourceSmbTargetFileBackup, SmbSourceNfsTargetFileBackup};
 
 #[cfg(feature = "nfs")]
 mod nfs_impl {
@@ -169,7 +189,7 @@ mod nfs_impl {
     /// Metadata (M_REPO, C_REPO) is always written locally via BIO.
     /// Data files are sent directly to the NFS server via `nfs3_client` WRITE RPCs.
     pub struct NfsFileBackup {
-        pub config:     BackupConfig,
+        pub config: BackupConfig,
         pub nfs_target: NfsLocation,
     }
 
@@ -196,7 +216,11 @@ mod nfs_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
+            .nfs_target_d_repo_path(
+                cfg.remote_target_prefix
+                    .clone()
+                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
+            );
 
             run_backup_task(option)
         }
@@ -207,7 +231,7 @@ mod nfs_impl {
     /// Data is read from the NFS server via `nfs3_client` READ RPCs and
     /// written to the local filesystem.  M_REPO and C_REPO are always local.
     pub struct NfsSourceFileBackup {
-        pub config:     BackupConfig,
+        pub config: BackupConfig,
         pub nfs_source: NfsLocation,
     }
 
@@ -245,14 +269,18 @@ mod nfs_impl {
     /// via dual AIO pipelines (no local staging for D_REPO).  M_REPO and C_REPO
     /// are always local.
     pub struct NfsSourceTargetFileBackup {
-        pub config:     BackupConfig,
+        pub config: BackupConfig,
         pub nfs_source: NfsLocation,
         pub nfs_target: NfsLocation,
     }
 
     impl NfsSourceTargetFileBackup {
         pub fn new(config: BackupConfig, nfs_source: NfsLocation, nfs_target: NfsLocation) -> Self {
-            Self { config, nfs_source, nfs_target }
+            Self {
+                config,
+                nfs_source,
+                nfs_target,
+            }
         }
     }
 
@@ -274,7 +302,11 @@ mod nfs_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_source(self.nfs_source.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
+            .nfs_target_d_repo_path(
+                cfg.remote_target_prefix
+                    .clone()
+                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
+            );
 
             run_backup_task(option)
         }
@@ -295,7 +327,11 @@ mod mixed_impl {
 
     impl NfsSourceSmbTargetFileBackup {
         pub fn new(config: BackupConfig, nfs_source: NfsLocation, smb_target: SmbLocation) -> Self {
-            Self { config, nfs_source, smb_target }
+            Self {
+                config,
+                nfs_source,
+                smb_target,
+            }
         }
     }
 
@@ -317,7 +353,12 @@ mod mixed_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_source(self.nfs_source.clone())
             .smb_target(self.smb_target.clone())
-            .smb_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
+            .smb_connection_count(cfg.smb_connection_count)
+            .smb_target_d_repo_path(
+                cfg.remote_target_prefix
+                    .clone()
+                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
+            );
 
             run_backup_task(option)
         }
@@ -331,7 +372,11 @@ mod mixed_impl {
 
     impl SmbSourceNfsTargetFileBackup {
         pub fn new(config: BackupConfig, smb_source: SmbLocation, nfs_target: NfsLocation) -> Self {
-            Self { config, smb_source, nfs_target }
+            Self {
+                config,
+                smb_source,
+                nfs_target,
+            }
         }
     }
 
@@ -352,8 +397,13 @@ mod mixed_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .smb_source(self.smb_source.clone())
+            .smb_connection_count(cfg.smb_connection_count)
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
+            .nfs_target_d_repo_path(
+                cfg.remote_target_prefix
+                    .clone()
+                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
+            );
 
             run_backup_task(option)
         }
@@ -397,7 +447,12 @@ mod smb_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .smb_target(self.smb_target.clone())
-            .smb_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
+            .smb_connection_count(cfg.smb_connection_count)
+            .smb_target_d_repo_path(
+                cfg.remote_target_prefix
+                    .clone()
+                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
+            );
 
             run_backup_task(option)
         }
@@ -431,7 +486,8 @@ mod smb_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
-            .smb_source(self.smb_source.clone());
+            .smb_source(self.smb_source.clone())
+            .smb_connection_count(cfg.smb_connection_count);
 
             run_backup_task(option)
         }
@@ -446,7 +502,11 @@ mod smb_impl {
 
     impl SmbSourceTargetFileBackup {
         pub fn new(config: BackupConfig, smb_source: SmbLocation, smb_target: SmbLocation) -> Self {
-            Self { config, smb_source, smb_target }
+            Self {
+                config,
+                smb_source,
+                smb_target,
+            }
         }
     }
 
@@ -468,7 +528,12 @@ mod smb_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .smb_source(self.smb_source.clone())
             .smb_target(self.smb_target.clone())
-            .smb_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
+            .smb_connection_count(cfg.smb_connection_count)
+            .smb_target_d_repo_path(
+                cfg.remote_target_prefix
+                    .clone()
+                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
+            );
 
             run_backup_task(option)
         }
@@ -509,26 +574,32 @@ fn extract_repo_relative_path(local_target_dir: &PathBuf) -> String {
 /// Start a `BackupTask`, poll until complete, return `TransferStats`.
 fn run_backup_task(option: BackupOption) -> Result<TransferStats, BackupTaskError> {
     let task = BackupTask::from(option);
-    let running = task.start()
+    let running = task
+        .start()
         .map_err(|e| BackupTaskError::Engine(e.to_string()))?;
 
     loop {
-        if running.complete() { break; }
+        if running.complete() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
 
     let snap = running.stats();
-    running.wait()
+    running
+        .wait()
         .map_err(|e| BackupTaskError::Engine(e.to_string()))?;
 
     if snap.files_failed > 0 {
-        return Err(BackupTaskError::PartialFailure { files_failed: snap.files_failed });
+        return Err(BackupTaskError::PartialFailure {
+            files_failed: snap.files_failed,
+        });
     }
 
     Ok(TransferStats {
         files_transferred: snap.files_copied,
         bytes_transferred: snap.bytes_copied,
-        dirs_created:      snap.dirs_created,
-        files_failed:      snap.files_failed,
+        dirs_created: snap.dirs_created,
+        files_failed: snap.files_failed,
     })
 }

@@ -1,14 +1,13 @@
+use anyhow::{Context, Result};
+use bifrost::scanner::metadata::{DirMeta, FileMeta};
+use clap::Parser;
+use serde::Serialize;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
-use bifrost::scanner::metadata::{DirMeta, FileMeta};
-use clap::Parser;
-use serde::{Serialize};
-use anyhow::{Context, Result};
 
 const TAG_DIR: u8 = 1;
 const TAG_FILE: u8 = 2;
-
 
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -66,8 +65,8 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let file = File::open(&cli.input)
-        .with_context(|| format!("Cannot open {}", cli.input.display()))?;
+    let file =
+        File::open(&cli.input).with_context(|| format!("Cannot open {}", cli.input.display()))?;
     let mut reader = BufReader::new(file);
 
     let mut output: Box<dyn Write> = match &cli.output {
@@ -102,7 +101,13 @@ fn main() -> Result<()> {
         "csv" => {
             let mut wtr = csv::Writer::from_writer(output);
             wtr.write_record(&[
-                "type", "name", "id", "size_bytes", "atime", "mtime", "ctime",
+                "type",
+                "name",
+                "id",
+                "size_bytes",
+                "atime",
+                "mtime",
+                "ctime",
             ])?;
             loop {
                 match read_record(&mut reader) {

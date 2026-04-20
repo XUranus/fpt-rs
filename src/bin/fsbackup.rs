@@ -6,25 +6,21 @@
 // This tool exercises the backup subtask phase in isolation (no scan, no
 // manifest, no post-job).  For the full integrated workflow, use `fptcli backup`.
 
-use std::path::PathBuf;
 use clap::Parser;
 use log::info;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use bifrost::backup::aggregate::AggregateConfig;
-use bifrost::frame::{
-    BackupConfig,
-    DataLocation,
-    FileBackup,
-    LocalFileBackup,
-};
-#[cfg(feature = "nfs")]
-use bifrost::frame::NfsFileBackup;
 #[cfg(feature = "nfs")]
 use bifrost::frame::backup_impls::{NfsSourceFileBackup, NfsSourceTargetFileBackup};
-#[cfg(feature = "smb")]
-use bifrost::frame::backup_impls::{SmbFileBackup, SmbSourceFileBackup, SmbSourceTargetFileBackup};
 #[cfg(all(feature = "nfs", feature = "smb"))]
 use bifrost::frame::backup_impls::{NfsSourceSmbTargetFileBackup, SmbSourceNfsTargetFileBackup};
+#[cfg(feature = "smb")]
+use bifrost::frame::backup_impls::{SmbFileBackup, SmbSourceFileBackup, SmbSourceTargetFileBackup};
+#[cfg(feature = "nfs")]
+use bifrost::frame::NfsFileBackup;
+use bifrost::frame::{BackupConfig, DataLocation, FileBackup, LocalFileBackup};
 
 /// Bifrost Backup Executor
 ///
@@ -81,6 +77,10 @@ struct Args {
     #[arg(long, value_name = "N", default_value = "4")]
     nfs_connections: usize,
 
+    /// Number of SMB client connections per SMB endpoint [default: 2]
+    #[arg(long, value_name = "N", default_value = "2")]
+    smb_connections: usize,
+
     /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
     #[arg(long, value_name = "UID")]
     nfs_uid: Option<u32>,
@@ -109,22 +109,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Validate inputs.
     if !args.meta_dir.exists() {
-        return Err(format!("Metadata directory does not exist: {}", args.meta_dir.display()).into());
+        return Err(format!(
+            "Metadata directory does not exist: {}",
+            args.meta_dir.display()
+        )
+        .into());
     }
     if !args.control_file.exists() {
-        return Err(format!("Control file does not exist: {}", args.control_file.display()).into());
+        return Err(format!(
+            "Control file does not exist: {}",
+            args.control_file.display()
+        )
+        .into());
     }
 
     let ctrl_dir = args.ctrl_dir.unwrap_or_else(|| {
-        args.control_file.parent()
+        args.control_file
+            .parent()
             .unwrap_or(args.meta_dir.as_path())
             .to_path_buf()
     });
 
     // Build the shared BackupConfig.
     let aggregate_config = if args.aggregate {
-        info!("Aggregate backup enabled: max_blob_size={}MB, threshold={}KB",
-              args.max_blob_size, args.aggregate_threshold);
+        info!(
+            "Aggregate backup enabled: max_blob_size={}MB, threshold={}KB",
+            args.max_blob_size, args.aggregate_threshold
+        );
         AggregateConfig::enabled()
             .max_blob_size(args.max_blob_size * 1024 * 1024)
             .file_threshold(args.aggregate_threshold * 1024)
@@ -132,8 +143,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AggregateConfig::default()
     };
 
-    let source = parse_data_location(&args.source_dir, args.nfs_connections, args.nfs_uid, args.nfs_gid)?;
-    let target = parse_data_location(&args.target_dir, args.nfs_connections, args.nfs_uid, args.nfs_gid)?;
+    let source = parse_data_location(
+        &args.source_dir,
+        args.nfs_connections,
+        args.nfs_uid,
+        args.nfs_gid,
+    )?;
+    let target = parse_data_location(
+        &args.target_dir,
+        args.nfs_connections,
+        args.nfs_uid,
+        args.nfs_gid,
+    )?;
     let local_target_dir = match &target {
         DataLocation::Local(path) => path.clone(),
         _ => PathBuf::from("/"),
@@ -148,13 +169,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .aggregate_config(aggregate_config)
     .remote_target_prefix((!target.is_local()).then(|| String::new()))
+    .smb_connection_count(args.smb_connections)
     .enable_hardlink(args.hardlink)
     .enable_delete(args.delete)
     .enable_mtime(args.mtime);
 
     info!("Starting backup task: source={} target={}", source, target);
+    let started = Instant::now();
     let stats = run_backup(backup_cfg, &source, &target)?;
-    print_summary(&stats);
+    print_summary(&stats, started.elapsed());
 
     Ok(())
 }
@@ -165,23 +188,45 @@ fn run_backup(
     target: &DataLocation,
 ) -> Result<bifrost::frame::TransferStats, Box<dyn std::error::Error>> {
     match (source, target) {
-        (DataLocation::Local(_), DataLocation::Local(_)) => Ok(LocalFileBackup::new(backup_cfg).run()?),
+        (DataLocation::Local(_), DataLocation::Local(_)) => {
+            Ok(LocalFileBackup::new(backup_cfg).run()?)
+        }
         #[cfg(feature = "nfs")]
-        (DataLocation::Local(_), DataLocation::Nfs(nfs_target)) => Ok(NfsFileBackup::new(backup_cfg, nfs_target.clone()).run()?),
+        (DataLocation::Local(_), DataLocation::Nfs(nfs_target)) => {
+            Ok(NfsFileBackup::new(backup_cfg, nfs_target.clone()).run()?)
+        }
         #[cfg(feature = "nfs")]
-        (DataLocation::Nfs(nfs_source), DataLocation::Local(_)) => Ok(NfsSourceFileBackup::new(backup_cfg, nfs_source.clone()).run()?),
+        (DataLocation::Nfs(nfs_source), DataLocation::Local(_)) => {
+            Ok(NfsSourceFileBackup::new(backup_cfg, nfs_source.clone()).run()?)
+        }
         #[cfg(feature = "nfs")]
-        (DataLocation::Nfs(nfs_source), DataLocation::Nfs(nfs_target)) => Ok(NfsSourceTargetFileBackup::new(backup_cfg, nfs_source.clone(), nfs_target.clone()).run()?),
+        (DataLocation::Nfs(nfs_source), DataLocation::Nfs(nfs_target)) => Ok(
+            NfsSourceTargetFileBackup::new(backup_cfg, nfs_source.clone(), nfs_target.clone())
+                .run()?,
+        ),
         #[cfg(feature = "smb")]
-        (DataLocation::Local(_), DataLocation::Smb(smb_target)) => Ok(SmbFileBackup::new(backup_cfg, smb_target.clone()).run()?),
+        (DataLocation::Local(_), DataLocation::Smb(smb_target)) => {
+            Ok(SmbFileBackup::new(backup_cfg, smb_target.clone()).run()?)
+        }
         #[cfg(feature = "smb")]
-        (DataLocation::Smb(smb_source), DataLocation::Local(_)) => Ok(SmbSourceFileBackup::new(backup_cfg, smb_source.clone()).run()?),
+        (DataLocation::Smb(smb_source), DataLocation::Local(_)) => {
+            Ok(SmbSourceFileBackup::new(backup_cfg, smb_source.clone()).run()?)
+        }
         #[cfg(feature = "smb")]
-        (DataLocation::Smb(smb_source), DataLocation::Smb(smb_target)) => Ok(SmbSourceTargetFileBackup::new(backup_cfg, smb_source.clone(), smb_target.clone()).run()?),
+        (DataLocation::Smb(smb_source), DataLocation::Smb(smb_target)) => Ok(
+            SmbSourceTargetFileBackup::new(backup_cfg, smb_source.clone(), smb_target.clone())
+                .run()?,
+        ),
         #[cfg(all(feature = "nfs", feature = "smb"))]
-        (DataLocation::Nfs(nfs_source), DataLocation::Smb(smb_target)) => Ok(NfsSourceSmbTargetFileBackup::new(backup_cfg, nfs_source.clone(), smb_target.clone()).run()?),
+        (DataLocation::Nfs(nfs_source), DataLocation::Smb(smb_target)) => Ok(
+            NfsSourceSmbTargetFileBackup::new(backup_cfg, nfs_source.clone(), smb_target.clone())
+                .run()?,
+        ),
         #[cfg(all(feature = "nfs", feature = "smb"))]
-        (DataLocation::Smb(smb_source), DataLocation::Nfs(nfs_target)) => Ok(SmbSourceNfsTargetFileBackup::new(backup_cfg, smb_source.clone(), nfs_target.clone()).run()?),
+        (DataLocation::Smb(smb_source), DataLocation::Nfs(nfs_target)) => Ok(
+            SmbSourceNfsTargetFileBackup::new(backup_cfg, smb_source.clone(), nfs_target.clone())
+                .run()?,
+        ),
         #[allow(unreachable_patterns)]
         _ => Err("Unsupported source/target combination for this build".into()),
     }
@@ -194,10 +239,17 @@ fn parse_nfs_location(
     uid: Option<u32>,
     gid: Option<u32>,
 ) -> Result<DataLocation, Box<dyn std::error::Error>> {
-    let mut loc = bifrost::nfs::NfsLocation::from_url(url)?
-        .connection_count(connections);
-    let default_uid = if loc.uid == 0 { unsafe { libc::geteuid() as u32 } } else { loc.uid };
-    let default_gid = if loc.gid == 0 { unsafe { libc::getegid() as u32 } } else { loc.gid };
+    let mut loc = bifrost::nfs::NfsLocation::from_url(url)?.connection_count(connections);
+    let default_uid = if loc.uid == 0 {
+        unsafe { libc::geteuid() as u32 }
+    } else {
+        loc.uid
+    };
+    let default_gid = if loc.gid == 0 {
+        unsafe { libc::getegid() as u32 }
+    } else {
+        loc.gid
+    };
     loc = loc.credentials(uid.unwrap_or(default_uid), gid.unwrap_or(default_gid));
     Ok(DataLocation::nfs(loc))
 }
@@ -222,7 +274,9 @@ fn parse_data_location(
     if spec.starts_with("smb://") || spec.starts_with(r"smb:\\") {
         #[cfg(feature = "smb")]
         {
-            return Ok(DataLocation::smb(bifrost::smb::SmbLocation::from_url(spec)?));
+            return Ok(DataLocation::smb(bifrost::smb::SmbLocation::from_url(
+                spec,
+            )?));
         }
         #[cfg(not(feature = "smb"))]
         {
@@ -234,12 +288,39 @@ fn parse_data_location(
     Ok(DataLocation::local(PathBuf::from(spec)))
 }
 
-fn print_summary(stats: &bifrost::frame::TransferStats) {
+fn print_summary(stats: &bifrost::frame::TransferStats, elapsed: Duration) {
+    let elapsed_secs = elapsed.as_secs_f64().max(0.001);
+    let file_rate = stats.files_transferred as f64 / elapsed_secs;
+    let byte_rate = stats.bytes_transferred as f64 / elapsed_secs;
     println!(
-        "Backup complete: {} files ({:.2} MB), {} dirs, {} failed",
+        "Backup complete: {} files ({:.2} MiB), {} dirs, {} failed, elapsed {}, {:.2} files/s, {}/s",
         stats.files_transferred,
         stats.bytes_transferred as f64 / (1024.0 * 1024.0),
         stats.dirs_created,
         stats.files_failed,
+        format_elapsed(elapsed),
+        file_rate,
+        format_bytes(byte_rate),
     );
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let secs = elapsed.as_secs();
+    let millis = elapsed.subsec_millis();
+    if secs >= 60 {
+        format!("{}m {}.{:03}s", secs / 60, secs % 60, millis)
+    } else {
+        format!("{}.{:03}s", secs, millis)
+    }
+}
+
+fn format_bytes(bytes: f64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.2} {}", UNITS[unit])
 }

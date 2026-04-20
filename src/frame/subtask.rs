@@ -43,6 +43,8 @@ pub struct SubtaskConfig {
     pub enable_delete: bool,
     /// Whether to run the mtime phase.
     pub enable_mtime: bool,
+    /// SMB client connections per SMB endpoint for backup subtasks.
+    pub smb_connection_count: usize,
     /// Data source for backup (local or NFS).
     pub backup_source: DataLocation,
     /// Data target for backup (local or NFS).
@@ -68,10 +70,10 @@ pub enum SubtaskError {
 impl std::fmt::Display for SubtaskError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SubtaskError::Engine(s) =>
-                write!(f, "engine error: {s}"),
-            SubtaskError::PartialFailure { files_failed } =>
-                write!(f, "{files_failed} file(s) failed to copy"),
+            SubtaskError::Engine(s) => write!(f, "engine error: {s}"),
+            SubtaskError::PartialFailure { files_failed } => {
+                write!(f, "{files_failed} file(s) failed to copy")
+            }
         }
     }
 }
@@ -101,7 +103,7 @@ pub type SubtaskStats = TransferStats;
 /// | NFS     | NFS     | [`NfsSourceTargetFileBackup`] (AIO, direct NFS→NFS copy) |
 pub fn run_backup_subtask(
     config: &SubtaskConfig,
-    repo:   &RepoLayout,
+    repo: &RepoLayout,
 ) -> Result<SubtaskStats, SubtaskError> {
     let backup_cfg = BackupConfig::new(
         config.source_dir.clone(),
@@ -113,14 +115,13 @@ pub fn run_backup_subtask(
     .aggregate_config(config.aggregate_config.clone())
     .enable_hardlink(config.enable_hardlink)
     .enable_delete(config.enable_delete)
-    .enable_mtime(config.enable_mtime);
+    .enable_mtime(config.enable_mtime)
+    .smb_connection_count(config.smb_connection_count);
 
     match (&config.backup_source, &config.backup_target) {
-        (DataLocation::Local(_), DataLocation::Local(_)) => {
-            LocalFileBackup::new(backup_cfg)
-                .run()
-                .map_err(map_backup_err)
-        }
+        (DataLocation::Local(_), DataLocation::Local(_)) => LocalFileBackup::new(backup_cfg)
+            .run()
+            .map_err(map_backup_err),
         #[cfg(feature = "nfs")]
         (DataLocation::Local(_), DataLocation::Nfs(nfs_target)) => {
             use crate::frame::backup_impls::NfsFileBackup;
@@ -179,17 +180,15 @@ pub fn run_backup_subtask(
                 .map_err(map_backup_err)
         }
         #[cfg(all(feature = "smb", not(feature = "nfs")))]
-        _ if config.backup_source.is_smb() || config.backup_target.is_smb() => {
-            Err(SubtaskError::Engine(
-                "this SMB backup direction is not implemented yet".to_string()
-            ))
-        }
+        _ if config.backup_source.is_smb() || config.backup_target.is_smb() => Err(
+            SubtaskError::Engine("this SMB backup direction is not implemented yet".to_string()),
+        ),
         #[cfg(any(
             all(not(feature = "nfs"), not(feature = "smb")),
             all(feature = "nfs", not(feature = "smb"))
         ))]
         _ => Err(SubtaskError::Engine(
-            "this backup direction is not compiled in".to_string()
+            "this backup direction is not compiled in".to_string(),
         )),
     }
 }
@@ -200,8 +199,8 @@ pub fn run_backup_subtask(
 
 /// Execute a single restore subtask using the appropriate [`FileRestore`] impl.
 pub fn run_restore_subtask(
-    config:              &SubtaskConfig,
-    repo:                &RepoLayout,
+    config: &SubtaskConfig,
+    repo: &RepoLayout,
     local_restore_target: &PathBuf,
 ) -> Result<SubtaskStats, SubtaskError> {
     let restore_cfg = RestoreConfig::new(
@@ -214,11 +213,9 @@ pub fn run_restore_subtask(
     );
 
     match &config.restore_target {
-        DataLocation::Local(_) => {
-            LocalFileRestore::new(restore_cfg)
-                .run()
-                .map_err(map_restore_err)
-        }
+        DataLocation::Local(_) => LocalFileRestore::new(restore_cfg)
+            .run()
+            .map_err(map_restore_err),
         #[cfg(feature = "nfs")]
         DataLocation::Nfs(nfs_loc) => {
             use crate::frame::restore_impls::NfsFileRestore;
@@ -244,7 +241,9 @@ pub fn run_restore_subtask(
 pub fn find_backup_control_files(ctrl_dir: &PathBuf) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let copy_file = ctrl_dir.join("copy.txt");
-    if copy_file.exists() { files.push(copy_file); }
+    if copy_file.exists() {
+        files.push(copy_file);
+    }
 
     if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
         let mut shards: Vec<PathBuf> = entries
@@ -265,15 +264,17 @@ pub fn find_backup_control_files(ctrl_dir: &PathBuf) -> Vec<PathBuf> {
 /// Collect all restore control files (copy, hardlink, delete, mtime) from `ctrl_dir`.
 pub fn find_restore_control_files(ctrl_dir: &PathBuf) -> Vec<(PathBuf, &'static str)> {
     let phases = [
-        ("copy.txt",     "copy"),
+        ("copy.txt", "copy"),
         ("hardlink.txt", "hardlink"),
-        ("delete.txt",   "delete"),
-        ("mtime.txt",    "mtime"),
+        ("delete.txt", "delete"),
+        ("mtime.txt", "mtime"),
     ];
     let mut files = Vec::new();
     for (name, tag) in &phases {
         let p = ctrl_dir.join(name);
-        if p.exists() { files.push((p, *tag)); }
+        if p.exists() {
+            files.push((p, *tag));
+        }
     }
     if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
         let mut shards: Vec<PathBuf> = entries
@@ -286,7 +287,9 @@ pub fn find_restore_control_files(ctrl_dir: &PathBuf) -> Vec<(PathBuf, &'static 
             .map(|e| e.path())
             .collect();
         shards.sort();
-        for p in shards { files.push((p, "copy")); }
+        for p in shards {
+            files.push((p, "copy"));
+        }
     }
     files
 }
@@ -298,17 +301,19 @@ pub fn find_restore_control_files(ctrl_dir: &PathBuf) -> Vec<(PathBuf, &'static 
 fn map_backup_err(e: crate::frame::backup_impls::BackupTaskError) -> SubtaskError {
     use crate::frame::backup_impls::BackupTaskError;
     match e {
-        BackupTaskError::Engine(s)            => SubtaskError::Engine(s),
-        BackupTaskError::PartialFailure { files_failed } =>
-            SubtaskError::PartialFailure { files_failed },
+        BackupTaskError::Engine(s) => SubtaskError::Engine(s),
+        BackupTaskError::PartialFailure { files_failed } => {
+            SubtaskError::PartialFailure { files_failed }
+        }
     }
 }
 
 fn map_restore_err(e: crate::frame::restore_impls::RestoreTaskError) -> SubtaskError {
     use crate::frame::restore_impls::RestoreTaskError;
     match e {
-        RestoreTaskError::Engine(s)            => SubtaskError::Engine(s),
-        RestoreTaskError::PartialFailure { files_failed } =>
-            SubtaskError::PartialFailure { files_failed },
+        RestoreTaskError::Engine(s) => SubtaskError::Engine(s),
+        RestoreTaskError::PartialFailure { files_failed } => {
+            SubtaskError::PartialFailure { files_failed }
+        }
     }
 }

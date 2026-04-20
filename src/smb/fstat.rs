@@ -27,7 +27,10 @@ pub fn smb_all_info_to_dir_meta(
     DirMeta {
         common: MetaCommon {
             id: info.internal.index_number,
-            mode: synthesize_mode(info.basic.file_attributes.directory(), info.basic.file_attributes.readonly()),
+            mode: synthesize_mode(
+                info.basic.file_attributes.directory(),
+                info.basic.file_attributes.readonly(),
+            ),
             attr: file_attributes_to_u32(info.basic.file_attributes),
             atime: filetime_to_unix_seconds(info.basic.last_access_time),
             ctime: filetime_to_unix_seconds(info.basic.change_time),

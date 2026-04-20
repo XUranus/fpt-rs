@@ -107,7 +107,12 @@ pub fn process_mtime(
         stats.dirs_processed.fetch_add(1, Ordering::Relaxed);
 
         // Calculate target path
-        let target_path = make_relative_and_join(source_dir_base, target_dir_base.to_path_buf(), entry.path, logical_paths);
+        let target_path = make_relative_and_join(
+            source_dir_base,
+            target_dir_base.to_path_buf(),
+            entry.path,
+            logical_paths,
+        );
 
         // Check if directory exists
         if !target_path.exists() {
@@ -163,7 +168,7 @@ fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
     let result = unsafe { libc::utimensat(libc::AT_FDCWD, path_cstr.as_ptr(), times.as_ptr(), 0) };
-    
+
     if result == 0 {
         Ok(())
     } else {
@@ -173,9 +178,9 @@ fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
 
 #[cfg(windows)]
 fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
     use std::fs::OpenOptions;
-    use std::time::{SystemTime, UNIX_EPOCH, Duration};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     // Open directory with write access for setting times
     let file = OpenOptions::new()
@@ -189,7 +194,7 @@ fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
     file.set_times(
         std::fs::FileTimes::new()
             .accessed(atime_system)
-            .modified(mtime_system)
+            .modified(mtime_system),
     )
 }
 
@@ -209,13 +214,23 @@ fn make_relative_and_join(
             .unwrap_or(path_buf)
     } else if path_buf.is_absolute() {
         if logical_paths {
-            let rel = path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf);
+            let rel = path_buf
+                .strip_prefix("/")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(path_buf);
             return target_base.join(rel);
         }
         let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
-        let first_segment = path_buf.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+        let first_segment = path_buf
+            .strip_prefix("/")
+            .ok()
+            .and_then(|p| p.iter().next())
+            .and_then(|s| s.to_str());
         if logical_root_name.is_some() && logical_root_name == first_segment {
-            path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf)
+            path_buf
+                .strip_prefix("/")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(path_buf)
         } else {
             path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
         }
@@ -256,12 +271,8 @@ mod tests {
         assert_eq!(result, PathBuf::from("/backup/target/docs"));
 
         // Test with non-matching absolute path
-        let result = make_relative_and_join(
-            &base,
-            target.clone(),
-            "/other/path".to_string(),
-            false,
-        );
+        let result =
+            make_relative_and_join(&base, target.clone(), "/other/path".to_string(), false);
         assert_eq!(result, PathBuf::from("/backup/target/path"));
     }
 }

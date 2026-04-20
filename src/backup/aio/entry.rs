@@ -19,14 +19,10 @@ use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 
 #[derive(Debug, Clone)]
 pub enum PathLayout {
-    LocalSource {
-        root: PathBuf,
-    },
+    LocalSource { root: PathBuf },
     RemoteSource,
     LogicalTarget,
-    PrefixedLogicalTarget {
-        prefix: PathBuf,
-    },
+    PrefixedLogicalTarget { prefix: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -40,10 +36,16 @@ pub struct EntryMapping {
 impl EntryMapping {
     pub fn local_to_prefixed_target(source_root: PathBuf, target_prefix: PathBuf) -> Self {
         Self {
-            dir_source: PathLayout::LocalSource { root: source_root.clone() },
-            dir_target: PathLayout::PrefixedLogicalTarget { prefix: target_prefix.clone() },
+            dir_source: PathLayout::LocalSource {
+                root: source_root.clone(),
+            },
+            dir_target: PathLayout::PrefixedLogicalTarget {
+                prefix: target_prefix.clone(),
+            },
             file_source: PathLayout::LocalSource { root: source_root },
-            file_target: PathLayout::PrefixedLogicalTarget { prefix: target_prefix },
+            file_target: PathLayout::PrefixedLogicalTarget {
+                prefix: target_prefix,
+            },
         }
     }
 
@@ -59,9 +61,13 @@ impl EntryMapping {
     pub fn remote_to_prefixed_target(target_prefix: PathBuf) -> Self {
         Self {
             dir_source: PathLayout::RemoteSource,
-            dir_target: PathLayout::PrefixedLogicalTarget { prefix: target_prefix.clone() },
+            dir_target: PathLayout::PrefixedLogicalTarget {
+                prefix: target_prefix.clone(),
+            },
             file_source: PathLayout::RemoteSource,
-            file_target: PathLayout::PrefixedLogicalTarget { prefix: target_prefix },
+            file_target: PathLayout::PrefixedLogicalTarget {
+                prefix: target_prefix,
+            },
         }
     }
 }
@@ -114,8 +120,10 @@ pub fn produce_entries(
 
                 current_dir = PathBuf::from(&dentry.path);
                 let mut dcb = DirControlBlock::from(dmeta);
-                dcb.src_path = map_control_path(&mapping.dir_source, &current_dir, &logical_source_root);
-                dcb.dst_path = map_control_path(&mapping.dir_target, &current_dir, &logical_source_root);
+                dcb.src_path =
+                    map_control_path(&mapping.dir_source, &current_dir, &logical_source_root);
+                dcb.dst_path =
+                    map_control_path(&mapping.dir_target, &current_dir, &logical_source_root);
                 ControlBlockVarient::DirControlBlock(dcb)
             }
             ControlEntry::File(fentry) => {
@@ -128,8 +136,18 @@ pub fn produce_entries(
                 };
 
                 let mut fcb = FileControlBlock::from(fmeta);
-                fcb.src_path = map_child_path(&mapping.file_source, &current_dir, &fentry.name, &logical_source_root);
-                fcb.dst_path = map_child_path(&mapping.file_target, &current_dir, &fentry.name, &logical_source_root);
+                fcb.src_path = map_child_path(
+                    &mapping.file_source,
+                    &current_dir,
+                    &fentry.name,
+                    &logical_source_root,
+                );
+                fcb.dst_path = map_child_path(
+                    &mapping.file_target,
+                    &current_dir,
+                    &fentry.name,
+                    &logical_source_root,
+                );
                 ControlBlockVarient::FileControlBlock(fcb)
             }
         };
@@ -143,25 +161,48 @@ pub fn produce_entries(
     info!("{log_prefix}: done, {entry_count} entries produced");
 }
 
-fn map_control_path(layout: &PathLayout, control_path: &PathBuf, logical_source_root: &PathBuf) -> PathBuf {
+fn map_control_path(
+    layout: &PathLayout,
+    control_path: &PathBuf,
+    logical_source_root: &PathBuf,
+) -> PathBuf {
     match layout {
-        PathLayout::LocalSource { root } => join_local_source(root, logical_source_root, control_path),
+        PathLayout::LocalSource { root } => {
+            join_local_source(root, logical_source_root, control_path)
+        }
         PathLayout::RemoteSource => strip_logical_source_root(logical_source_root, control_path),
         PathLayout::LogicalTarget => logical_relative_path(control_path),
-        PathLayout::PrefixedLogicalTarget { prefix } => prefix.join(logical_relative_path(control_path)),
+        PathLayout::PrefixedLogicalTarget { prefix } => {
+            prefix.join(logical_relative_path(control_path))
+        }
     }
 }
 
-fn map_child_path(layout: &PathLayout, control_dir: &PathBuf, file_name: &str, logical_source_root: &PathBuf) -> PathBuf {
+fn map_child_path(
+    layout: &PathLayout,
+    control_dir: &PathBuf,
+    file_name: &str,
+    logical_source_root: &PathBuf,
+) -> PathBuf {
     match layout {
-        PathLayout::LocalSource { root } => join_local_source(root, logical_source_root, control_dir).join(file_name),
-        PathLayout::RemoteSource => strip_logical_source_root(logical_source_root, control_dir).join(file_name),
+        PathLayout::LocalSource { root } => {
+            join_local_source(root, logical_source_root, control_dir).join(file_name)
+        }
+        PathLayout::RemoteSource => {
+            strip_logical_source_root(logical_source_root, control_dir).join(file_name)
+        }
         PathLayout::LogicalTarget => logical_relative_path(control_dir).join(file_name),
-        PathLayout::PrefixedLogicalTarget { prefix } => prefix.join(logical_relative_path(control_dir)).join(file_name),
+        PathLayout::PrefixedLogicalTarget { prefix } => prefix
+            .join(logical_relative_path(control_dir))
+            .join(file_name),
     }
 }
 
-fn join_local_source(root: &PathBuf, logical_source_root: &PathBuf, control_path: &PathBuf) -> PathBuf {
+fn join_local_source(
+    root: &PathBuf,
+    logical_source_root: &PathBuf,
+    control_path: &PathBuf,
+) -> PathBuf {
     root.join(strip_logical_source_root(logical_source_root, control_path))
 }
 
@@ -185,12 +226,13 @@ fn logical_relative_path(control_path: &PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntryMapping, PathLayout, map_child_path, map_control_path};
+    use super::{map_child_path, map_control_path, EntryMapping, PathLayout};
     use std::path::PathBuf;
 
     #[test]
     fn remote_to_prefixed_target_maps_relative_paths() {
-        let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from("COPY_COMMON_FULL_x/D_REPO"));
+        let mapping =
+            EntryMapping::remote_to_prefixed_target(PathBuf::from("COPY_COMMON_FULL_x/D_REPO"));
         let logical_root = PathBuf::from("/ds2");
 
         let dir = PathBuf::from("/ds2/a/b");
@@ -217,7 +259,13 @@ mod tests {
         let dir = PathBuf::from("/ds2/dir");
         let logical_root = PathBuf::from("/ds2");
         assert_eq!(
-            map_control_path(&PathLayout::LocalSource { root: PathBuf::from("/opt/dataset/ds2") }, &dir, &logical_root),
+            map_control_path(
+                &PathLayout::LocalSource {
+                    root: PathBuf::from("/opt/dataset/ds2")
+                },
+                &dir,
+                &logical_root
+            ),
             PathBuf::from("/opt/dataset/ds2/dir")
         );
     }

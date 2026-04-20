@@ -21,15 +21,14 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use nfs3_client::nfs3_types::nfs3::{
-    self, Nfs3Option, Nfs3Result, GETATTR3args, READLINK3args, READDIRPLUS3args,
-    ftype3, nfs_fh3,
+    self, ftype3, nfs_fh3, GETATTR3args, Nfs3Option, Nfs3Result, READDIRPLUS3args, READLINK3args,
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{mpsc, Semaphore};
 
-use crate::nfs::NfsLocation;
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
 use crate::nfs::fstat::{nfs_fattr3_to_dir_meta, nfs_fattr3_to_file_meta};
+use crate::nfs::NfsLocation;
 use crate::scanner::models::DirBatchScanResult;
 
 /// Maximum number of concurrent `readdirplus` RPCs in flight across all tasks.
@@ -122,7 +121,8 @@ impl NfsScanner {
                 }
                 Err(join_err) => {
                     if first_err.is_none() {
-                        first_err = Some(NfsError::Path(format!("scanner task panicked: {join_err}")));
+                        first_err =
+                            Some(NfsError::Path(format!("scanner task panicked: {join_err}")));
                     }
                 }
             }
@@ -161,15 +161,7 @@ async fn scan_worker(
 
         in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let result = scan_one_dir(
-            &pool,
-            &sem,
-            dir_fh,
-            &dir_path,
-            &work_tx,
-            &result_tx,
-        )
-        .await;
+        let result = scan_one_dir(&pool, &sem, dir_fh, &dir_path, &work_tx, &result_tx).await;
 
         in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -194,9 +186,16 @@ async fn scan_one_dir(
 ) -> Result<(), NfsError> {
     // Get directory attributes via getattr.
     let dir_attrs = {
-        let _permit = sem.acquire().await.map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
+        let _permit = sem
+            .acquire()
+            .await
+            .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
         let mut conn = pool.acquire().await;
-        let res = conn.getattr(&GETATTR3args { object: dir_fh.clone() }).await?;
+        let res = conn
+            .getattr(&GETATTR3args {
+                object: dir_fh.clone(),
+            })
+            .await?;
         match res {
             Nfs3Result::Ok(ok) => ok.obj_attributes,
             Nfs3Result::Err((stat, _)) => {
@@ -214,7 +213,10 @@ async fn scan_one_dir(
     let mut cookieverf = nfs3::cookieverf3::default();
 
     loop {
-        let _permit = sem.acquire().await.map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
+        let _permit = sem
+            .acquire()
+            .await
+            .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
         log::debug!("NFS READDIRPLUS: dir={dir_path} cookie={cookie:?}");
         let res = {
             let mut conn = pool.acquire().await;
@@ -224,7 +226,8 @@ async fn scan_one_dir(
                 cookieverf,
                 dircount: READDIRPLUS_MAXCOUNT,
                 maxcount: READDIRPLUS_MAXCOUNT,
-            }).await?
+            })
+            .await?
         };
         drop(_permit);
 
@@ -256,9 +259,10 @@ async fn scan_one_dir(
                     // Fallback: getattr on the file handle if available.
                     match &entry.name_handle {
                         Nfs3Option::Some(fh) => {
-                            let _permit = sem.acquire().await.map_err(|_| {
-                                NfsError::Path("semaphore closed".to_string())
-                            })?;
+                            let _permit = sem
+                                .acquire()
+                                .await
+                                .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
                             let mut conn = pool.acquire().await;
                             match conn.getattr(&GETATTR3args { object: fh.clone() }).await? {
                                 Nfs3Result::Ok(ok) => ok.obj_attributes,
@@ -291,13 +295,14 @@ async fn scan_one_dir(
                         // No handle in readdirplus — resolve via lookup.
                         match lookup_child(pool, &dir_fh, &name).await {
                             Ok(Some(fh)) => {
-                                work_tx
-                                    .send((fh, child_path))
-                                    .await
-                                    .map_err(|_| NfsError::Path("work channel closed".to_string()))?;
+                                work_tx.send((fh, child_path)).await.map_err(|_| {
+                                    NfsError::Path("work channel closed".to_string())
+                                })?;
                             }
                             Ok(None) => {
-                                log::warn!("NFS lookup found no handle for dir {child_path}; skipping");
+                                log::warn!(
+                                    "NFS lookup found no handle for dir {child_path}; skipping"
+                                );
                             }
                             Err(e) => {
                                 log::warn!("NFS lookup error for dir {child_path}: {e}");
@@ -363,7 +368,7 @@ async fn lookup_child(
     dir_fh: &nfs_fh3,
     name: &str,
 ) -> Result<Option<nfs_fh3>, NfsError> {
-    use nfs3_client::nfs3_types::nfs3::{LOOKUP3args, diropargs3, filename3};
+    use nfs3_client::nfs3_types::nfs3::{diropargs3, filename3, LOOKUP3args};
 
     let mut conn = pool.acquire().await;
     let res = conn
@@ -377,9 +382,7 @@ async fn lookup_child(
 
     match res {
         Nfs3Result::Ok(ok) => Ok(Some(ok.object)),
-        Nfs3Result::Err((stat, _)) => {
-            Err(NfsError::Nfs(stat, format!("lookup {name}")))
-        }
+        Nfs3Result::Err((stat, _)) => Err(NfsError::Nfs(stat, format!("lookup {name}"))),
     }
 }
 
@@ -387,7 +390,9 @@ async fn lookup_child(
 async fn readlink_target(pool: &NfsConnectionPool, fh: &nfs_fh3) -> Result<String, NfsError> {
     let mut conn = pool.acquire().await;
     let res = conn
-        .readlink(&READLINK3args { symlink: fh.clone() })
+        .readlink(&READLINK3args {
+            symlink: fh.clone(),
+        })
         .await?;
 
     match res {

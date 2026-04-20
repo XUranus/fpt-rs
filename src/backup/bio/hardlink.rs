@@ -28,10 +28,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
-use crate::scanner::metadata::{
-    HardlinkControlFileReader, HardlinkEntry,
-    MetaRepoReader,
-};
+use crate::scanner::metadata::{HardlinkControlFileReader, HardlinkEntry, MetaRepoReader};
 
 /// Statistics for the hardlink backup phase.
 #[derive(Debug, Default)]
@@ -119,7 +116,12 @@ pub fn process_hardlinks(
     info!("Processing hardlinks from {:?}", hardlink_ctrl_path);
 
     // Read all hardlink groups from the control file
-    let groups = read_hardlink_groups(hardlink_ctrl_path, meta_dir, source_dir_base, target_dir_base)?;
+    let groups = read_hardlink_groups(
+        hardlink_ctrl_path,
+        meta_dir,
+        source_dir_base,
+        target_dir_base,
+    )?;
 
     info!("Found {} hardlink groups to process", groups.len());
 
@@ -196,10 +198,7 @@ fn read_hardlink_groups(
                             });
                         }
                         Err(e) => {
-                            warn!(
-                                "Failed to read metadata for {}: {}",
-                                file_entry.path, e
-                            );
+                            warn!("Failed to read metadata for {}: {}", file_entry.path, e);
                         }
                     }
                 }
@@ -243,12 +242,20 @@ fn process_hardlink_group(group: HardlinkGroup, stats: &Arc<HardlinkStats>) {
         let existing = group.files.iter().find(|f| f.dst_path.exists());
         match existing {
             Some(existing_file) => {
-                debug!("Using existing file as hardlink target: {:?}", existing_file.dst_path);
+                debug!(
+                    "Using existing file as hardlink target: {:?}",
+                    existing_file.dst_path
+                );
                 create_hardlinks_for_group(existing_file, &group.files, stats);
             }
             None => {
-                error!("No existing file found in hardlink group for inode {}", group.inode);
-                stats.hardlinks_failed.fetch_add(group.files.len() as u64, Ordering::Relaxed);
+                error!(
+                    "No existing file found in hardlink group for inode {}",
+                    group.inode
+                );
+                stats
+                    .hardlinks_failed
+                    .fetch_add(group.files.len() as u64, Ordering::Relaxed);
             }
         }
         return;
@@ -282,7 +289,9 @@ fn create_hardlinks_for_group(
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::MetadataExt;
-                        if link_meta.ino() == target_meta.ino() && link_meta.dev() == target_meta.dev() {
+                        if link_meta.ino() == target_meta.ino()
+                            && link_meta.dev() == target_meta.dev()
+                        {
                             debug!("File is already a hardlink: {:?}", link_info.dst_path);
                             stats.files_skipped.fetch_add(1, Ordering::Relaxed);
                             continue;
@@ -291,11 +300,17 @@ fn create_hardlinks_for_group(
                 }
                 _ => {}
             }
-            
+
             // Remove the existing file so we can create a hardlink
-            debug!("Removing existing file to create hardlink: {:?}", link_info.dst_path);
+            debug!(
+                "Removing existing file to create hardlink: {:?}",
+                link_info.dst_path
+            );
             if let Err(e) = fs::remove_file(&link_info.dst_path) {
-                error!("Failed to remove existing file {:?}: {}", link_info.dst_path, e);
+                error!(
+                    "Failed to remove existing file {:?}: {}",
+                    link_info.dst_path, e
+                );
                 stats.hardlinks_failed.fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -321,7 +336,10 @@ fn create_hardlinks_for_group(
 
                 // Restore metadata (timestamps, permissions)
                 if let Err(e) = restore_file_metadata(link_info) {
-                    warn!("Failed to restore metadata for {:?}: {}", link_info.dst_path, e);
+                    warn!(
+                        "Failed to restore metadata for {:?}: {}",
+                        link_info.dst_path, e
+                    );
                 }
             }
             Err(e) => {
@@ -344,10 +362,10 @@ fn create_hardlink(target_path: &Path, link_path: &Path) -> io::Result<()> {
 fn restore_file_metadata(_file_info: &HardlinkFileInfo) -> io::Result<()> {
     // Note: For hardlinks, we can't restore permissions separately since
     // they share the same inode. However, we can restore timestamps.
-    
+
     // For now, we just ensure the file exists with correct hardlink relationship.
     // The metadata was already set on the target file during the copy phase.
-    
+
     Ok(())
 }
 
@@ -367,13 +385,23 @@ fn make_relative_and_join(
             .unwrap_or(path_buf)
     } else if path_buf.is_absolute() {
         if logical_paths {
-            let rel = path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf);
+            let rel = path_buf
+                .strip_prefix("/")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(path_buf);
             return target_base.join(rel);
         }
         let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
-        let first_segment = path_buf.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+        let first_segment = path_buf
+            .strip_prefix("/")
+            .ok()
+            .and_then(|p| p.iter().next())
+            .and_then(|s| s.to_str());
         if logical_root_name.is_some() && logical_root_name == first_segment {
-            path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf)
+            path_buf
+                .strip_prefix("/")
+                .map(|p| p.to_path_buf())
+                .unwrap_or(path_buf)
         } else {
             path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
         }
@@ -394,7 +422,12 @@ pub fn run_hardlink_phase(
     target_dir_base: &Path,
 ) -> io::Result<HardlinkStatsSnapshot> {
     let hardlink_ctrl_path = ctrl_dir.join("hardlink.txt");
-    process_hardlinks(&hardlink_ctrl_path, meta_dir, source_dir_base, target_dir_base)
+    process_hardlinks(
+        &hardlink_ctrl_path,
+        meta_dir,
+        source_dir_base,
+        target_dir_base,
+    )
 }
 
 #[cfg(test)]

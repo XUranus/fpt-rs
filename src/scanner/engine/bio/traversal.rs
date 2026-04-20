@@ -11,19 +11,21 @@
 //! The design ensures **high throughput**, **bounded memory usage** (via spillable queues),
 //! and **graceful shutdown** when all work is complete.
 
-use std::{
-    sync::{Arc, atomic::{AtomicI32, Ordering}},
-    thread,
-    time,
-};
-use std::fs;
 use log::{debug, error, warn};
+use std::fs;
+use std::{
+    sync::{
+        atomic::{AtomicI32, Ordering},
+        Arc,
+    },
+    thread, time,
+};
 
 use crate::{
     native::fstat,
     scanner::{
-        ScanWorkerContext,
         models::{DirBatchScanResult, DirScanEntry},
+        ScanWorkerContext,
     },
 };
 
@@ -65,7 +67,10 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                 let entry = match entry {
                     Ok(e) => e,
                     Err(e) => {
-                        error!("Failed to read directory entry in {:?}: {}", dir_entry.path, e);
+                        error!(
+                            "Failed to read directory entry in {:?}: {}",
+                            dir_entry.path, e
+                        );
                         stats.inc_failed_files(); // Treat as file error (conservative)
                         continue;
                     }
@@ -116,13 +121,15 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                             dir_result.files.push(file_meta);
                             stats.add_file_size(file_size);
                             stats.inc_files();
-                            
+
                             // Only follow symlink if it's a directory and follow_symlinks is enabled
                             if scan_option.meta_option.follow_symlinks {
                                 if let Ok(target_meta) = std::fs::metadata(&path) {
                                     if target_meta.is_dir() {
                                         debug!("Following symlink to directory: {:?}", path);
-                                        if let Err(e) = dirent_queue.push(DirScanEntry::new(path, depth + 1)) {
+                                        if let Err(e) =
+                                            dirent_queue.push(DirScanEntry::new(path, depth + 1))
+                                        {
                                             error!("Failed to push directory to queue: {:?}", e);
                                             stats.inc_failed_dirs();
                                         } else {
@@ -185,7 +192,10 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     }
 
                     // For other special files, try to stat them but don't fail if unsupported
-                    debug!("Processing special file: {:?} (type: {:?})", path, file_type);
+                    debug!(
+                        "Processing special file: {:?} (type: {:?})",
+                        path, file_type
+                    );
                     match fstat::stat_file(&path) {
                         Ok(file_meta) => {
                             let file_size = file_meta.size;

@@ -11,8 +11,8 @@
 //! do not need to manually stitch together copy and post-copy phases.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 
 #[cfg(feature = "nfs")]
@@ -35,14 +35,14 @@ use crate::nfs::NfsLocation;
 use crate::smb::SmbLocation;
 
 #[cfg(feature = "smb")]
-const SMB_POOL_SIZE: usize = 2;
+pub const DEFAULT_SMB_POOL_SIZE: usize = 2;
 
+mod aggregation;
+mod directions;
 pub(crate) mod entry;
 pub(crate) mod local_fs;
 mod pipeline;
 pub(crate) mod transport;
-mod aggregation;
-mod directions;
 
 #[cfg(feature = "nfs")]
 pub fn spawn_local_to_nfs_backup(
@@ -82,7 +82,10 @@ pub fn spawn_local_to_nfs_backup(
                 }
             };
 
-            info!("local→NFS: connected to {} (wtmax={})", nfs_target.host, pool.server_wtmax);
+            info!(
+                "local→NFS: connected to {} (wtmax={})",
+                nfs_target.host, pool.server_wtmax
+            );
 
             run_local_to_nfs_backup(
                 control_file,
@@ -96,7 +99,8 @@ pub fn spawn_local_to_nfs_backup(
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
-            ).await;
+            )
+            .await;
         });
 
         terminate_indicator.store(true, Ordering::Relaxed);
@@ -114,6 +118,7 @@ pub fn spawn_local_to_smb_backup(
     aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
+    smb_connection_count: usize,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
@@ -133,7 +138,8 @@ pub fn spawn_local_to_smb_backup(
         };
 
         rt.block_on(async {
-            let pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, SMB_POOL_SIZE).await {
+            let pool_size = smb_connection_count.max(1);
+            let pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, pool_size).await {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("local→SMB: failed to connect: {e}");
@@ -141,7 +147,11 @@ pub fn spawn_local_to_smb_backup(
                 }
             };
 
-            info!("local→SMB: connected to {}", smb_target.display_string());
+            info!(
+                "local→SMB: connected to {} (pool_size={})",
+                smb_target.display_string(),
+                pool_size
+            );
 
             run_local_to_smb_backup(
                 control_file,
@@ -156,7 +166,8 @@ pub fn spawn_local_to_smb_backup(
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
-            ).await;
+            )
+            .await;
         });
 
         terminate_indicator.store(true, Ordering::Relaxed);
@@ -174,6 +185,7 @@ pub fn spawn_smb_to_local_backup(
     aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
+    smb_connection_count: usize,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
@@ -193,7 +205,8 @@ pub fn spawn_smb_to_local_backup(
         };
 
         rt.block_on(async {
-            let pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, SMB_POOL_SIZE).await {
+            let pool_size = smb_connection_count.max(1);
+            let pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, pool_size).await {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("SMB->local: failed to connect: {e}");
@@ -201,7 +214,11 @@ pub fn spawn_smb_to_local_backup(
                 }
             };
 
-            info!("SMB->local: connected to {}", smb_source.display_string());
+            info!(
+                "SMB->local: connected to {} (pool_size={})",
+                smb_source.display_string(),
+                pool_size
+            );
 
             run_smb_to_local_backup(
                 control_file,
@@ -216,7 +233,8 @@ pub fn spawn_smb_to_local_backup(
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
-            ).await;
+            )
+            .await;
         });
 
         terminate_indicator.store(true, Ordering::Relaxed);
@@ -235,6 +253,7 @@ pub fn spawn_smb_to_smb_backup(
     aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
+    smb_connection_count: usize,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
@@ -254,26 +273,30 @@ pub fn spawn_smb_to_smb_backup(
         };
 
         rt.block_on(async {
-            let source_pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, SMB_POOL_SIZE).await {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("SMB->SMB: failed to connect to source: {e}");
-                    return;
-                }
-            };
-            let target_pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, SMB_POOL_SIZE).await {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("SMB->SMB: failed to connect to target: {e}");
-                    let _ = source_pool.close().await;
-                    return;
-                }
-            };
+            let pool_size = smb_connection_count.max(1);
+            let source_pool =
+                match crate::smb::aio::SmbClientPool::connect(&smb_source, pool_size).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("SMB->SMB: failed to connect to source: {e}");
+                        return;
+                    }
+                };
+            let target_pool =
+                match crate::smb::aio::SmbClientPool::connect(&smb_target, pool_size).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("SMB->SMB: failed to connect to target: {e}");
+                        let _ = source_pool.close().await;
+                        return;
+                    }
+                };
 
             info!(
-                "SMB->SMB: connected source {} and target {}",
+                "SMB->SMB: connected source {} and target {} (pool_size={} each)",
                 smb_source.display_string(),
                 smb_target.display_string(),
+                pool_size,
             );
 
             run_smb_to_smb_backup(
@@ -291,7 +314,8 @@ pub fn spawn_smb_to_smb_backup(
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
-            ).await;
+            )
+            .await;
         });
 
         terminate_indicator.store(true, Ordering::Relaxed);
@@ -310,6 +334,7 @@ pub fn spawn_nfs_to_smb_backup(
     aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
+    smb_connection_count: usize,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
@@ -329,6 +354,7 @@ pub fn spawn_nfs_to_smb_backup(
         };
 
         rt.block_on(async {
+            let smb_pool_size = smb_connection_count.max(1);
             let source_pool = match NfsConnectionPool::new(&nfs_source).await {
                 Ok(p) => p,
                 Err(e) => {
@@ -336,13 +362,19 @@ pub fn spawn_nfs_to_smb_backup(
                     return;
                 }
             };
-            let target_pool = match crate::smb::aio::SmbClientPool::connect(&smb_target, SMB_POOL_SIZE).await {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("NFS->SMB: failed to connect to target: {e}");
-                    return;
-                }
-            };
+            let target_pool =
+                match crate::smb::aio::SmbClientPool::connect(&smb_target, smb_pool_size).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("NFS->SMB: failed to connect to target: {e}");
+                        return;
+                    }
+                };
+            info!(
+                "NFS->SMB: connected SMB target {} (pool_size={})",
+                smb_target.display_string(),
+                smb_pool_size
+            );
 
             run_nfs_to_smb_backup(
                 control_file,
@@ -378,6 +410,7 @@ pub fn spawn_smb_to_nfs_backup(
     aggregate_config: AggregateConfig,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
+    smb_connection_count: usize,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
@@ -397,13 +430,20 @@ pub fn spawn_smb_to_nfs_backup(
         };
 
         rt.block_on(async {
-            let source_pool = match crate::smb::aio::SmbClientPool::connect(&smb_source, SMB_POOL_SIZE).await {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("SMB->NFS: failed to connect to source: {e}");
-                    return;
-                }
-            };
+            let smb_pool_size = smb_connection_count.max(1);
+            let source_pool =
+                match crate::smb::aio::SmbClientPool::connect(&smb_source, smb_pool_size).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("SMB->NFS: failed to connect to source: {e}");
+                        return;
+                    }
+                };
+            info!(
+                "SMB->NFS: connected SMB source {} (pool_size={})",
+                smb_source.display_string(),
+                smb_pool_size
+            );
             let target_pool = match NfsConnectionPool::new(&nfs_target).await {
                 Ok(p) => p,
                 Err(e) => {
@@ -473,7 +513,10 @@ pub fn spawn_nfs_to_local_backup(
                 }
             };
 
-            info!("NFS→local: connected to {} (rtmax={})", nfs_source.host, pool.server_rtmax);
+            info!(
+                "NFS→local: connected to {} (rtmax={})",
+                nfs_source.host, pool.server_rtmax
+            );
 
             run_nfs_to_local_backup(
                 control_file,
@@ -487,7 +530,8 @@ pub fn spawn_nfs_to_local_backup(
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
-            ).await;
+            )
+            .await;
         });
 
         terminate_indicator.store(true, Ordering::Relaxed);
@@ -543,8 +587,7 @@ pub fn spawn_nfs_to_nfs_backup(
 
             info!(
                 "NFS→NFS: connected source {} (rtmax={}), target {} (wtmax={})",
-                nfs_source.host, src_pool.server_rtmax,
-                nfs_target.host, tgt_pool.server_wtmax
+                nfs_source.host, src_pool.server_rtmax, nfs_target.host, tgt_pool.server_wtmax
             );
 
             run_nfs_to_nfs_backup(
@@ -560,7 +603,8 @@ pub fn spawn_nfs_to_nfs_backup(
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
-            ).await;
+            )
+            .await;
         });
 
         terminate_indicator.store(true, Ordering::Relaxed);

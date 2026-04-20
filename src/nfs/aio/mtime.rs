@@ -9,11 +9,11 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 use nfs3_client::nfs3_types::nfs3::{
-    Nfs3Result, SETATTR3args, nfstime3, sattr3, sattrguard3,
-    set_atime, set_gid3, set_mode3, set_mtime, set_size3, set_uid3,
+    nfstime3, sattr3, sattrguard3, set_atime, set_gid3, set_mode3, set_mtime, set_size3, set_uid3,
+    Nfs3Result, SETATTR3args,
 };
 
-use crate::nfs::aio::reader::{FileHandleCache, resolve_path};
+use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::scanner::metadata::MtimeControlFileReader;
 
@@ -135,11 +135,19 @@ fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> Stri
         .unwrap_or_else(|_| {
             let p = Path::new(path);
             let logical_root_name = base.file_name().and_then(|n| n.to_str());
-            let first_segment = p.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+            let first_segment = p
+                .strip_prefix("/")
+                .ok()
+                .and_then(|p| p.iter().next())
+                .and_then(|s| s.to_str());
             if logical_root_name.is_some() && logical_root_name == first_segment {
-                p.strip_prefix("/").map(|r| r.to_path_buf()).unwrap_or_else(|_| PathBuf::from(path))
+                p.strip_prefix("/")
+                    .map(|r| r.to_path_buf())
+                    .unwrap_or_else(|_| PathBuf::from(path))
             } else {
-                p.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(path))
+                p.file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(path))
             }
         });
     let prefixed = if target_prefix.is_empty() {

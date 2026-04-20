@@ -40,25 +40,28 @@ pub struct RestoreConfig {
 
 impl RestoreConfig {
     pub fn new(
-        d_repo_dir:       impl Into<PathBuf>,
-        source_base_dir:  impl Into<PathBuf>,
+        d_repo_dir: impl Into<PathBuf>,
+        source_base_dir: impl Into<PathBuf>,
         local_target_dir: impl Into<PathBuf>,
-        meta_dir:         impl Into<PathBuf>,
-        ctrl_dir:         impl Into<PathBuf>,
-        control_file:     impl Into<PathBuf>,
+        meta_dir: impl Into<PathBuf>,
+        ctrl_dir: impl Into<PathBuf>,
+        control_file: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            d_repo_dir:       d_repo_dir.into(),
-            source_base_dir:  source_base_dir.into(),
+            d_repo_dir: d_repo_dir.into(),
+            source_base_dir: source_base_dir.into(),
             local_target_dir: local_target_dir.into(),
-            meta_dir:         meta_dir.into(),
-            ctrl_dir:         ctrl_dir.into(),
-            control_file:     control_file.into(),
-            policy:           RestorePolicy::Replace,
+            meta_dir: meta_dir.into(),
+            ctrl_dir: ctrl_dir.into(),
+            control_file: control_file.into(),
+            policy: RestorePolicy::Replace,
         }
     }
 
-    pub fn policy(mut self, p: RestorePolicy) -> Self { self.policy = p; self }
+    pub fn policy(mut self, p: RestorePolicy) -> Self {
+        self.policy = p;
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +77,10 @@ pub enum RestoreTaskError {
 impl fmt::Display for RestoreTaskError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RestoreTaskError::Engine(s) =>
-                write!(f, "restore engine error: {s}"),
-            RestoreTaskError::PartialFailure { files_failed } =>
-                write!(f, "{files_failed} file(s) failed to restore"),
+            RestoreTaskError::Engine(s) => write!(f, "restore engine error: {s}"),
+            RestoreTaskError::PartialFailure { files_failed } => {
+                write!(f, "{files_failed} file(s) failed to restore")
+            }
         }
     }
 }
@@ -94,7 +97,9 @@ pub struct LocalFileRestore {
 }
 
 impl LocalFileRestore {
-    pub fn new(config: RestoreConfig) -> Self { Self { config } }
+    pub fn new(config: RestoreConfig) -> Self {
+        Self { config }
+    }
 }
 
 impl FileRestore for LocalFileRestore {
@@ -133,7 +138,7 @@ mod nfs_impl {
     /// D_REPO data is read locally and written to the NFS server via
     /// `nfs3_client` WRITE RPCs.
     pub struct NfsFileRestore {
-        pub config:     RestoreConfig,
+        pub config: RestoreConfig,
         pub nfs_target: NfsLocation,
     }
 
@@ -211,26 +216,32 @@ mod smb_impl {
 /// Start a `RestoreTask`, poll until complete, return `TransferStats`.
 fn run_restore_task(option: RestoreOption) -> Result<TransferStats, RestoreTaskError> {
     let task = RestoreTask::new(option);
-    let running = task.start()
+    let running = task
+        .start()
         .map_err(|e| RestoreTaskError::Engine(e.to_string()))?;
 
     loop {
-        if running.complete() { break; }
+        if running.complete() {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
 
     let snap = running.stats();
-    running.wait()
+    running
+        .wait()
         .map_err(|e| RestoreTaskError::Engine(e.to_string()))?;
 
     if snap.files_failed > 0 {
-        return Err(RestoreTaskError::PartialFailure { files_failed: snap.files_failed });
+        return Err(RestoreTaskError::PartialFailure {
+            files_failed: snap.files_failed,
+        });
     }
 
     Ok(TransferStats {
         files_transferred: snap.files_restored,
         bytes_transferred: snap.bytes_restored,
-        dirs_created:      snap.dirs_created,
-        files_failed:      snap.files_failed,
+        dirs_created: snap.dirs_created,
+        files_failed: snap.files_failed,
     })
 }

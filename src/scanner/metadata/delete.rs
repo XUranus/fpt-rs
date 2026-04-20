@@ -114,12 +114,7 @@ impl DeleteControlFileWriter {
     /// Writes a file entry to delete.
     pub fn write_file(&mut self, path: &str) -> io::Result<()> {
         let path_len = path.len() as u32;
-        writeln!(
-            self.fwriter,
-            "F {:08X} {}",
-            path_len,
-            path
-        )?;
+        writeln!(self.fwriter, "F {:08X} {}", path_len, path)?;
         self.file_count += 1;
         Ok(())
     }
@@ -127,12 +122,7 @@ impl DeleteControlFileWriter {
     /// Writes a directory entry to delete.
     pub fn write_dir(&mut self, path: &str) -> io::Result<()> {
         let path_len = path.len() as u32;
-        writeln!(
-            self.fwriter,
-            "D {:08X} {}",
-            path_len,
-            path
-        )?;
+        writeln!(self.fwriter, "D {:08X} {}", path_len, path)?;
         self.dir_count += 1;
         Ok(())
     }
@@ -268,11 +258,11 @@ mod tests {
         // Write test data
         {
             let mut writer = DeleteControlFileWriter::new(&path).unwrap();
-            
+
             writer.write_file("/home/user/old_file.txt").unwrap();
             writer.write_file("/home/user/temp.dat").unwrap();
             writer.write_dir("/home/user/old_dir").unwrap();
-            
+
             writer.finish().unwrap();
         }
 
@@ -280,15 +270,15 @@ mod tests {
         {
             let reader = DeleteControlFileReader::open(&path).unwrap();
             let entries: Vec<_> = reader.collect::<Result<Vec<_>, _>>().unwrap();
-            
+
             assert_eq!(entries.len(), 3);
-            
+
             assert_eq!(entries[0].entry_type, DeleteEntryType::File);
             assert_eq!(entries[0].path, "/home/user/old_file.txt");
-            
+
             assert_eq!(entries[1].entry_type, DeleteEntryType::File);
             assert_eq!(entries[1].path, "/home/user/temp.dat");
-            
+
             assert_eq!(entries[2].entry_type, DeleteEntryType::Dir);
             assert_eq!(entries[2].path, "/home/user/old_dir");
         }

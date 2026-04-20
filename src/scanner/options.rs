@@ -80,7 +80,7 @@ pub struct TargetDirOption {
 
     /// Directory path where **metadata files** (serialized `FileMeta`/`DirMeta`) are stored.
     pub meta_dir: PathBuf,
-    
+
     /// Optional: Previous metadata directory for incremental backup.
     /// If provided, the scanner will generate incremental control files
     /// (copy.txt with only new/modified entries, delete.txt for deleted files).
@@ -213,7 +213,7 @@ impl Default for ScanOption {
     fn default() -> Self {
         Self {
             max_depth: None, // unlimited depth
-            worker_count: 4,
+            worker_count: 8,
             writer_count: 4,
             meta_option: MetaScanOption::default(),
             target_dir: TargetDirOption {
@@ -313,7 +313,7 @@ impl ScanOption {
         self.meta_option.scan_hardlinks = scan;
         self
     }
-    
+
     /// Sets the previous metadata directory for incremental backup.
     pub fn prev_meta_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.target_dir.prev_meta_dir = dir;

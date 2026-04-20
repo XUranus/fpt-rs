@@ -7,18 +7,15 @@
 //! - Multi-subtask scheduling for large filesets
 //! - Task-specific logging
 
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::time::Instant;
-use clap::{Parser, Subcommand, ValueEnum};
 
-use bifrost::backup::RestorePolicy;
 use bifrost::backup::aggregate::AggregateConfig;
+use bifrost::backup::RestorePolicy;
 use bifrost::frame::{
-    BackupJob, BackupJobConfig,
+    scan::ScanConfig, traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation,
     RestoreJob, RestoreJobConfig,
-    DataLocation,
-    scan::ScanConfig,
-    traits::BackupRestoreJob,
 };
 
 /// File Protection Tool CLI
@@ -86,6 +83,10 @@ enum Commands {
         /// Number of parallel NFS connections (used when source or target is an NFS URL)
         #[arg(long, default_value = "4", value_name = "COUNT")]
         nfs_connections: usize,
+
+        /// Number of SMB client connections per SMB endpoint
+        #[arg(long, default_value = "1", value_name = "COUNT")]
+        smb_connections: usize,
 
         /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
         #[arg(long, value_name = "UID")]
@@ -197,7 +198,12 @@ fn format_abbr(fmt: BackupFormat) -> &'static str {
 
 /// Resolve and validate an NFS URL into a [`DataLocation`].
 #[cfg(feature = "nfs")]
-fn parse_nfs_location(url: &str, connections: usize, uid: Option<u32>, gid: Option<u32>) -> Result<DataLocation, Box<dyn std::error::Error>> {
+fn parse_nfs_location(
+    url: &str,
+    connections: usize,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<DataLocation, Box<dyn std::error::Error>> {
     let mut loc = bifrost::nfs::NfsLocation::from_url(url)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
         .connection_count(connections);
@@ -208,7 +214,12 @@ fn parse_nfs_location(url: &str, connections: usize, uid: Option<u32>, gid: Opti
     Ok(DataLocation::nfs(loc))
 }
 
-fn parse_data_location(spec: &str, connections: usize, uid: Option<u32>, gid: Option<u32>) -> Result<DataLocation, Box<dyn std::error::Error>> {
+fn parse_data_location(
+    spec: &str,
+    connections: usize,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<DataLocation, Box<dyn std::error::Error>> {
     if spec.starts_with("nfs://") {
         #[cfg(feature = "nfs")]
         {
@@ -253,6 +264,7 @@ fn cmd_backup(
     mtime: bool,
     workers: usize,
     nfs_connections: usize,
+    smb_connections: usize,
     nfs_uid: Option<u32>,
     nfs_gid: Option<u32>,
     temp_dir: Option<PathBuf>,
@@ -297,14 +309,18 @@ fn cmd_backup(
         scan_config,
         aggregate_config,
         enable_hardlink: hardlink && !matches!(format, BackupFormat::Aggregated),
-        enable_delete:   delete   && !matches!(format, BackupFormat::Aggregated),
-        enable_mtime:    mtime    && !matches!(format, BackupFormat::Aggregated),
+        enable_delete: delete && !matches!(format, BackupFormat::Aggregated),
+        enable_mtime: mtime && !matches!(format, BackupFormat::Aggregated),
         max_concurrent_subtasks: jobs,
+        smb_connection_count: smb_connections.max(1),
         incremental_base,
         verbose,
     };
 
-    println!("Starting {} {} backup...", config.format_tag, config.type_tag);
+    println!(
+        "Starting {} {} backup...",
+        config.format_tag, config.type_tag
+    );
     println!("Source : {}", config.source);
     println!("Target : {}", config.target);
 
@@ -316,7 +332,8 @@ fn cmd_backup(
 
     let started_at = Instant::now();
     let job = BackupJob::new(config);
-    let result = job.run()
+    let result = job
+        .run()
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
     let elapsed = started_at.elapsed();
 
@@ -329,13 +346,22 @@ fn cmd_backup(
     println!("Target path : {}", target);
     println!("Copy UUID   : {}", result.copy_uuid);
     println!("Copy root   : {}", result.copy_root.display());
-    println!("Subtasks    : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
+    println!(
+        "Subtasks    : {} ok, {} failed",
+        result.subtasks_ok, result.subtasks_failed
+    );
     println!("Total files : {}", result.total_files);
     println!("Total dirs  : {}", result.total_dirs);
     println!("Total bytes : {}", result.total_bytes);
     println!("Elapsed     : {}", format_duration(elapsed));
-    println!("File rate   : {:.2} files/s", rate(result.total_files as f64, elapsed));
-    println!("Data rate   : {}/s", format_bytes(rate(result.total_bytes as f64, elapsed) as u64));
+    println!(
+        "File rate   : {:.2} files/s",
+        rate(result.total_files as f64, elapsed)
+    );
+    println!(
+        "Data rate   : {}/s",
+        format_bytes(rate(result.total_bytes as f64, elapsed) as u64)
+    );
 
     if result.subtasks_failed > 0 {
         return Err(format!("{} subtask(s) failed", result.subtasks_failed).into());
@@ -386,7 +412,8 @@ fn cmd_restore(
     };
 
     let job = RestoreJob::new(config);
-    let result = job.run()
+    let result = job
+        .run()
         .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
     let elapsed = started_at.elapsed();
 
@@ -397,10 +424,16 @@ fn cmd_restore(
     println!("Target type : {}", location_kind(&target));
     println!("Source path : {}", copy_path);
     println!("Target path : {}", target);
-    println!("Subtasks    : {} ok, {} failed", result.subtasks_ok, result.subtasks_failed);
+    println!(
+        "Subtasks    : {} ok, {} failed",
+        result.subtasks_ok, result.subtasks_failed
+    );
     println!("Total files : {}", result.total_files);
     println!("Elapsed     : {}", format_duration(elapsed));
-    println!("File rate   : {:.2} files/s", rate(result.total_files as f64, elapsed));
+    println!(
+        "File rate   : {:.2} files/s",
+        rate(result.total_files as f64, elapsed)
+    );
 
     if result.subtasks_failed > 0 {
         return Err(format!("{} subtask(s) failed", result.subtasks_failed).into());
@@ -422,7 +455,11 @@ fn location_kind(spec: &str) -> &'static str {
 
 fn rate(value: f64, elapsed: std::time::Duration) -> f64 {
     let secs = elapsed.as_secs_f64();
-    if secs > 0.0 { value / secs } else { value }
+    if secs > 0.0 {
+        value / secs
+    } else {
+        value
+    }
 }
 
 fn format_duration(d: std::time::Duration) -> String {
@@ -451,8 +488,6 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === File Descriptor Limit Initialization ===
     //
@@ -477,7 +512,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok((soft, hard)) => {
                 if soft < hard {
                     if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, hard, hard) {
-                        eprintln!("Warning: failed to raise fd limit from {} to {}: {}", soft, hard, e);
+                        eprintln!(
+                            "Warning: failed to raise fd limit from {} to {}: {}",
+                            soft, hard, e
+                        );
                     }
                     // soft == hard after this point; no further action needed
                 }
@@ -506,32 +544,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             mtime,
             workers,
             nfs_connections,
+            smb_connections,
             nfs_uid,
             nfs_gid,
             temp_dir,
             verbose,
             log_file,
-        } => {
-            cmd_backup(
-                data,
-                target,
-                format,
-                incremental_base,
-                jobs,
-                blob_size,
-                threshold,
-                hardlink,
-                delete,
-                mtime,
-                workers,
-                nfs_connections,
-                nfs_uid,
-                nfs_gid,
-                temp_dir,
-                verbose,
-                log_file,
-            )
-        }
+        } => cmd_backup(
+            data,
+            target,
+            format,
+            incremental_base,
+            jobs,
+            blob_size,
+            threshold,
+            hardlink,
+            delete,
+            mtime,
+            workers,
+            nfs_connections,
+            smb_connections,
+            nfs_uid,
+            nfs_gid,
+            temp_dir,
+            verbose,
+            log_file,
+        ),
         Commands::Restore {
             copy,
             target,
@@ -546,22 +584,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             temp_dir,
             verbose,
             log_file,
-        } => {
-            cmd_restore(
-                copy,
-                target,
-                policy.into(),
-                jobs,
-                workers,
-                hardlinks,
-                mtime,
-                nfs_connections,
-                nfs_uid,
-                nfs_gid,
-                temp_dir,
-                verbose,
-                log_file,
-            )
-        }
+        } => cmd_restore(
+            copy,
+            target,
+            policy.into(),
+            jobs,
+            workers,
+            hardlinks,
+            mtime,
+            nfs_connections,
+            nfs_uid,
+            nfs_gid,
+            temp_dir,
+            verbose,
+            log_file,
+        ),
     }
 }

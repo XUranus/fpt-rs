@@ -30,25 +30,26 @@ struct DirRestoreInfo {
 impl DirRestoreInfo {
     fn new(source_dir: PathBuf) -> Self {
         let aggr_dir = source_dir.join(".AGGR_DIR");
-        
+
         Self {
             source_dir,
             aggr_dir,
             index: None,
         }
     }
-    
+
     fn has_index(&self) -> bool {
         self.aggr_dir.join("AGGREGATE_IDX.sqlite").exists()
     }
-    
+
     fn get_or_open_index(&mut self) -> Result<&AggregateIndex, AggregateRestoreError> {
         if self.index.is_none() {
             let index_path = self.aggr_dir.join("AGGREGATE_IDX.sqlite");
             if !index_path.exists() {
-                return Err(AggregateRestoreError::Other(
-                    format!("Index not found: {}", index_path.display())
-                ));
+                return Err(AggregateRestoreError::Other(format!(
+                    "Index not found: {}",
+                    index_path.display()
+                )));
             }
             self.index = Some(AggregateIndex::open(&index_path)?);
         }
@@ -86,9 +87,7 @@ pub struct AggregateRestoreStats {
 
 impl AggregateRestoreEngine {
     /// Creates a new aggregate restore engine.
-    pub fn new(
-        source_base: PathBuf,
-    ) -> Result<Self, AggregateRestoreError> {
+    pub fn new(source_base: PathBuf) -> Result<Self, AggregateRestoreError> {
         Ok(Self {
             source_base,
             dir_info: Mutex::new(HashMap::new()),
@@ -128,7 +127,11 @@ impl AggregateRestoreEngine {
     }
 
     /// Checks if a file is aggregated (exists in the per-directory index).
-    pub fn is_aggregated(&self, file_name: &str, dir_path: &str) -> Result<bool, AggregateRestoreError> {
+    pub fn is_aggregated(
+        &self,
+        file_name: &str,
+        dir_path: &str,
+    ) -> Result<bool, AggregateRestoreError> {
         if let Some(mut dir_info) = self.get_dir_info(dir_path) {
             if let Ok(index) = dir_info.get_or_open_index() {
                 return Ok(index.is_aggregated(file_name, dir_path)?);
@@ -138,7 +141,11 @@ impl AggregateRestoreEngine {
     }
 
     /// Gets restore info for a file.
-    pub fn get_restore_info(&self, file_name: &str, dir_path: &str) -> Result<Option<AggregateRestoreInfo>, AggregateRestoreError> {
+    pub fn get_restore_info(
+        &self,
+        file_name: &str,
+        dir_path: &str,
+    ) -> Result<Option<AggregateRestoreInfo>, AggregateRestoreError> {
         if let Some(mut dir_info) = self.get_dir_info(dir_path) {
             if let Ok(index) = dir_info.get_or_open_index() {
                 return Ok(index.query_file(file_name, dir_path)?);
@@ -159,38 +166,40 @@ impl AggregateRestoreEngine {
         let aggr_dir = Path::new(dir_path).join(".AGGR_DIR");
         let blob_path = aggr_dir.join(blob_name);
         let blob_path_str = blob_path.to_string_lossy().to_string();
-        
+
         // Check cache first
         {
             let cache = self.blob_cache.lock().unwrap();
             if let Some(blob_data) = cache.get(&blob_path_str) {
                 let mut stats = self.stats.lock().unwrap();
                 stats.cache_hits += 1;
-                
+
                 let start = offset as usize;
                 let end = (offset + size) as usize;
                 if end <= blob_data.len() {
                     return Ok(blob_data[start..end].to_vec());
                 } else {
-                    return Err(AggregateRestoreError::Other(
-                        format!("Offset {} + size {} exceeds blob size {}", 
-                            offset, size, blob_data.len())
-                    ));
+                    return Err(AggregateRestoreError::Other(format!(
+                        "Offset {} + size {} exceeds blob size {}",
+                        offset,
+                        size,
+                        blob_data.len()
+                    )));
                 }
             }
         }
 
         // Cache miss - read blob from disk
         let mut blob_file = File::open(&blob_path)?;
-        
+
         let mut blob_data = Vec::new();
         blob_file.read_to_end(&mut blob_data)?;
-        
+
         // Update cache
         {
             let mut cache = self.blob_cache.lock().unwrap();
             cache.insert(blob_path_str.clone(), blob_data.clone());
-            
+
             let mut stats = self.stats.lock().unwrap();
             stats.cache_misses += 1;
             stats.blobs_read += 1;
@@ -202,10 +211,12 @@ impl AggregateRestoreEngine {
         if end <= blob_data.len() {
             Ok(blob_data[start..end].to_vec())
         } else {
-            Err(AggregateRestoreError::Other(
-                format!("Offset {} + size {} exceeds blob size {}", 
-                    offset, size, blob_data.len())
-            ))
+            Err(AggregateRestoreError::Other(format!(
+                "Offset {} + size {} exceeds blob size {}",
+                offset,
+                size,
+                blob_data.len()
+            )))
         }
     }
 
@@ -218,12 +229,12 @@ impl AggregateRestoreEngine {
     ) -> Result<(), AggregateRestoreError> {
         // Read file data from blob
         let data = self.read_from_blob(dir_path, &info.blob_name, info.offset, info.size)?;
-        
+
         // Create parent directory if needed
         if let Some(parent) = target_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         // Write file
         let mut file = File::create(target_path)?;
         file.write_all(&data)?;
@@ -234,24 +245,25 @@ impl AggregateRestoreEngine {
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::PermissionsExt;
-            
+
             // Set permissions
             let permissions = std::fs::Permissions::from_mode(info.mode);
             std::fs::set_permissions(target_path, permissions)?;
-            
+
             // Set modification time
-            let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(info.mtime);
+            let mtime =
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(info.mtime);
             let atime = mtime; // Use mtime for atime too
             let times = std::fs::FileTimes::new()
                 .set_modified(mtime)
                 .set_accessed(atime);
             File::open(target_path)?.set_times(times)?;
-            
+
             // Restore xattrs
             if let Some(ref xattrs) = info.xattrs {
                 restore_xattrs(target_path, xattrs);
             }
-            
+
             // Restore ACL
             if let Some(ref acl) = info.acl {
                 restore_acl(target_path, acl);
@@ -263,8 +275,13 @@ impl AggregateRestoreEngine {
         stats.files_from_blobs += 1;
         stats.bytes_from_blobs += info.size;
 
-        debug!("Restored {} from blob {} (offset: {}, size: {})",
-            target_path.display(), info.blob_name, info.offset, info.size);
+        debug!(
+            "Restored {} from blob {} (offset: {}, size: {})",
+            target_path.display(),
+            info.blob_name,
+            info.offset,
+            info.size
+        );
 
         Ok(())
     }
@@ -333,7 +350,12 @@ fn restore_xattrs(path: &Path, xattrs: &str) {
             if let Some(value) = parts.next() {
                 let name_str = String::from_utf8_lossy(name);
                 if let Err(e) = xattr::set(path, name_str.as_ref(), value) {
-                    warn!("Failed to set xattr {} on {}: {}", name_str, path.display(), e);
+                    warn!(
+                        "Failed to set xattr {} on {}: {}",
+                        name_str,
+                        path.display(),
+                        e
+                    );
                 }
             }
         }

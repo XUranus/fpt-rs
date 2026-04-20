@@ -26,10 +26,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::scanner::metadata::{
-    ControlFileHeader, DeleteControlFileWriter, DeleteEntry, DeleteEntryType,
-    DirCacheEntry, DirCacheRandomReader, FileCacheEntry, FileCacheRandomReader,
-    DirControlEntry, DirDiff, FileControlEntry, FileDiff,
-    ControlFileWriter, MetaRepoReader, FixedSize,
+    ControlFileHeader, ControlFileWriter, DeleteControlFileWriter, DeleteEntry, DeleteEntryType,
+    DirCacheEntry, DirCacheRandomReader, DirControlEntry, DirDiff, FileCacheEntry,
+    FileCacheRandomReader, FileControlEntry, FileDiff, FixedSize, MetaRepoReader,
 };
 
 /// Represents the type of difference detected.
@@ -77,12 +76,9 @@ pub struct IncrementalDiff {
 
 impl IncrementalDiff {
     /// Creates a new IncrementalDiff by loading cache files from directories.
-    /// 
+    ///
     /// Loads all dcache_* files from the provided directories.
-    pub fn from_dirs(
-        prev_meta_dir: Option<&Path>,
-        curr_meta_dir: &Path,
-    ) -> io::Result<Self> {
+    pub fn from_dirs(prev_meta_dir: Option<&Path>, curr_meta_dir: &Path) -> io::Result<Self> {
         // Load previous dcache if available
         let prev_dcache = if let Some(dir) = prev_meta_dir {
             Self::load_all_dcache(dir)?
@@ -104,43 +100,38 @@ impl IncrementalDiff {
     /// Loads all directory cache files from a metadata directory.
     fn load_all_dcache(meta_dir: &Path) -> io::Result<BTreeMap<u64, DirCacheEntry>> {
         let mut map = BTreeMap::new();
-        
+
         // Find all dcache_*.dat files
         let entries = std::fs::read_dir(meta_dir)?;
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
             if file_name.starts_with("dcache_") && file_name.ends_with(".dat") {
                 Self::load_dcache_file(&path, &mut map)?;
             }
         }
-        
+
         Ok(map)
     }
 
     /// Loads a single directory cache file into the map.
-    fn load_dcache_file(
-        path: &Path,
-        map: &mut BTreeMap<u64, DirCacheEntry>,
-    ) -> io::Result<()> {
+    fn load_dcache_file(path: &Path, map: &mut BTreeMap<u64, DirCacheEntry>) -> io::Result<()> {
         let mut reader = DirCacheRandomReader::open(path)?;
         let count = reader.total_count();
-        
+
         for i in 0..count {
             if let Ok(entry) = reader.read_object(i) {
                 map.insert(entry.id, entry);
             }
         }
-        
+
         Ok(())
     }
 
     /// Performs the diff and generates control files using heap-based merge.
-    /// 
+    ///
     /// Generates:
     /// - copy.txt: Contains only NN (new) and MM/DM (modified) entries
     /// - delete.txt: Contains deleted entries
@@ -151,29 +142,31 @@ impl IncrementalDiff {
         source_kind: &str,
         source_root: &str,
     ) -> io::Result<DiffStats> {
-        let mut copy_writer = ControlFileWriter::new_with_header(copy_file_path, &ControlFileHeader {
-            source_kind: source_kind.to_string(),
-            source_root: source_root.to_string(),
-            ..ControlFileHeader::default()
-        })?;
-        let mut delete_writer = DeleteControlFileWriter::new_with_source(
-            delete_file_path,
-            source_kind,
-            source_root,
+        let mut copy_writer = ControlFileWriter::new_with_header(
+            copy_file_path,
+            &ControlFileHeader {
+                source_kind: source_kind.to_string(),
+                source_root: source_root.to_string(),
+                ..ControlFileHeader::default()
+            },
         )?;
+        let mut delete_writer =
+            DeleteControlFileWriter::new_with_source(delete_file_path, source_kind, source_root)?;
         let curr_meta_reader = MetaRepoReader::new(self.curr_meta_dir.clone())?;
-        let prev_meta_reader = self.prev_meta_dir.as_ref()
+        let prev_meta_reader = self
+            .prev_meta_dir
+            .as_ref()
             .and_then(|dir| MetaRepoReader::new(dir.clone()).ok());
-        
+
         let mut stats = DiffStats::default();
 
         // Get sorted iterators for directories
         let prev_dirs: Vec<_> = self.prev_dcache.values().collect();
         let curr_dirs: Vec<_> = self.curr_dcache.values().collect();
-        
+
         // Perform heap-based merge diff on directories
         let dir_diffs = Self::heap_diff(&prev_dirs, &curr_dirs, |e| e.id);
-        
+
         for dir_diff in dir_diffs {
             match dir_diff {
                 DiffItem::LeftOnly(prev_entry) => {
@@ -201,7 +194,7 @@ impl IncrementalDiff {
                             files_count: curr_entry.files_count,
                         };
                         copy_writer.write_dir(&dctrl_entry)?;
-                        
+
                         // Write all files in this new directory
                         self.write_all_directory_files(
                             curr_entry,
@@ -258,7 +251,7 @@ impl IncrementalDiff {
     }
 
     /// Heap-based diff of two sorted slices.
-    /// 
+    ///
     /// Returns a vector of DiffItem indicating which side each element is from.
     fn heap_diff<T, K: Ord + Copy>(
         left: &[T],
@@ -271,11 +264,11 @@ impl IncrementalDiff {
         let mut result = Vec::new();
         let mut i = 0;
         let mut j = 0;
-        
+
         while i < left.len() && j < right.len() {
             let left_key = key_fn(&left[i]);
             let right_key = key_fn(&right[j]);
-            
+
             match left_key.cmp(&right_key) {
                 std::cmp::Ordering::Less => {
                     // Only in left (deleted)
@@ -295,19 +288,19 @@ impl IncrementalDiff {
                 }
             }
         }
-        
+
         // Remaining items in left are deleted
         while i < left.len() {
             result.push(DiffItem::LeftOnly(left[i].clone()));
             i += 1;
         }
-        
+
         // Remaining items in right are new
         while j < right.len() {
             result.push(DiffItem::RightOnly(right[j].clone()));
             j += 1;
         }
-        
+
         result
     }
 
@@ -320,7 +313,9 @@ impl IncrementalDiff {
         stats: &mut DiffStats,
     ) -> io::Result<()> {
         // Load files from fcache for this directory
-        let fcache_path = self.curr_meta_dir.join(format!("fcache_{}.dat", dir_entry.fcache_fid));
+        let fcache_path = self
+            .curr_meta_dir
+            .join(format!("fcache_{}.dat", dir_entry.fcache_fid));
         if let Ok(mut reader) = FileCacheRandomReader::open(&fcache_path) {
             let start_idx = dir_entry.fcache_offset / FileCacheEntry::SIZE as u32;
             for i in 0..dir_entry.files_count {
@@ -402,24 +397,27 @@ impl IncrementalDiff {
         is_prev: bool,
     ) -> BTreeMap<String, FileCacheEntry> {
         let mut result = BTreeMap::new();
-        
+
         let meta_dir = if is_prev {
-            self.prev_meta_dir.as_ref().map(|p| p.as_path()).unwrap_or(&self.curr_meta_dir)
+            self.prev_meta_dir
+                .as_ref()
+                .map(|p| p.as_path())
+                .unwrap_or(&self.curr_meta_dir)
         } else {
             &self.curr_meta_dir
         };
-        
+
         let meta_reader = match MetaRepoReader::new(meta_dir.to_path_buf()) {
             Ok(reader) => reader,
             Err(_) => return result,
         };
-        
+
         let fcache_path = meta_dir.join(format!("fcache_{}.dat", dir_entry.fcache_fid));
         let mut reader = match FileCacheRandomReader::open(&fcache_path) {
             Ok(r) => r,
             Err(_) => return result,
         };
-        
+
         let start_idx = dir_entry.fcache_offset / FileCacheEntry::SIZE as u32;
         for i in 0..dir_entry.files_count {
             if let Ok(fcache_entry) = reader.read_object(start_idx + i) {
@@ -478,14 +476,14 @@ impl DirectoryFileDiff {
 }
 
 /// Generates incremental control files by comparing previous and current scans.
-/// 
+///
 /// This is the main entry point for incremental backup.
-/// 
+///
 /// # Arguments
 /// * `prev_meta_dir` - Path to previous backup's metadata directory (None for full backup)
 /// * `curr_meta_dir` - Path to current scan's metadata directory
 /// * `ctrl_dir` - Output directory for copy.txt and delete.txt
-/// 
+///
 /// # Returns
 /// Statistics about the differences found.
 pub fn generate_incremental_control_files(
@@ -496,22 +494,19 @@ pub fn generate_incremental_control_files(
     source_root: &str,
 ) -> io::Result<DiffStats> {
     std::fs::create_dir_all(ctrl_dir)?;
-    
+
     let copy_file_path = ctrl_dir.join("copy.txt");
     let delete_file_path = ctrl_dir.join("delete.txt");
-    
+
     let diff = IncrementalDiff::from_dirs(prev_meta_dir, curr_meta_dir)?;
     diff.generate_control_files(&copy_file_path, &delete_file_path, source_kind, source_root)
 }
 
 /// A simplified diff generator that works with sorted inode lists.
-/// 
+///
 /// This is a more practical implementation that compares two sorted lists
 /// of inodes and identifies differences.
-pub fn diff_sorted_inodes(
-    prev: &[u64],
-    curr: &[u64],
-) -> Vec<(u64, DiffType)> {
+pub fn diff_sorted_inodes(prev: &[u64], curr: &[u64]) -> Vec<(u64, DiffType)> {
     let mut result = Vec::new();
     let mut i = 0;
     let mut j = 0;

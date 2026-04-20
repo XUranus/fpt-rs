@@ -51,24 +51,25 @@ use std::sync::{Arc, LazyLock, Mutex};
 /// A single routing rule: records whose target starts with `prefix` go to `file`.
 struct LogRoute {
     prefix: String,
-    file:   Mutex<std::fs::File>,
+    file: Mutex<std::fs::File>,
 }
 
 /// Global logger state shared between `init()` / `add_route()` / `add_file()`
 /// and the `RoutingLogger` instance registered with the `log` crate.
 struct LoggerState {
-    level:  log::LevelFilter,
+    level: log::LevelFilter,
     routes: Vec<LogRoute>,
     /// Catch-all files that receive every record (--log-file).
-    extra:  Vec<Mutex<std::fs::File>>,
+    extra: Vec<Mutex<std::fs::File>>,
 }
 
-static STATE: LazyLock<Arc<Mutex<LoggerState>>> =
-    LazyLock::new(|| Arc::new(Mutex::new(LoggerState {
-        level:  log::LevelFilter::Info,
+static STATE: LazyLock<Arc<Mutex<LoggerState>>> = LazyLock::new(|| {
+    Arc::new(Mutex::new(LoggerState {
+        level: log::LevelFilter::Info,
         routes: Vec::new(),
-        extra:  Vec::new(),
-    })));
+        extra: Vec::new(),
+    }))
+});
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -126,10 +127,11 @@ pub fn add_route(prefix: &str, path: &Path) {
         let mut st = STATE.lock().unwrap();
         st.routes.push(LogRoute {
             prefix: prefix.to_string(),
-            file:   Mutex::new(f),
+            file: Mutex::new(f),
         });
         // Keep routes sorted longest-prefix-first for fast lookup.
-        st.routes.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        st.routes
+            .sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
     }
 }
 
@@ -229,6 +231,7 @@ fn should_suppress_record(record: &log::Record) -> bool {
 
     let msg = record.args().to_string();
     msg.starts_with("Error closing file:")
-        && (msg.contains("Unexpected Message, Received message for different tree, or tree disconnecting.")
-            || msg.contains("Network Name Deleted (0xc00000c9)"))
+        && (msg.contains(
+            "Unexpected Message, Received message for different tree, or tree disconnecting.",
+        ) || msg.contains("Network Name Deleted (0xc00000c9)"))
 }

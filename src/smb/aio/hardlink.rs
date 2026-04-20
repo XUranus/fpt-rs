@@ -59,8 +59,15 @@ pub async fn run_smb_hardlink_phase(
         match entry {
             HardlinkEntry::Inode(_) => {
                 if !current_files.is_empty() {
-                    process_group(&client, source_dir_base, target_prefix, location, &current_files, &mut stats)
-                        .await;
+                    process_group(
+                        &client,
+                        source_dir_base,
+                        target_prefix,
+                        location,
+                        &current_files,
+                        &mut stats,
+                    )
+                    .await;
                     current_files.clear();
                 }
                 stats.groups_processed += 1;
@@ -70,8 +77,15 @@ pub async fn run_smb_hardlink_phase(
     }
 
     if !current_files.is_empty() {
-        process_group(&client, source_dir_base, target_prefix, location, &current_files, &mut stats)
-            .await;
+        process_group(
+            &client,
+            source_dir_base,
+            target_prefix,
+            location,
+            &current_files,
+            &mut stats,
+        )
+        .await;
     }
 
     if let Err(e) = client.close().await {
@@ -97,7 +111,8 @@ async fn process_group(
         return;
     }
 
-    let primary_rel = crate::smb::aio::target_relative_path(source_dir_base, target_prefix, &files[0]);
+    let primary_rel =
+        crate::smb::aio::target_relative_path(source_dir_base, target_prefix, &files[0]);
     let primary_unc = match crate::smb::aio::relative_unc_path(location, &primary_rel) {
         Ok(unc) => unc,
         Err(e) => {
@@ -143,7 +158,10 @@ async fn process_group(
                 stats.hardlinks_created += 1;
             }
             Err(e) => {
-                error!("SMB hardlink {} -> {}: {}", share_path, primary_share_path, e);
+                error!(
+                    "SMB hardlink {} -> {}: {}",
+                    share_path, primary_share_path, e
+                );
                 stats.hardlinks_failed += 1;
             }
         }

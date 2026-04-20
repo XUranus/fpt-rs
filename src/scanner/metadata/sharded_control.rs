@@ -42,9 +42,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::scanner::metadata::{
-    ControlFileWriter, DirControlEntry, FileControlEntry,
-};
+use crate::scanner::metadata::{ControlFileWriter, DirControlEntry, FileControlEntry};
 
 /// Default maximum entries per control file shard for copy phase.
 /// With ~100 bytes per entry, this keeps shards under ~100MB.
@@ -99,12 +97,11 @@ impl ShardSplitPolicy {
     /// Checks if a rollover is needed based on current file size and entry count.
     pub fn needs_rollover(&self, current_size: u64, entry_count: usize) -> bool {
         match self {
-            Self::MaxSize { max_size, max_entries } => {
-                current_size >= *max_size || entry_count >= *max_entries
-            }
-            Self::MaxEntries { max_entries } => {
-                entry_count >= *max_entries
-            }
+            Self::MaxSize {
+                max_size,
+                max_entries,
+            } => current_size >= *max_size || entry_count >= *max_entries,
+            Self::MaxEntries { max_entries } => entry_count >= *max_entries,
         }
     }
 }
@@ -164,11 +161,7 @@ impl ShardedControlFileManager {
     /// * `ctrl_dir` - Directory for control files
     /// * `base_name` - Base name (e.g., "copy", "delete", "mtime")
     /// * `num_shards` - Number of shards (e.g., 16, 64, 256)
-    pub fn new(
-        ctrl_dir: PathBuf,
-        base_name: String,
-        num_shards: usize,
-    ) -> io::Result<Self> {
+    pub fn new(ctrl_dir: PathBuf, base_name: String, num_shards: usize) -> io::Result<Self> {
         // Choose default policy based on phase
         let policy = if base_name == "copy" {
             ShardSplitPolicy::copy_default()
@@ -192,7 +185,7 @@ impl ShardedControlFileManager {
         split_policy: ShardSplitPolicy,
     ) -> io::Result<Self> {
         fs::create_dir_all(&ctrl_dir)?;
-        
+
         Ok(Self {
             ctrl_dir,
             base_name,
@@ -232,7 +225,9 @@ impl ShardedControlFileManager {
     fn get_shard_writer(&mut self, shard_id: usize) -> io::Result<&mut ShardWriter> {
         // Check if we need to roll over to a new file
         let should_rollover = match self.shards.get(&shard_id) {
-            Some(shard) => self.split_policy.needs_rollover(shard.file_size, shard.entry_count),
+            Some(shard) => self
+                .split_policy
+                .needs_rollover(shard.file_size, shard.entry_count),
             None => true,
         };
 
@@ -243,25 +238,25 @@ impl ShardedControlFileManager {
             }
 
             // Get next file index for this shard
-            let file_index = self.shard_file_indices
-                .get(&shard_id)
-                .copied()
-                .unwrap_or(0);
-            
+            let file_index = self.shard_file_indices.get(&shard_id).copied().unwrap_or(0);
+
             let path = self.ctrl_dir.join(format!(
                 "{}_{:08X}_{:04X}.txt",
                 self.base_name, shard_id, file_index
             ));
-            
+
             let writer = ControlFileWriter::new(&path)?;
-            
-            self.shards.insert(shard_id, ShardWriter {
-                writer,
-                path: path.clone(),
-                entry_count: 0,
-                file_size: 0,
-            });
-            
+
+            self.shards.insert(
+                shard_id,
+                ShardWriter {
+                    writer,
+                    path: path.clone(),
+                    entry_count: 0,
+                    file_size: 0,
+                },
+            );
+
             self.shard_file_indices.insert(shard_id, file_index + 1);
             self.shard_entry_counts.insert(shard_id, 0);
         }
@@ -280,7 +275,7 @@ impl ShardedControlFileManager {
     ) -> io::Result<usize> {
         let shard_id = self.compute_shard_id(&entry.path);
         let shard = self.get_shard_writer(shard_id)?;
-        
+
         // Write directory entry with batch marker if needed
         let entry_size = if let Some(batch) = batch_info {
             shard.writer.write_dir_with_batch(entry, batch)?;
@@ -291,30 +286,26 @@ impl ShardedControlFileManager {
             // Estimate: base dir entry ~60 bytes + path
             60 + entry.path.len()
         };
-        
+
         shard.entry_count += 1;
         shard.file_size += entry_size as u64;
         *self.shard_entry_counts.entry(shard_id).or_insert(0) += 1;
-        
+
         Ok(1)
     }
 
     /// Writes a file entry.
-    pub fn write_file(
-        &mut self,
-        dir_path: &str,
-        entry: &FileControlEntry,
-    ) -> io::Result<()> {
+    pub fn write_file(&mut self, dir_path: &str, entry: &FileControlEntry) -> io::Result<()> {
         let shard_id = self.compute_shard_id(dir_path);
         let shard = self.get_shard_writer(shard_id)?;
-        
+
         shard.writer.write_file(entry)?;
         // Estimate: base file entry ~50 bytes + filename
         let entry_size = 50 + entry.name.len();
         shard.entry_count += 1;
         shard.file_size += entry_size as u64;
         *self.shard_entry_counts.entry(shard_id).or_insert(0) += 1;
-        
+
         Ok(())
     }
 
@@ -337,11 +328,11 @@ impl ShardedControlFileManager {
 
         let num_batches = (total_files + self.max_files_per_batch - 1) / self.max_files_per_batch;
         let mut batches = Vec::with_capacity(num_batches as usize);
-        
+
         for batch_num in 0..num_batches {
             let start_file = batch_num * self.max_files_per_batch;
             let files_in_batch = (total_files - start_file).min(self.max_files_per_batch);
-            
+
             batches.push((
                 BatchInfo {
                     batch_num,
@@ -352,19 +343,19 @@ impl ShardedControlFileManager {
                 files_in_batch,
             ));
         }
-        
+
         batches
     }
 
     /// Finalizes all shards and returns the list of created files.
     pub fn finish(mut self) -> io::Result<Vec<PathBuf>> {
         let mut files = Vec::new();
-        
+
         for (_shard_id, shard) in self.shards.drain() {
             shard.writer.finish()?;
             files.push(shard.path);
         }
-        
+
         Ok(files)
     }
 
@@ -378,11 +369,8 @@ impl ShardedControlFileManager {
 #[allow(dead_code)]
 pub trait ControlFileWriterExt {
     /// Writes a directory entry with batch information.
-    fn write_dir_with_batch(
-        &mut self,
-        entry: &DirControlEntry,
-        batch: BatchInfo,
-    ) -> io::Result<()>;
+    fn write_dir_with_batch(&mut self, entry: &DirControlEntry, batch: BatchInfo)
+        -> io::Result<()>;
 }
 
 // Implementation of ControlFileWriterExt is in the same module as ControlFileWriter
@@ -405,45 +393,40 @@ pub fn discover_sharded_controls(
     base_name: &str,
 ) -> io::Result<ShardedControlInfo> {
     let mut shard_files = Vec::new();
-    
+
     if ctrl_dir.exists() {
         for entry in fs::read_dir(ctrl_dir)? {
             let entry = entry?;
             let path = entry.path();
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
             // Match pattern: {base_name}_{shard_id}_{file_index}.txt
-            if file_name.starts_with(&format!("{}_", base_name))
-                && file_name.ends_with(".txt")
-            {
+            if file_name.starts_with(&format!("{}_", base_name)) && file_name.ends_with(".txt") {
                 shard_files.push(path);
             }
         }
     }
-    
+
     // Sort by path for consistent ordering
     shard_files.sort();
-    
+
     // Extract num_shards from file names
-    let num_shards = shard_files.iter()
+    let num_shards = shard_files
+        .iter()
         .filter_map(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .and_then(|name| {
-                    let parts: Vec<_> = name.split('_').collect();
-                    if parts.len() >= 2 {
-                        u32::from_str_radix(parts[1], 16).ok()
-                    } else {
-                        None
-                    }
-                })
+            p.file_name().and_then(|n| n.to_str()).and_then(|name| {
+                let parts: Vec<_> = name.split('_').collect();
+                if parts.len() >= 2 {
+                    u32::from_str_radix(parts[1], 16).ok()
+                } else {
+                    None
+                }
+            })
         })
         .max()
         .map(|max_id| max_id as usize + 1)
         .unwrap_or(0);
-    
+
     Ok(ShardedControlInfo {
         base_name: base_name.to_string(),
         num_shards,
@@ -457,46 +440,40 @@ mod tests {
 
     #[test]
     fn test_compute_shard_id_deterministic() {
-        let manager = ShardedControlFileManager::new(
-            PathBuf::from("/tmp"),
-            "copy".to_string(),
-            16,
-        ).unwrap();
-        
+        let manager =
+            ShardedControlFileManager::new(PathBuf::from("/tmp"), "copy".to_string(), 16).unwrap();
+
         let path = "/home/user/documents";
         let id1 = manager.compute_shard_id(path);
         let id2 = manager.compute_shard_id(path);
-        
+
         assert_eq!(id1, id2);
         assert!(id1 < 16);
     }
 
     #[test]
     fn test_compute_batches() {
-        let manager = ShardedControlFileManager::new(
-            PathBuf::from("/tmp"),
-            "copy".to_string(),
-            16,
-        ).unwrap()
-        .max_files_per_batch(1000);
-        
+        let manager = ShardedControlFileManager::new(PathBuf::from("/tmp"), "copy".to_string(), 16)
+            .unwrap()
+            .max_files_per_batch(1000);
+
         // Small directory - no batching
         let batches = manager.compute_batches(500);
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].0.total_batches, 1);
         assert!(batches[0].0.is_last);
-        
+
         // Large directory - needs batching
         let batches = manager.compute_batches(2500);
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[0].0.batch_num, 0);
         assert!(!batches[0].0.is_continuation);
-        assert!(!batches[0].0.is_last);  // First batch is not the last
+        assert!(!batches[0].0.is_last); // First batch is not the last
         assert_eq!(batches[1].0.batch_num, 1);
         assert!(batches[1].0.is_continuation);
-        assert!(!batches[1].0.is_last);  // Middle batch is not the last
+        assert!(!batches[1].0.is_last); // Middle batch is not the last
         assert_eq!(batches[2].0.batch_num, 2);
         assert!(batches[2].0.is_continuation);
-        assert!(batches[2].0.is_last);  // Only the last batch has is_last=true
+        assert!(batches[2].0.is_last); // Only the last batch has is_last=true
     }
 }

@@ -17,6 +17,7 @@
 //! - Real-time statistics tracking (file count, size, errors).
 //! - Automatic spilling to disk when memory pressure is high.
 
+use log::{error, info};
 use std::{
     fmt,
     path::PathBuf,
@@ -26,7 +27,6 @@ use std::{
     },
     thread::JoinHandle,
 };
-use log::{info, error};
 
 use crate::scanner::metadata::HardlinkIndex;
 
@@ -40,8 +40,8 @@ use crate::{
 };
 
 mod engine;
-pub(crate) mod models;
 pub mod metadata;
+pub(crate) mod models;
 pub mod options;
 
 /// Main entry point for filesystem scanning.
@@ -144,11 +144,9 @@ impl Scanner {
     pub fn enqueue_path(&mut self, path: PathBuf) -> Result<&Self, Box<dyn std::error::Error>> {
         // Validate path exists and is accessible
         if !path.exists() {
-            return Err(ScanError::InvalidEnqueue(format!(
-                "Path does not exist: {:?}",
-                path
-            ))
-            .into());
+            return Err(
+                ScanError::InvalidEnqueue(format!("Path does not exist: {:?}", path)).into(),
+            );
         }
         self.enqueued_paths.push(path);
         Ok(self)
@@ -230,7 +228,8 @@ impl Scanner {
                 if scan_hardlinks {
                     if let Some(index) = hardlink_index_clone {
                         if let Ok(idx) = index.lock() {
-                            let hardlink_ctrl_path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
+                            let hardlink_ctrl_path =
+                                scan_option.target_dir.ctrl_dir.join("hardlink.txt");
                             if let Err(e) = idx.write_to_file_with_source(
                                 &hardlink_ctrl_path,
                                 &scan_option.control_path.source_kind,
@@ -239,9 +238,12 @@ impl Scanner {
                                 error!("Failed to write hardlink control file: {}", e);
                             } else {
                                 info!("Hardlink control file written to {:?}", hardlink_ctrl_path);
-                                info!("Found {} hardlink groups with {} total files", 
-                                    idx.group_count(), idx.total_file_count());
-                                }
+                                info!(
+                                    "Found {} hardlink groups with {} total files",
+                                    idx.group_count(),
+                                    idx.total_file_count()
+                                );
+                            }
                         }
                     }
                 }
@@ -312,12 +314,13 @@ pub async fn run_nfs_scan(
     location: &crate::nfs::NfsLocation,
     scan_option: ScanOption,
 ) -> Result<(u64, u64, u64), String> {
-    use crate::nfs::NfsScanner;
     use crate::nfs::connection::NfsConnectionPool;
+    use crate::nfs::NfsScanner;
     use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
 
     // Build connection pool and obtain the root file handle.
-    let pool = NfsConnectionPool::new(location).await
+    let pool = NfsConnectionPool::new(location)
+        .await
         .map_err(|e| format!("NFS connect failed: {e}"))?;
 
     // Compute the absolute path and file handle for the scan root.
@@ -368,13 +371,12 @@ pub async fn run_nfs_scan(
 
     // Create an NfsScanner and a tokio mpsc channel.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
-    let nfs_scanner = NfsScanner::new(location).await
+    let nfs_scanner = NfsScanner::new(location)
+        .await
         .map_err(|e| format!("NFS scanner init failed: {e}"))?;
 
     // Spawn the NFS scan task.
-    let scan_handle = tokio::spawn(async move {
-        nfs_scanner.scan(root_fh, root_path, tx).await
-    });
+    let scan_handle = tokio::spawn(async move { nfs_scanner.scan(root_fh, root_path, tx).await });
 
     // Bridge: forward DirBatchScanResult items from tokio mpsc → BlockingQueue.
     let oq = Arc::clone(&output_queue);
@@ -512,7 +514,9 @@ fn normalize_copy_controls(scan_option: &ScanOption) -> Result<(), String> {
     for entry in entries {
         let path = entry.map_err(|e| e.to_string())?.path();
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !file_name.starts_with("copy") || path.extension().and_then(|e| e.to_str()) != Some("txt") {
+        if !file_name.starts_with("copy")
+            || path.extension().and_then(|e| e.to_str()) != Some("txt")
+        {
             continue;
         }
 
@@ -536,7 +540,8 @@ fn normalize_copy_controls(scan_option: &ScanOption) -> Result<(), String> {
             source_root: scan_option.control_path.source_root.clone(),
             ..ControlFileHeader::default()
         };
-        let mut writer = ControlFileWriter::new_with_header(&tmp, &header).map_err(|e| e.to_string())?;
+        let mut writer =
+            ControlFileWriter::new_with_header(&tmp, &header).map_err(|e| e.to_string())?;
         for entry in &rewritten {
             match entry {
                 ControlEntry::Dir(dir) => writer.write_dir(dir).map_err(|e| e.to_string())?,
@@ -558,18 +563,23 @@ fn normalize_delete_control_file(scan_option: &ScanOption) -> Result<(), String>
     }
 
     let reader = DeleteControlFileReader::open(&path).map_err(|e| e.to_string())?;
-    let entries: Vec<_> = reader.collect::<Result<_, _>>().map_err(|e: std::io::Error| e.to_string())?;
+    let entries: Vec<_> = reader
+        .collect::<Result<_, _>>()
+        .map_err(|e: std::io::Error| e.to_string())?;
     let tmp = path.with_extension("tmp");
     let mut writer = DeleteControlFileWriter::new_with_source(
         &tmp,
         &scan_option.control_path.source_kind,
         &scan_option.control_path.source_root,
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     for entry in entries {
-        writer.write_entry(&crate::scanner::metadata::DeleteEntry {
-            entry_type: entry.entry_type,
-            path: normalize_control_path(&scan_option.control_path, &entry.path),
-        }).map_err(|e| e.to_string())?;
+        writer
+            .write_entry(&crate::scanner::metadata::DeleteEntry {
+                entry_type: entry.entry_type,
+                path: normalize_control_path(&scan_option.control_path, &entry.path),
+            })
+            .map_err(|e| e.to_string())?;
     }
     writer.finish().map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
@@ -585,13 +595,16 @@ fn normalize_mtime_control_file(scan_option: &ScanOption) -> Result<(), String> 
     }
 
     let reader = MtimeControlFileReader::open(&path).map_err(|e| e.to_string())?;
-    let entries: Vec<_> = reader.collect::<Result<_, _>>().map_err(|e: std::io::Error| e.to_string())?;
+    let entries: Vec<_> = reader
+        .collect::<Result<_, _>>()
+        .map_err(|e: std::io::Error| e.to_string())?;
     let tmp = path.with_extension("tmp");
     let mut writer = MtimeControlFileWriter::new_with_source(
         &tmp,
         &scan_option.control_path.source_kind,
         &scan_option.control_path.source_root,
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     for mut entry in entries {
         entry.path = normalize_control_path(&scan_option.control_path, &entry.path);
         writer.write_dir(&entry).map_err(|e| e.to_string())?;
@@ -611,22 +624,25 @@ fn normalize_hardlink_control_file(scan_option: &ScanOption) -> Result<(), Strin
         return Ok(());
     }
     let reader = HardlinkControlFileReader::open(&path).map_err(|e| e.to_string())?;
-    let entries: Vec<_> = reader.collect::<Result<_, _>>().map_err(|e: std::io::Error| e.to_string())?;
+    let entries: Vec<_> = reader
+        .collect::<Result<_, _>>()
+        .map_err(|e: std::io::Error| e.to_string())?;
     let tmp = path.with_extension("tmp");
     let mut writer = HardlinkControlFileWriter::new_with_source(
         &tmp,
         &scan_option.control_path.source_kind,
         &scan_option.control_path.source_root,
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     for entry in entries {
         match entry {
             HardlinkEntry::Inode(inode) => writer.write_inode(&inode).map_err(|e| e.to_string())?,
-            HardlinkEntry::File(file) => {
-                writer.write_file(&HardlinkFileEntry {
+            HardlinkEntry::File(file) => writer
+                .write_file(&HardlinkFileEntry {
                     path: normalize_control_path(&scan_option.control_path, &file.path),
                     ..file
-                }).map_err(|e| e.to_string())?
-            }
+                })
+                .map_err(|e| e.to_string())?,
         }
     }
     writer.finish().map_err(|e| e.to_string())?;

@@ -61,8 +61,11 @@ impl NfsConnectionPool {
 
         log::info!(
             "NFS connection pool: creating {} connections to {}, export={}, uid={}, gid={}",
-            location.connection_count, location.host,
-            location.export, location.uid, location.gid,
+            location.connection_count,
+            location.host,
+            location.export,
+            location.uid,
+            location.gid,
         );
 
         // Establish all connections.
@@ -73,7 +76,11 @@ impl NfsConnectionPool {
 
         for _ in 0..location.connection_count {
             let conn = Self::connect_one(location).await?;
-            log::debug!("NFS connection established to {}:{}", location.host, location.export);
+            log::debug!(
+                "NFS connection established to {}:{}",
+                location.host,
+                location.export
+            );
 
             // On the first connection, grab the root FH and query server limits.
             if root_fh_opt.is_none() {
@@ -92,15 +99,15 @@ impl NfsConnectionPool {
                 Ok(Nfs3Result::Ok(ok)) => {
                     log::debug!(
                         "NFS fsinfo: rtmax={} wtmax={} dtperf={}",
-                        ok.rtmax, ok.wtmax, ok.dtpref
+                        ok.rtmax,
+                        ok.wtmax,
+                        ok.dtpref
                     );
                     server_rtmax = ok.rtmax.min(location.read_chunk_size);
                     server_wtmax = ok.wtmax.min(location.write_chunk_size);
                 }
                 Ok(Nfs3Result::Err((stat, _))) => {
-                    log::warn!(
-                        "NFS fsinfo returned error {stat}, using configured chunk sizes"
-                    );
+                    log::warn!("NFS fsinfo returned error {stat}, using configured chunk sizes");
                 }
                 Err(e) => {
                     log::warn!("NFS fsinfo call failed: {e}, using configured chunk sizes");
@@ -126,7 +133,9 @@ impl NfsConnectionPool {
                     .lookup(&nfs3_client::nfs3_types::nfs3::LOOKUP3args {
                         what: nfs3_client::nfs3_types::nfs3::diropargs3 {
                             dir: current_fh.clone(),
-                            name: nfs3_client::nfs3_types::nfs3::filename3::from(component.as_bytes()),
+                            name: nfs3_client::nfs3_types::nfs3::filename3::from(
+                                component.as_bytes(),
+                            ),
                         },
                     })
                     .await;

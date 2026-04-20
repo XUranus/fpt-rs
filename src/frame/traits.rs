@@ -31,8 +31,8 @@ use std::path::PathBuf;
 /// Statistics produced by a completed scan operation.
 #[derive(Debug, Clone, Default)]
 pub struct ScanStats {
-    pub total_files:      u64,
-    pub total_dirs:       u64,
+    pub total_files: u64,
+    pub total_dirs: u64,
     pub total_size_bytes: u64,
 }
 
@@ -42,7 +42,11 @@ impl std::fmt::Display for ScanStats {
         if size == 0 {
             write!(f, "{} files, {} dirs", self.total_files, self.total_dirs)
         } else if size < 1024 {
-            write!(f, "{} files, {} dirs, {} bytes", self.total_files, self.total_dirs, size)
+            write!(
+                f,
+                "{} files, {} dirs, {} bytes",
+                self.total_files, self.total_dirs, size
+            )
         } else {
             write!(
                 f,
@@ -65,8 +69,8 @@ impl std::fmt::Display for ScanStats {
 pub struct TransferStats {
     pub files_transferred: u64,
     pub bytes_transferred: u64,
-    pub dirs_created:      u64,
-    pub files_failed:      u64,
+    pub dirs_created: u64,
+    pub files_failed: u64,
 }
 
 impl std::fmt::Display for TransferStats {
@@ -90,19 +94,19 @@ impl std::fmt::Display for TransferStats {
 #[derive(Debug)]
 pub struct JobResult {
     /// UUID assigned to this backup copy.
-    pub copy_uuid:       String,
+    pub copy_uuid: String,
     /// Absolute path to the copy root on the local filesystem.
-    pub copy_root:       PathBuf,
+    pub copy_root: PathBuf,
     /// Number of subtasks that finished without errors.
-    pub subtasks_ok:     usize,
+    pub subtasks_ok: usize,
     /// Number of subtasks that encountered errors.
     pub subtasks_failed: usize,
     /// Aggregate files transferred across all subtasks.
-    pub total_files:     u64,
+    pub total_files: u64,
     /// Aggregate directories observed or created across the job.
-    pub total_dirs:      u64,
+    pub total_dirs: u64,
     /// Aggregate bytes transferred across all subtasks.
-    pub total_bytes:     u64,
+    pub total_bytes: u64,
 }
 
 // ---------------------------------------------------------------------------

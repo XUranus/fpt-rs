@@ -10,9 +10,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nfs3_client::nfs3_types::nfs3::{
-    Nfs3Result, READ3args, diropargs3, filename3, nfs_fh3,
-};
+use nfs3_client::nfs3_types::nfs3::{diropargs3, filename3, nfs_fh3, Nfs3Result, READ3args};
 use tokio::sync::RwLock;
 
 use crate::backup::fcb::{FileControlBlock, SourceHandleState};
@@ -57,18 +55,21 @@ pub async fn nfs_read_task(
     read_chunk: u32,
 ) -> NfsReaderResult {
     let src_path = fcb.src_path.clone();
-    log::debug!("NFS read: path={:?} offset={} size={}", src_path, fcb.src_offset, fcb.meta.size);
+    log::debug!(
+        "NFS read: path={:?} offset={} size={}",
+        src_path,
+        fcb.src_offset,
+        fcb.meta.size
+    );
 
     // ------------------------------------------------------------------ 1. resolve file handle
-    let file_fh = match resolve_path(&pool, &dir_cache, &fcb.src_path.to_string_lossy(), &root_fh).await {
-        Ok(fh) => fh,
-        Err(e) => {
-            return NfsReaderResult::Failed(
-                fcb,
-                format!("lookup {src_path:?}: {e}"),
-            );
-        }
-    };
+    let file_fh =
+        match resolve_path(&pool, &dir_cache, &fcb.src_path.to_string_lossy(), &root_fh).await {
+            Ok(fh) => fh,
+            Err(e) => {
+                return NfsReaderResult::Failed(fcb, format!("lookup {src_path:?}: {e}"));
+            }
+        };
 
     // ------------------------------------------------------------------ 2. read data
     let start_offset = fcb.src_offset;
@@ -137,7 +138,12 @@ pub async fn nfs_read_task(
         SourceHandleState::PartialRead
     };
 
-    log::debug!("NFS read done: path={:?} bytes_read={} offset={}", src_path, n, offset);
+    log::debug!(
+        "NFS read done: path={:?} bytes_read={} offset={}",
+        src_path,
+        n,
+        offset
+    );
     NfsReaderResult::Read(fcb)
 }
 

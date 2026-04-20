@@ -119,7 +119,7 @@ impl ShardedControlProcessor {
     ) -> anyhow::Result<ShardedResults> {
         let shard_files = &ctrl_info.shard_files;
         let concurrency = self.config.concurrency.min(shard_files.len());
-        
+
         log::info!(
             "Processing copy phase with {} shards using {} workers",
             shard_files.len(),
@@ -129,13 +129,13 @@ impl ShardedControlProcessor {
         // Process shards concurrently using thread pool
         let results: Vec<ShardResult> = thread::scope(|s| {
             let mut handles = Vec::new();
-            
+
             // Create worker threads
             for chunk in shard_files.chunks((shard_files.len() + concurrency - 1) / concurrency) {
                 let _config = &self.config;
                 let handle = s.spawn(move || {
                     let mut chunk_results = Vec::new();
-                    
+
                     for shard_path in chunk {
                         match self.process_copy_shard(shard_path) {
                             Ok(result) => chunk_results.push(result),
@@ -148,12 +148,12 @@ impl ShardedControlProcessor {
                             }
                         }
                     }
-                    
+
                     chunk_results
                 });
                 handles.push(handle);
             }
-            
+
             // Collect results
             let mut all_results = Vec::new();
             for handle in handles {
@@ -161,7 +161,7 @@ impl ShardedControlProcessor {
                     all_results.extend(results);
                 }
             }
-            
+
             all_results
         });
 
@@ -171,9 +171,9 @@ impl ShardedControlProcessor {
     /// Processes a single copy shard.
     fn process_copy_shard(&self, shard_path: &Path) -> anyhow::Result<ShardResult> {
         let shard_id = self.extract_shard_id(shard_path)?;
-        
+
         log::debug!("Processing copy shard {}: {:?}", shard_id, shard_path);
-        
+
         // TODO: Implement actual copy processing using existing CopyEngine
         // For now, return placeholder result
         Ok(ShardResult {
@@ -197,7 +197,7 @@ impl ShardedControlProcessor {
 
         // Similar to copy phase but for deletes
         let mut results = Vec::new();
-        
+
         for shard_path in &ctrl_info.shard_files {
             match self.process_delete_shard(shard_path) {
                 Ok(result) => results.push(result),
@@ -213,9 +213,9 @@ impl ShardedControlProcessor {
     /// Processes a single delete shard.
     fn process_delete_shard(&self, shard_path: &Path) -> anyhow::Result<ShardResult> {
         let shard_id = self.extract_shard_id(shard_path)?;
-        
+
         log::debug!("Processing delete shard {}: {:?}", shard_id, shard_path);
-        
+
         // TODO: Implement actual delete processing
         Ok(ShardResult {
             shard_id,
@@ -268,17 +268,17 @@ impl ShardedControlProcessor {
     ///
     /// Path format: {base_name}_{shard_id}_{file_index}.txt
     fn extract_shard_id(&self, path: &Path) -> anyhow::Result<usize> {
-        let file_name = path.file_name()
+        let file_name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| anyhow::anyhow!("Invalid shard path"))?;
-        
+
         let parts: Vec<_> = file_name.split('_').collect();
         if parts.len() < 2 {
             return Err(anyhow::anyhow!("Invalid shard file name format"));
         }
-        
-        usize::from_str_radix(parts[1], 16)
-            .map_err(|e| anyhow::anyhow!("Invalid shard ID: {}", e))
+
+        usize::from_str_radix(parts[1], 16).map_err(|e| anyhow::anyhow!("Invalid shard ID: {}", e))
     }
 
     /// Aggregates results from all shards.
@@ -287,14 +287,14 @@ impl ShardedControlProcessor {
             shard_results,
             ..Default::default()
         };
-        
+
         for result in &total.shard_results {
             total.total_files += result.files_processed;
             total.total_dirs += result.dirs_processed;
             total.total_bytes += result.bytes_transferred;
             total.total_errors += result.errors;
         }
-        
+
         total
     }
 }
@@ -363,40 +363,40 @@ pub fn process_sharded_backup(
     config: ShardedProcessorConfig,
 ) -> anyhow::Result<ShardedResults> {
     let processor = ShardedControlProcessor::new(config);
-    
+
     // Discover sharded control files
     let copy_info = crate::scanner::metadata::discover_sharded_controls(ctrl_dir, "copy")?;
     let delete_info = crate::scanner::metadata::discover_sharded_controls(ctrl_dir, "delete")?;
     let hardlink_info = crate::scanner::metadata::discover_sharded_controls(ctrl_dir, "hardlink")?;
     let mtime_info = crate::scanner::metadata::discover_sharded_controls(ctrl_dir, "mtime")?;
-    
+
     // Process each phase
     let mut combined_results = ShardedResults::default();
-    
+
     // Copy phase
     let copy_results = processor.process_copy_phase(&copy_info)?;
     combined_results.total_files += copy_results.total_files;
     combined_results.total_dirs += copy_results.total_dirs;
     combined_results.total_bytes += copy_results.total_bytes;
     combined_results.total_errors += copy_results.total_errors;
-    
+
     // Hardlink phase
     let hardlink_results = processor.process_hardlink_phase(&hardlink_info)?;
     combined_results.total_files += hardlink_results.total_files;
     combined_results.total_errors += hardlink_results.total_errors;
-    
+
     // Delete phase
     let delete_results = processor.process_delete_phase(&delete_info)?;
     combined_results.total_files += delete_results.total_files;
     combined_results.total_dirs += delete_results.total_dirs;
     combined_results.total_errors += delete_results.total_errors;
-    
+
     // Mtime phase
     let mtime_results = processor.process_mtime_phase(&mtime_info)?;
     combined_results.total_files += mtime_results.total_files;
     combined_results.total_dirs += mtime_results.total_dirs;
     combined_results.total_errors += mtime_results.total_errors;
-    
+
     Ok(combined_results)
 }
 
@@ -408,10 +408,10 @@ mod tests {
     fn test_extract_shard_id() {
         let config = ShardedProcessorConfig::default();
         let processor = ShardedControlProcessor::new(config);
-        
+
         let path = Path::new("/tmp/copy_0000000A_0001.txt");
         assert_eq!(processor.extract_shard_id(path).unwrap(), 10);
-        
+
         let path = Path::new("/tmp/copy_000000FF_0000.txt");
         assert_eq!(processor.extract_shard_id(path).unwrap(), 255);
     }
@@ -420,7 +420,7 @@ mod tests {
     fn test_aggregate_results() {
         let config = ShardedProcessorConfig::default();
         let processor = ShardedControlProcessor::new(config);
-        
+
         let shard_results = vec![
             ShardResult {
                 shard_id: 0,
@@ -437,9 +437,9 @@ mod tests {
                 errors: 1,
             },
         ];
-        
+
         let aggregated = processor.aggregate_results(shard_results);
-        
+
         assert_eq!(aggregated.total_files, 300);
         assert_eq!(aggregated.total_dirs, 30);
         assert_eq!(aggregated.total_bytes, 3000000);

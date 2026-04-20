@@ -21,8 +21,8 @@ struct Args {
     format: String,
 }
 
-const FILE_CACHE_ENTRY_SIZE: usize = 20;//std::mem::size_of::<FileCacheEntry>();
-const DIR_CACHE_ENTRY_SIZE: usize = 32;//std::mem::size_of::<DirCacheEntry>();
+const FILE_CACHE_ENTRY_SIZE: usize = 20; //std::mem::size_of::<FileCacheEntry>();
+const DIR_CACHE_ENTRY_SIZE: usize = 32; //std::mem::size_of::<DirCacheEntry>();
 
 fn read_fcache_entries(file: &mut File) -> io::Result<Vec<FileCacheEntry>> {
     let mut entries = Vec::new();
@@ -35,7 +35,10 @@ fn read_fcache_entries(file: &mut File) -> io::Result<Vec<FileCacheEntry>> {
                 let entry = FileCacheEntry {
                     id: u64::from_le_bytes(buffer[0..8].try_into().unwrap()),
                     hash: u32::from_le_bytes(buffer[8..12].try_into().unwrap()),
-                    meta_loc: (u32::from_le_bytes(buffer[12..16].try_into().unwrap()), u32::from_le_bytes(buffer[16..20].try_into().unwrap())),
+                    meta_loc: (
+                        u32::from_le_bytes(buffer[12..16].try_into().unwrap()),
+                        u32::from_le_bytes(buffer[16..20].try_into().unwrap()),
+                    ),
                 };
                 entries.push(entry);
             }
@@ -57,7 +60,10 @@ fn read_dcache_entries(file: &mut File) -> io::Result<Vec<DirCacheEntry>> {
                 let entry: DirCacheEntry = DirCacheEntry {
                     id: u64::from_le_bytes(buffer[0..8].try_into().unwrap()),
                     hash: u32::from_le_bytes(buffer[8..12].try_into().unwrap()),
-                    meta_loc: (u32::from_le_bytes(buffer[12..16].try_into().unwrap()), u32::from_le_bytes(buffer[16..20].try_into().unwrap())),
+                    meta_loc: (
+                        u32::from_le_bytes(buffer[12..16].try_into().unwrap()),
+                        u32::from_le_bytes(buffer[16..20].try_into().unwrap()),
+                    ),
                     files_count: u32::from_le_bytes(buffer[20..24].try_into().unwrap()),
                     fcache_fid: u32::from_le_bytes(buffer[24..28].try_into().unwrap()),
                     fcache_offset: u32::from_le_bytes(buffer[28..32].try_into().unwrap()),
@@ -85,7 +91,9 @@ fn main() -> io::Result<()> {
                     println!("{}", serde_json::to_string_pretty(&entries).unwrap());
                 }
                 "csv" | _ => {
-                    let mut wtr = WriterBuilder::new().has_headers(true).from_writer(io::stdout());
+                    let mut wtr = WriterBuilder::new()
+                        .has_headers(true)
+                        .from_writer(io::stdout());
                     for entry in entries {
                         wtr.serialize(entry)?;
                     }
@@ -100,7 +108,9 @@ fn main() -> io::Result<()> {
                     println!("{}", serde_json::to_string_pretty(&entries).unwrap());
                 }
                 "csv" | _ => {
-                    let mut wtr = WriterBuilder::new().has_headers(true).from_writer(io::stdout());
+                    let mut wtr = WriterBuilder::new()
+                        .has_headers(true)
+                        .from_writer(io::stdout());
                     for entry in entries {
                         wtr.serialize(entry)?;
                     }

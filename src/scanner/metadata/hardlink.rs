@@ -214,15 +214,21 @@ impl Iterator for HardlinkControlFileReader {
                             }
                             let inode = match u64::from_str_radix(tokens[1], 16) {
                                 Ok(v) => v,
-                                Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+                                Err(e) => {
+                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
+                                }
                             };
                             let device = match u64::from_str_radix(tokens[2], 16) {
                                 Ok(v) => v,
-                                Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+                                Err(e) => {
+                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
+                                }
                             };
                             let link_count = match u32::from_str_radix(tokens[3], 16) {
                                 Ok(v) => v,
-                                Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+                                Err(e) => {
+                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
+                                }
                             };
                             Some(Ok(HardlinkEntry::Inode(HardlinkInodeEntry {
                                 inode,
@@ -239,15 +245,21 @@ impl Iterator for HardlinkControlFileReader {
                             }
                             let meta_fid = match u32::from_str_radix(tokens[1], 16) {
                                 Ok(v) => v,
-                                Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+                                Err(e) => {
+                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
+                                }
                             };
                             let meta_offset = match u32::from_str_radix(tokens[2], 16) {
                                 Ok(v) => v,
-                                Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+                                Err(e) => {
+                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
+                                }
                             };
                             let path_len = match u32::from_str_radix(tokens[3], 16) {
                                 Ok(v) => v,
-                                Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
+                                Err(e) => {
+                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
+                                }
                             };
                             let path = tokens[4];
                             // Validate path length
@@ -368,15 +380,16 @@ impl HardlinkIndex {
         source_kind: &str,
         source_root: &str,
     ) -> io::Result<()> {
-        let mut writer = HardlinkControlFileWriter::new_with_source(path, source_kind, source_root)?;
-        
+        let mut writer =
+            HardlinkControlFileWriter::new_with_source(path, source_kind, source_root)?;
+
         for group in &self.groups {
             writer.write_inode(&HardlinkInodeEntry {
                 inode: group.inode,
                 device: group.device,
                 link_count: group.link_count,
             })?;
-            
+
             for (meta_fid, meta_offset, path) in &group.files {
                 writer.write_file(&HardlinkFileEntry {
                     meta_fid: *meta_fid,
@@ -385,7 +398,7 @@ impl HardlinkIndex {
                 })?;
             }
         }
-        
+
         writer.finish()
     }
 }
@@ -403,25 +416,31 @@ mod tests {
         // Write test data
         {
             let mut writer = HardlinkControlFileWriter::new(&path).unwrap();
-            
-            writer.write_inode(&HardlinkInodeEntry {
-                inode: 0xABCD,
-                device: 0x0801,
-                link_count: 3,
-            }).unwrap();
-            
-            writer.write_file(&HardlinkFileEntry {
-                meta_fid: 0,
-                meta_offset: 0x100,
-                path: "/home/user/file1.txt".to_string(),
-            }).unwrap();
-            
-            writer.write_file(&HardlinkFileEntry {
-                meta_fid: 0,
-                meta_offset: 0x150,
-                path: "/home/user/file2.txt".to_string(),
-            }).unwrap();
-            
+
+            writer
+                .write_inode(&HardlinkInodeEntry {
+                    inode: 0xABCD,
+                    device: 0x0801,
+                    link_count: 3,
+                })
+                .unwrap();
+
+            writer
+                .write_file(&HardlinkFileEntry {
+                    meta_fid: 0,
+                    meta_offset: 0x100,
+                    path: "/home/user/file1.txt".to_string(),
+                })
+                .unwrap();
+
+            writer
+                .write_file(&HardlinkFileEntry {
+                    meta_fid: 0,
+                    meta_offset: 0x150,
+                    path: "/home/user/file2.txt".to_string(),
+                })
+                .unwrap();
+
             writer.finish().unwrap();
         }
 
@@ -429,9 +448,9 @@ mod tests {
         {
             let reader = HardlinkControlFileReader::open(&path).unwrap();
             let entries: Vec<_> = reader.collect::<Result<Vec<_>, _>>().unwrap();
-            
+
             assert_eq!(entries.len(), 3);
-            
+
             match &entries[0] {
                 HardlinkEntry::Inode(inode) => {
                     assert_eq!(inode.inode, 0xABCD);
@@ -440,7 +459,7 @@ mod tests {
                 }
                 _ => panic!("Expected inode entry"),
             }
-            
+
             match &entries[1] {
                 HardlinkEntry::File(file) => {
                     assert_eq!(file.meta_fid, 0);
@@ -455,18 +474,18 @@ mod tests {
     #[test]
     fn test_hardlink_index() {
         let mut index = HardlinkIndex::new();
-        
+
         // Add hardlinked files
         assert!(index.add_file(12345, 0x0801, 3, 0, 0x100, "/path/file1".to_string()));
         assert!(index.add_file(12345, 0x0801, 3, 0, 0x150, "/path/file2".to_string()));
         assert!(index.add_file(12345, 0x0801, 3, 0, 0x1A0, "/path/file3".to_string()));
-        
+
         // Add non-hardlinked file
         assert!(!index.add_file(99999, 0x0801, 1, 0, 0x200, "/path/single".to_string()));
-        
+
         assert_eq!(index.group_count(), 1);
         assert_eq!(index.total_file_count(), 3);
-        
+
         let groups = index.groups();
         assert_eq!(groups[0].files.len(), 3);
     }

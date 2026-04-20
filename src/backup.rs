@@ -1,53 +1,69 @@
-use std::{path::PathBuf, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, Ordering}}, thread};
-use log::info;
 use crate::backup::{
-        bio::hardlink::HardlinkStatsSnapshot,
-        bio::mtime::MtimeStatsSnapshot,
-        bio::delete::DeleteStatsSnapshot,
-        stats::{BackupStats, BackupStatsSnapshot},
-        aggregate::AggregateConfig,
-    };
+    aggregate::AggregateConfig,
+    bio::delete::DeleteStatsSnapshot,
+    bio::hardlink::HardlinkStatsSnapshot,
+    bio::mtime::MtimeStatsSnapshot,
+    stats::{BackupStats, BackupStatsSnapshot},
+};
+use log::info;
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+};
 
-pub(crate) mod fcb;
 mod bio;
-mod stats;
+pub(crate) mod fcb;
 pub mod sharded_processor;
+mod stats;
 
 // Aggregate backup/restore modules
 pub mod aggregate;
-pub mod aggregate_index;
 pub mod aggregate_engine;
+pub mod aggregate_index;
 pub mod aggregate_restore;
 mod restore_pipeline;
 
-// Async I/O pipeline (used for remote targets / sources such as NFS and SMB)
+// Async I/O pipeline (used for remote targets / sources such as NFS and SMB).
 #[cfg(any(feature = "nfs", feature = "smb"))]
 pub mod aio;
 
+// Restore uses the generic local AIO helpers even in a no-remote-feature build.
+#[cfg(not(any(feature = "nfs", feature = "smb")))]
+#[allow(dead_code)]
+pub mod aio {
+    pub mod entry;
+    pub mod local_fs;
+    pub mod transport;
+}
+
 pub struct BackupOption {
     /// source location path prefix
-    source_dir_base : PathBuf,
+    source_dir_base: PathBuf,
     /// target location path prefix
-    target_dir_base : PathBuf,
+    target_dir_base: PathBuf,
 
-    meta_dir : PathBuf,
-    ctrl_dir : PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
     // path for control file
-    control_file : PathBuf,
+    control_file: PathBuf,
 
-    worker_count : usize,
+    worker_count: usize,
 
     /// Whether to run the hardlink phase after copy phase
-    enable_hardlink_phase : bool,
+    enable_hardlink_phase: bool,
 
     /// Whether to run the delete phase after hardlink phase
-    enable_delete_phase : bool,
+    enable_delete_phase: bool,
 
     /// Whether to run the mtime phase after copy/hardlink phase
-    enable_mtime_phase : bool,
+    enable_mtime_phase: bool,
 
     /// Aggregate backup configuration
-    pub aggregate_config : AggregateConfig,
+    pub aggregate_config: AggregateConfig,
 
     /// NFS target location.  When `Some`, the AIO pipeline writes to NFS
     /// instead of the local filesystem.  Requires the `nfs` feature.
@@ -80,24 +96,28 @@ pub struct BackupOption {
     /// e.g. `COPY_COMMON_FULL_xxx/D_REPO`.
     #[cfg(feature = "smb")]
     pub smb_target_d_repo_path: Option<String>,
+
+    /// Number of SMB client connections per SMB endpoint used by the async
+    /// backup pipeline. For SMB->SMB this is applied independently to source
+    /// and target pools.
+    #[cfg(feature = "smb")]
+    pub smb_connection_count: usize,
 }
-
-
 
 // each backup task do the data copy following the instruction of one control file
 pub struct BackupTask {
-    option : BackupOption,
+    option: BackupOption,
 }
 
 pub struct RunningBackup {
     #[allow(dead_code)]
-    option : BackupOption,
-    stats : Arc<BackupStats>,
-    hardlink_stats : Option<HardlinkStatsSnapshot>,
-    delete_stats : Option<DeleteStatsSnapshot>,
-    mtime_stats : Option<MtimeStatsSnapshot>,
-    terminate_handle : thread::JoinHandle<()>,
-    terminate_indicator : Arc<AtomicBool>
+    option: BackupOption,
+    stats: Arc<BackupStats>,
+    hardlink_stats: Option<HardlinkStatsSnapshot>,
+    delete_stats: Option<DeleteStatsSnapshot>,
+    mtime_stats: Option<MtimeStatsSnapshot>,
+    terminate_handle: thread::JoinHandle<()>,
+    terminate_indicator: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -120,18 +140,24 @@ impl std::fmt::Display for BackupError {
 impl std::error::Error for BackupError {}
 
 impl BackupOption {
-    pub fn new(source_dir_base : PathBuf, target_dir_base : PathBuf, meta_dir : PathBuf, ctrl_dir : PathBuf, control_file : PathBuf) -> Self {
+    pub fn new(
+        source_dir_base: PathBuf,
+        target_dir_base: PathBuf,
+        meta_dir: PathBuf,
+        ctrl_dir: PathBuf,
+        control_file: PathBuf,
+    ) -> Self {
         Self {
-            worker_count : 4,
+            worker_count: 8,
             source_dir_base,
             target_dir_base,
             meta_dir,
             ctrl_dir,
             control_file,
-            enable_hardlink_phase : false,
-            enable_delete_phase : false,
-            enable_mtime_phase : false,
-            aggregate_config : AggregateConfig::default(),
+            enable_hardlink_phase: false,
+            enable_delete_phase: false,
+            enable_mtime_phase: false,
+            aggregate_config: AggregateConfig::default(),
             #[cfg(feature = "nfs")]
             nfs_target: None,
             #[cfg(feature = "nfs")]
@@ -144,21 +170,23 @@ impl BackupOption {
             smb_source: None,
             #[cfg(feature = "smb")]
             smb_target_d_repo_path: None,
+            #[cfg(feature = "smb")]
+            smb_connection_count: crate::backup::aio::DEFAULT_SMB_POOL_SIZE,
         }
     }
-    
+
     /// Enable the hardlink phase
     pub fn enable_hardlink_phase(mut self, enable: bool) -> Self {
         self.enable_hardlink_phase = enable;
         self
     }
-    
+
     /// Enable the delete phase
     pub fn enable_delete_phase(mut self, enable: bool) -> Self {
         self.enable_delete_phase = enable;
         self
     }
-    
+
     /// Enable the mtime phase
     pub fn enable_mtime_phase(mut self, enable: bool) -> Self {
         self.enable_mtime_phase = enable;
@@ -242,24 +270,32 @@ impl BackupOption {
         self.smb_target_d_repo_path = Some(path);
         self
     }
+
+    /// Set SMB client connections per SMB endpoint for the async backup path.
+    /// Requires the `smb` Cargo feature.
+    #[cfg(feature = "smb")]
+    pub fn smb_connection_count(mut self, count: usize) -> Self {
+        self.smb_connection_count = count.max(1);
+        self
+    }
 }
 
 pub(crate) struct SharedState {
-    pub entry_produce_done : AtomicBool,
-    pub reader_done : AtomicBool,
-    pub writer_done : AtomicBool,
-    pub active_reader_io_workers : AtomicU32,
-    pub active_writer_io_workers : AtomicU32
+    pub entry_produce_done: AtomicBool,
+    pub reader_done: AtomicBool,
+    pub writer_done: AtomicBool,
+    pub active_reader_io_workers: AtomicU32,
+    pub active_writer_io_workers: AtomicU32,
 }
 
 impl Default for SharedState {
     fn default() -> Self {
         SharedState {
-            entry_produce_done : AtomicBool::new(false),
-            reader_done : AtomicBool::new(false),
-            writer_done : AtomicBool::new(false),
-            active_reader_io_workers : AtomicU32::new(0),
-            active_writer_io_workers : AtomicU32::new(0),
+            entry_produce_done: AtomicBool::new(false),
+            reader_done: AtomicBool::new(false),
+            writer_done: AtomicBool::new(false),
+            active_reader_io_workers: AtomicU32::new(0),
+            active_writer_io_workers: AtomicU32::new(0),
         }
     }
 }
@@ -292,6 +328,8 @@ impl BackupTask {
         let smb_source = self.option.smb_source.clone();
         #[cfg(feature = "smb")]
         let smb_target_d_repo_path = self.option.smb_target_d_repo_path.clone();
+        #[cfg(feature = "smb")]
+        let smb_connection_count = self.option.smb_connection_count;
 
         // When both NFS source AND NFS target are configured, run the
         // dual-pool NFS→NFS AIO pipeline.
@@ -334,6 +372,7 @@ impl BackupTask {
                 self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
+                smb_connection_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -360,6 +399,7 @@ impl BackupTask {
                 self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
+                smb_connection_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -440,6 +480,7 @@ impl BackupTask {
                 self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
+                smb_connection_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -465,6 +506,7 @@ impl BackupTask {
                 self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
+                smb_connection_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -490,6 +532,7 @@ impl BackupTask {
                 self.option.aggregate_config,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
+                smb_connection_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -543,14 +586,11 @@ impl BackupTask {
             terminate_indicator,
         }
     }
-
 }
 
 impl From<BackupOption> for BackupTask {
     fn from(option: BackupOption) -> Self {
-        Self {
-            option
-        }
+        Self { option }
     }
 }
 
@@ -558,15 +598,15 @@ impl RunningBackup {
     pub fn stats(&self) -> BackupStatsSnapshot {
         self.stats.snapshot()
     }
-    
+
     pub fn hardlink_stats(&self) -> Option<&HardlinkStatsSnapshot> {
         self.hardlink_stats.as_ref()
     }
-    
+
     pub fn delete_stats(&self) -> Option<&DeleteStatsSnapshot> {
         self.delete_stats.as_ref()
     }
-    
+
     pub fn mtime_stats(&self) -> Option<&MtimeStatsSnapshot> {
         self.mtime_stats.as_ref()
     }
@@ -707,7 +747,7 @@ impl RestoreOption {
             ctrl_dir,
             control_file,
             policy: RestorePolicy::default(),
-            worker_count: 4,
+            worker_count: 8,
             restore_hardlinks: false,
             restore_mtime: true,
             #[cfg(feature = "nfs")]
@@ -836,8 +876,7 @@ impl RestoreTask {
         }
 
         // Ensure target directory exists
-        std::fs::create_dir_all(&self.option.target_dir_base)
-            .map_err(RestoreError::IoError)?;
+        std::fs::create_dir_all(&self.option.target_dir_base).map_err(RestoreError::IoError)?;
 
         let stats = Arc::new(Mutex::new(RestoreStats::default()));
         let terminate_indicator = Arc::new(AtomicBool::new(false));
@@ -848,7 +887,10 @@ impl RestoreTask {
 
         let terminate_handle = thread::spawn(move || {
             info!("Restore operation started with policy: {:?}", option.policy);
-            info!("Source: {:?}, Target: {:?}", option.source_dir_base, option.target_dir_base);
+            info!(
+                "Source: {:?}, Target: {:?}",
+                option.source_dir_base, option.target_dir_base
+            );
 
             if let Err(e) = run_restore_task(option, stats_inner) {
                 log::error!("Restore operation failed: {e}");
@@ -913,7 +955,7 @@ fn run_restore_copy_phase(
         option.source_dir_base.clone(),
         option.original_source_base.clone(),
     )
-        .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
     #[cfg(feature = "nfs")]
     if let Some(nfs_target) = &option.nfs_target {
@@ -921,7 +963,12 @@ fn run_restore_copy_phase(
         return rt.block_on(async {
             let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
                 .await
-                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+                .map_err(|e| {
+                    RestoreError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
             let root_fh = pool.root_fh();
             let write_chunk = pool.server_wtmax.max(4096);
             let target = crate::backup::aio::transport::NfsTarget {
@@ -951,9 +998,12 @@ fn run_restore_copy_phase(
     if let Some(smb_target) = &option.smb_target {
         let smb_target = smb_target.clone();
         return rt.block_on(async {
-            let pool = crate::smb::aio::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
-                .await
-                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            let pool =
+                crate::smb::aio::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
+                    .await
+                    .map_err(|e| {
+                        RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                    })?;
             let target = crate::backup::aio::transport::SmbTarget {
                 location: smb_target,
                 pool,
@@ -1009,7 +1059,12 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         rt.block_on(async move {
             let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
                 .await
-                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+                .map_err(|e| {
+                    RestoreError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
             crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
@@ -1065,7 +1120,12 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         rt.block_on(async move {
             let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
                 .await
-                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+                .map_err(|e| {
+                    RestoreError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
             crate::nfs::aio::delete::run_nfs_delete_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
@@ -1119,7 +1179,12 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         rt.block_on(async move {
             let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
                 .await
-                .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+                .map_err(|e| {
+                    RestoreError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
             crate::nfs::aio::mtime::run_nfs_mtime_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,

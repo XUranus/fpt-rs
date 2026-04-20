@@ -57,7 +57,8 @@ pub async fn run_smb_mtime_phase(
         };
 
         stats.dirs_processed += 1;
-        let rel = crate::smb::aio::target_relative_path(source_dir_base, target_prefix, &entry.path);
+        let rel =
+            crate::smb::aio::target_relative_path(source_dir_base, target_prefix, &entry.path);
         let unc = match crate::smb::aio::relative_unc_path(location, &rel) {
             Ok(unc) => unc,
             Err(e) => {
@@ -136,5 +137,7 @@ pub async fn run_smb_mtime_phase(
 fn unix_secs_to_filetime(secs: u64) -> smb_client::binrw_util::prelude::FileTime {
     const FILETIME_EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
     const TICKS_PER_SEC: u64 = 10_000_000;
-    smb_client::binrw_util::prelude::FileTime::from((secs + FILETIME_EPOCH_OFFSET_SECS) * TICKS_PER_SEC)
+    smb_client::binrw_util::prelude::FileTime::from(
+        (secs + FILETIME_EPOCH_OFFSET_SECS) * TICKS_PER_SEC,
+    )
 }

@@ -1,19 +1,26 @@
-use std::{fs, io, path::PathBuf, sync::{Arc, Mutex}, thread};
-use log::{info, error};
 use crate::scanner::metadata::{DirDiff, FileDiff};
+use log::{error, info};
+use std::{
+    fs, io,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread,
+};
 
 use crate::scanner::{
-    ScanWorkerContext,
     metadata::{
-        ControlFileHeader, ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
-        generate_incremental_control_files,
+        generate_incremental_control_files, ControlFileHeader, ControlFileWriter, DirCacheEntry,
+        DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, FileCacheEntry,
+        FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FixedSize,
+        HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
     },
-    models::DirBatchScanResult, options::ScanOption
+    models::DirBatchScanResult,
+    options::ScanOption,
+    ScanWorkerContext,
 };
 
 pub mod bio;
 // mod aio;
-
 
 // generate meta data to files
 pub fn start_meta_writers(
@@ -35,8 +42,10 @@ pub fn start_meta_writers(
         let handle = std::thread::spawn(move || {
             // writer thread logic here
             let mut meta_writer = MetaRepoWriter::new(meta_dir).unwrap();
-            let mut dcache_writer: DirCacheWriter = DirCacheWriter::new(dcache_dir, i as u32).unwrap();
-            let mut fcache_writer: FileCacheWriter = FileCacheWriter::new(fcache_dir, i as u32).unwrap();
+            let mut dcache_writer: DirCacheWriter =
+                DirCacheWriter::new(dcache_dir, i as u32).unwrap();
+            let mut fcache_writer: FileCacheWriter =
+                FileCacheWriter::new(fcache_dir, i as u32).unwrap();
             info!("Writer thread {} started", i);
             loop {
                 // pop path from output meta queue and process
@@ -69,15 +78,12 @@ pub fn start_stats_consumers(
 
     for _ in 0..consumer_count {
         let output_queue = Arc::clone(&context.output_queue);
-        let handle = std::thread::spawn(move || {
-            while output_queue.pop().is_some() {}
-        });
+        let handle = std::thread::spawn(move || while output_queue.pop().is_some() {});
         consumer_handles.push(handle);
     }
 
     consumer_handles
 }
-
 
 fn process_scan_result(
     dir_scan_result: DirBatchScanResult,
@@ -100,7 +106,7 @@ fn process_scan_result(
 
     for fmeta in dir_scan_result.files {
         let fmeta_loc = meta_writer.write_filemeta(&fmeta).unwrap();
-        
+
         // Track hardlinks if enabled
         if scan_hardlinks && fmeta.links > 1 {
             if let Some(index) = hardlink_index {
@@ -108,17 +114,17 @@ fn process_scan_result(
                     // Build full path from directory path and file name
                     let full_path = format!("{}/{}", dir_scan_result.dir.path, fmeta.common.name);
                     idx.add_file(
-                        fmeta.common.id,      // inode
-                        fmeta.common.devno,   // device
-                        fmeta.links as u32,   // link count
-                        fmeta_loc.0,          // meta_fid
-                        fmeta_loc.1,          // meta_offset
+                        fmeta.common.id,    // inode
+                        fmeta.common.devno, // device
+                        fmeta.links as u32, // link count
+                        fmeta_loc.0,        // meta_fid
+                        fmeta_loc.1,        // meta_offset
                         full_path,
                     );
                 }
             }
         }
-        
+
         let mut fcache: FileCacheEntry = fmeta.into();
         fcache.meta_loc = fmeta_loc;
         sorted_fcaches.push(fcache);
@@ -139,9 +145,7 @@ fn process_scan_result(
     // TODO:: merge fcache later
 }
 
-
-
-pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error> {
+pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error> {
     let target_option = &scan_option.target_dir;
     let meta_dir = target_option.meta_dir.clone();
     let ctrl_dir = target_option.ctrl_dir.clone();
@@ -158,13 +162,13 @@ pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error
 
     let copy_file_path = ctrl_dir.join("copy.txt");
     let mtime_file_path = ctrl_dir.join("mtime.txt");
-    
+
     // Check if incremental backup is requested
     if let Some(ref prev_meta_dir) = target_option.prev_meta_dir {
         info!("Generating incremental control files...");
         info!("  Previous metadata: {}", prev_meta_dir.display());
         info!("  Current metadata: {}", meta_dir.display());
-        
+
         match generate_incremental_control_files(
             Some(prev_meta_dir.as_path()),
             meta_dir.as_path(),
@@ -174,35 +178,41 @@ pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error
         ) {
             Ok(stats) => {
                 info!("Incremental control files generated:");
-                info!("  New dirs: {}, Modified dirs: {}, Deleted dirs: {}", 
-                    stats.new_dirs, stats.modified_dirs, stats.deleted_dirs);
-                info!("  New files: {}, Modified files: {}, Deleted files: {}",
-                    stats.new_files, stats.modified_files, stats.deleted_files);
+                info!(
+                    "  New dirs: {}, Modified dirs: {}, Deleted dirs: {}",
+                    stats.new_dirs, stats.modified_dirs, stats.deleted_dirs
+                );
+                info!(
+                    "  New files: {}, Modified files: {}, Deleted files: {}",
+                    stats.new_files, stats.modified_files, stats.deleted_files
+                );
             }
             Err(e) => {
                 error!("Failed to generate incremental control files: {}", e);
                 return Err(e);
             }
         }
-        
+
         // Still generate mtime.txt for all directories (needed for mtime phase)
         let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
         let mut mtime_writer = MtimeControlFileWriter::new_with_source(
             mtime_file_path,
             &scan_option.control_path.source_kind,
             &scan_option.control_path.source_root,
-        ).unwrap();
-        
-        let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
+        )
+        .unwrap();
+
+        let dcaches: Vec<PathBuf> = fs::read_dir(dcache_dir.clone())
+            .unwrap()
             .filter_map(|f| f.ok())
-            .filter(|f|f.file_name().to_string_lossy().starts_with("dcache_"))
+            .filter(|f| f.file_name().to_string_lossy().starts_with("dcache_"))
             .map(|f| f.path())
             .collect();
 
         for dcache in dcaches {
-            let dcache_iter : DirCacheIterator = DirCacheIterator::from(
-                DirCacheRandomReader::open(dcache).unwrap());
-            
+            let dcache_iter: DirCacheIterator =
+                DirCacheIterator::from(DirCacheRandomReader::open(dcache).unwrap());
+
             for dcache_entry in dcache_iter {
                 let dmeta = meta_reader.get_dmeta(dcache_entry.meta_loc).unwrap();
                 let mtime_entry = MtimeDirEntry {
@@ -216,30 +226,32 @@ pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error
                 mtime_writer.write_dir(&mtime_entry).unwrap();
             }
         }
-        
+
         mtime_writer.finish().unwrap();
         return Ok(());
     }
-    
+
     // Full backup mode - generate copy.txt with all entries marked as NN
     let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
-    let mut copy_writer = ControlFileWriter::new_with_header(copy_file_path, &ctrl_header).unwrap();    
+    let mut copy_writer = ControlFileWriter::new_with_header(copy_file_path, &ctrl_header).unwrap();
     let mut mtime_writer = MtimeControlFileWriter::new_with_source(
         mtime_file_path,
         &scan_option.control_path.source_kind,
         &scan_option.control_path.source_root,
-    ).unwrap();
+    )
+    .unwrap();
 
-    let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
+    let dcaches: Vec<PathBuf> = fs::read_dir(dcache_dir.clone())
+        .unwrap()
         .filter_map(|f| f.ok())
-        .filter(|f|f.file_name().to_string_lossy().starts_with("dcache_"))
+        .filter(|f| f.file_name().to_string_lossy().starts_with("dcache_"))
         .map(|f| f.path())
         .collect();
 
     for dcache in dcaches {
-        let dcache_iter : DirCacheIterator = DirCacheIterator::from(
-            DirCacheRandomReader::open(dcache).unwrap());
-        
+        let dcache_iter: DirCacheIterator =
+            DirCacheIterator::from(DirCacheRandomReader::open(dcache).unwrap());
+
         for dcache_entry in dcache_iter {
             let (fcache_fid, fcache_offset) = (dcache_entry.fcache_fid, dcache_entry.fcache_offset);
             let files_count = dcache_entry.files_count;
@@ -252,7 +264,7 @@ pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error
                 files_count: files_count,
             };
             copy_writer.write_dir(&dctrl_entry).unwrap();
-            
+
             // Write mtime entry for directory
             let mtime_entry = MtimeDirEntry {
                 path: dmeta.path,
@@ -263,17 +275,18 @@ pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error
                 mtime: dmeta.common.mtime as u64,
             };
             mtime_writer.write_dir(&mtime_entry).unwrap();
-            
+
             if files_count == 0 {
                 continue;
             }
-            
+
             // read file cache
             let fcache_path = fcache_dir.join(format!("{}_{}.dat", "fcache", fcache_fid));
-            let fcache_iter : FileCacheIterator = FileCacheIterator::from(
-                FileCacheRandomReader::open(fcache_path).unwrap(), 
-                files_count, 
-                fcache_offset/FileCacheEntry::SIZE as u32);
+            let fcache_iter: FileCacheIterator = FileCacheIterator::from(
+                FileCacheRandomReader::open(fcache_path).unwrap(),
+                files_count,
+                fcache_offset / FileCacheEntry::SIZE as u32,
+            );
 
             for fcache_entry in fcache_iter {
                 let fmeta = meta_reader.get_fmeta(fcache_entry.meta_loc).unwrap();
@@ -284,7 +297,6 @@ pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error
                     meta_offset: fcache_entry.meta_loc.1,
                 };
                 copy_writer.write_file(&fctrl_entry).unwrap();
-
             }
         }
     }

@@ -17,16 +17,16 @@
 //! - **Iterator**: Streams all entries in order.
 //! - **Repository reader**: Manages multiple files and routes requests by file ID.
 
+use super::{DirCacheEntry, FileCacheEntry, FixedSize};
+use bincode::{deserialize, serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::cell::RefCell;
-use bincode::{serialize, deserialize};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use super::{DirCacheEntry, FileCacheEntry, FixedSize};
 
 // TODO:: slicing
 /// Maximum size (in bytes) of a single cache file before rollover (512 MB).
@@ -65,10 +65,7 @@ impl<T: Serialize + FixedSize> BinObjectSeqWriter<T> {
     /// are derived from the existing file size.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let metadata = file.metadata()?;
         let file_size = metadata.len() as usize;
 
@@ -95,7 +92,10 @@ impl<T: Serialize + FixedSize> BinObjectSeqWriter<T> {
     /// Appends an object to the file and returns its 0-based index.
     pub fn write(&mut self, item: &T) -> io::Result<u32> {
         let buffer = serialize(item).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Serialization failed: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Serialization failed: {}", e),
+            )
         })?;
 
         // Ensure serialized size matches expected fixed size
@@ -133,7 +133,9 @@ pub type DirCacheWriter = BinObjectSeqWriter<DirCacheEntry>;
 impl FileCacheWriter {
     /// Creates a new file cache writer for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir.as_ref().join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
+        let path = base_dir
+            .as_ref()
+            .join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
         Self::open(path)
     }
 }
@@ -141,7 +143,9 @@ impl FileCacheWriter {
 impl DirCacheWriter {
     /// Creates a new directory cache writer for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir.as_ref().join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
+        let path = base_dir
+            .as_ref()
+            .join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
         Self::open(path)
     }
 }
@@ -154,9 +158,9 @@ pub struct BinObjectRandomReader<T: DeserializeOwned + FixedSize> {
     /// Underlying file handle.
     file: File,
     /// file size
-    size : u64,
+    size: u64,
     /// phantom data
-    _phantom : std::marker::PhantomData<T>
+    _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T: DeserializeOwned + FixedSize> BinObjectRandomReader<T> {
@@ -165,15 +169,22 @@ impl<T: DeserializeOwned + FixedSize> BinObjectRandomReader<T> {
         let path = path.as_ref().to_path_buf();
         let size = fs::metadata(path.clone())?.size();
         let file = File::open(&path)?;
-        Ok(Self { path, file , size, _phantom : std::marker::PhantomData})
+        Ok(Self {
+            path,
+            file,
+            size,
+            _phantom: std::marker::PhantomData,
+        })
     }
 
     /// Reads the object at the given 0-based index.
     pub fn read_object(&mut self, index: u32) -> io::Result<T> {
         let offset = (index as usize) * T::SIZE;
         if offset >= self.size as usize {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, 
-                format!("invalid offset: {}, size: {}", offset, self.size)))
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid offset: {}, size: {}", offset, self.size),
+            ));
         }
         self.file.seek(SeekFrom::Start(offset as u64))?;
 
@@ -181,7 +192,10 @@ impl<T: DeserializeOwned + FixedSize> BinObjectRandomReader<T> {
         self.file.read_exact(&mut payload)?;
 
         let object = deserialize(&payload).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("Deserialization failed: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Deserialization failed: {}", e),
+            )
         })?;
         Ok(object)
     }
@@ -247,7 +261,9 @@ pub type FileCacheIterator = BinaryObjectSeqIterator<FileCacheEntry>;
 impl FileCacheRandomReader {
     /// Opens a file cache reader for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir.as_ref().join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
+        let path = base_dir
+            .as_ref()
+            .join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
         Self::open(path)
     }
 }
@@ -255,7 +271,9 @@ impl FileCacheRandomReader {
 impl DirCacheRandomReader {
     /// Opens a directory cache reader for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir.as_ref().join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
+        let path = base_dir
+            .as_ref()
+            .join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
         Self::open(path)
     }
 }
@@ -288,7 +306,9 @@ impl CacheRepoReader {
     pub fn read_fcache(&self, fid: u32, index: u32) -> io::Result<FileCacheEntry> {
         let mut map = self.fcache_reader_map.borrow_mut();
         let reader = map.entry(fid).or_insert_with(|| {
-            let path = self.base_dir.join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
+            let path = self
+                .base_dir
+                .join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
             FileCacheRandomReader::new(path, fid).expect("Failed to open file cache")
         });
         reader.read_object(index)
@@ -298,24 +318,33 @@ impl CacheRepoReader {
     pub fn read_dcache(&self, fid: u32, index: u32) -> io::Result<DirCacheEntry> {
         let mut map = self.dcache_reader_map.borrow_mut();
         let reader = map.entry(fid).or_insert_with(|| {
-            let path = self.base_dir.join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
+            let path = self
+                .base_dir
+                .join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
             DirCacheRandomReader::new(path, fid).expect("Failed to open directory cache")
         });
         reader.read_object(index)
     }
 }
 
-
 impl DirCacheIterator {
-    pub fn from(freader : DirCacheRandomReader) -> Self {
+    pub fn from(freader: DirCacheRandomReader) -> Self {
         let total_count = freader.total_count();
         // visit `DirCacheEntry` from beginning
-        Self { index : 0, total_count: total_count, freader }
+        Self {
+            index: 0,
+            total_count: total_count,
+            freader,
+        }
     }
 }
 
 impl FileCacheIterator {
-    pub fn from(freader : FileCacheRandomReader, total_count : u32, index : u32) -> Self {
-        Self { index, total_count: total_count, freader }
+    pub fn from(freader: FileCacheRandomReader, total_count: u32, index: u32) -> Self {
+        Self {
+            index,
+            total_count: total_count,
+            freader,
+        }
     }
 }

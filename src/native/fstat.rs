@@ -1,29 +1,27 @@
 // src/scanner/fstat.rs
 
 // Enable required features for nix
-#[cfg(all(unix, not(target_os = "windows")))]
-use nix::sys::stat::{SFlag, FileStat};
-#[cfg(all(unix, target_os = "linux"))]
-use xattr;
 #[cfg(all(unix, target_os = "linux"))]
 use base64::Engine as _;
+#[cfg(all(unix, not(target_os = "windows")))]
+use nix::sys::stat::{FileStat, SFlag};
+#[cfg(all(unix, target_os = "linux"))]
+use xattr;
 
 use std::path::{Path, PathBuf};
 
 use super::super::scanner::metadata::{DirMeta, FileMeta, MetaCommon};
 
-
 #[cfg(unix)]
 fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
     use nix::sys::stat::lstat;
-    
-    // Use lstat to not follow symlinks (we want to stat the symlink itself)
-    let p = path
-        .to_str()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid UTF-8 path"))?;
 
-    let metadata: FileStat = lstat(p)
-        .map_err(|e| std::io::Error::from(e))?; // nix::Error → std::io::Error
+    // Use lstat to not follow symlinks (we want to stat the symlink itself)
+    let p = path.to_str().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid UTF-8 path")
+    })?;
+
+    let metadata: FileStat = lstat(p).map_err(|e| std::io::Error::from(e))?; // nix::Error → std::io::Error
 
     let name = path
         .file_name()
@@ -61,7 +59,7 @@ fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
                 common.xattributes = Some(xattrs_str);
             }
         }
-        
+
         // Get ACL (access and default for directories)
         if let Ok((access_acl, default_acl)) = get_acl_text(path, is_dir) {
             if !access_acl.is_empty() {
@@ -103,10 +101,10 @@ fn get_xattrs_as_string(path: &Path) -> std::io::Result<String> {
 #[cfg(all(unix, target_os = "linux"))]
 fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> {
     use exacl::getfacl;
-    
+
     let mut access_acl = String::new();
     let mut default_acl = String::new();
-    
+
     match getfacl(path, None) {
         Ok(acl_entries) => {
             for entry in acl_entries {
@@ -131,20 +129,15 @@ fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> 
             // ACL not supported or not available
         }
     }
-    
+
     Ok((access_acl, default_acl))
 }
 
-
 #[cfg(windows)]
 fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
-    use windows::{
-        Win32::Foundation::*,
-        Win32::Storage::FileSystem::*,
-        Win32::Security::*,
-    };
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use windows::{Win32::Foundation::*, Win32::Security::*, Win32::Storage::FileSystem::*};
 
     let wide_path: Vec<u16> = path
         .as_os_str()
@@ -170,8 +163,18 @@ fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
         let mut basic_info = FILE_BASIC_INFO::default();
         let mut internal_info = FILE_INTERNAL_INFO::default();
 
-        let ok1 = GetFileInformationByHandleEx(hfile, FileBasicInfo, &mut basic_info as *mut _ as _, std::mem::size_of::<FILE_BASIC_INFO>() as u32);
-        let ok2 = GetFileInformationByHandleEx(hfile, FileInternalInfo, &mut internal_info as *mut _ as _, std::mem::size_of::<FILE_INTERNAL_INFO>() as u32);
+        let ok1 = GetFileInformationByHandleEx(
+            hfile,
+            FileBasicInfo,
+            &mut basic_info as *mut _ as _,
+            std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+        );
+        let ok2 = GetFileInformationByHandleEx(
+            hfile,
+            FileInternalInfo,
+            &mut internal_info as *mut _ as _,
+            std::mem::size_of::<FILE_INTERNAL_INFO>() as u32,
+        );
 
         if !(ok1.as_bool() && ok2.as_bool()) {
             CloseHandle(hfile);
@@ -186,7 +189,11 @@ fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
             ctime: filetime_to_u32(basic_info.CreationTime),
             mtime: filetime_to_u32(basic_info.LastWriteTime),
             devno: 0,
-            name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+            name: path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
             security_descriptor: None,
             posix_access_acl: None,
             posix_default_acl: None,
@@ -222,12 +229,18 @@ fn filetime_to_u32(ft: windows::Win32::Foundation::FILETIME) -> u32 {
 
 #[cfg(windows)]
 fn get_security_descriptor_sddl(hfile: HANDLE) -> std::io::Result<String> {
-    use windows::Win32::Security::*;
     use windows::Win32::Foundation::*;
+    use windows::Win32::Security::*;
 
     unsafe {
         let mut size = 0u32;
-        GetKernelObjectSecurity(hfile, OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, None, 0, &mut size);
+        GetKernelObjectSecurity(
+            hfile,
+            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            None,
+            0,
+            &mut size,
+        );
         let mut sd = vec![0u8; size as usize];
         if !GetKernelObjectSecurity(
             hfile,
@@ -235,7 +248,9 @@ fn get_security_descriptor_sddl(hfile: HANDLE) -> std::io::Result<String> {
             Some(sd.as_mut_ptr() as *mut _),
             size,
             &mut size,
-        ).as_bool() {
+        )
+        .as_bool()
+        {
             return Err(std::io::Error::last_os_error());
         }
 
@@ -246,7 +261,9 @@ fn get_security_descriptor_sddl(hfile: HANDLE) -> std::io::Result<String> {
             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut sddl,
             None,
-        ).as_bool() {
+        )
+        .as_bool()
+        {
             return Err(std::io::Error::last_os_error());
         }
 
@@ -267,7 +284,7 @@ pub fn stat_dir(path: &PathBuf) -> std::io::Result<DirMeta> {
     let common = stat_common(path, true)?;
     Ok(DirMeta {
         common,
-        path : path.to_string_lossy().into_owned()
+        path: path.to_string_lossy().into_owned(),
     })
 }
 
@@ -276,27 +293,27 @@ pub fn stat_dir(path: &PathBuf) -> std::io::Result<DirMeta> {
 #[cfg(all(unix, target_os = "linux"))]
 fn detect_sparse_ranges(path: &Path) -> Option<Vec<(u64, u64)>> {
     use std::os::unix::fs::MetadataExt;
-    
+
     // Check if file is actually sparse by comparing size vs blocks used
     let metadata = std::fs::metadata(path).ok()?;
     let size = metadata.len();
     let blocks = metadata.blocks() as u64;
     let block_size = 512u64; // Standard block size for st_blocks
-    
+
     let apparent_size = size;
     let actual_size = blocks * block_size;
-    
+
     // If apparent size is significantly larger than actual size, it's sparse
     if apparent_size <= actual_size || apparent_size == 0 {
         return None;
     }
-    
+
     // Try to use FIEMAP ioctl to get exact hole locations
     // For now, we return a simple representation: one hole at the end
     // A full implementation would use ioctl(FIEMAP) to get precise extents
     let hole_start = actual_size;
     let hole_len = apparent_size - actual_size;
-    
+
     if hole_len > 0 {
         Some(vec![(hole_start, hole_len)])
     } else {
@@ -330,7 +347,7 @@ pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
     } else {
         1
     };
-    
+
     // Detect sparse file ranges
     let sparse_range = detect_sparse_ranges(path);
 

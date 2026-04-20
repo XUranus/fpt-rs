@@ -1,5 +1,5 @@
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 #[allow(dead_code)]
@@ -53,7 +53,8 @@ fn get_acl_text(path: &Path) -> Option<String> {
     match getfacl(path, None) {
         Ok(acl_entries) => {
             // Convert ACL entries to a textual representation
-            let text = acl_entries.iter()
+            let text = acl_entries
+                .iter()
                 .map(|e| e.to_string())
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -82,14 +83,14 @@ fn fill_unix_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
             .unwrap_or(UNIX_EPOCH)
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .unwrap_or(0),
     );
     meta.mtime = Some(
         md.modified()
             .unwrap_or(UNIX_EPOCH)
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .unwrap_or(0),
     );
     // ctime is not directly available in std::fs::Metadata on all platforms
     // Using modified time as fallback
@@ -107,9 +108,15 @@ fn fill_unix_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
     #[cfg(target_os = "macos")]
     {
         use std::os::macos::fs::MetadataExt;
-        meta.btime = Some(md.created().map(|t| {
-            t.duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-        }).unwrap_or(0));
+        meta.btime = Some(
+            md.created()
+                .map(|t| {
+                    t.duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0),
+        );
     }
 
     // Extended attributes
@@ -126,15 +133,19 @@ fn fill_unix_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
 fn fill_windows_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use winapi::um::fileapi::*;
-    use winapi::um::winbase::*;
-    use winapi::um::securitybase::*;
-    use winapi::um::accctrl::*;
-    use winapi::um::aclapi::*;
     use winapi::shared::minwindef::*;
     use winapi::shared::ntdef::NULL;
+    use winapi::um::accctrl::*;
+    use winapi::um::aclapi::*;
+    use winapi::um::fileapi::*;
+    use winapi::um::securitybase::*;
+    use winapi::um::winbase::*;
 
-    let wide_path: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
     unsafe {
         let handle = CreateFileW(
             wide_path.as_ptr(),
@@ -157,21 +168,21 @@ fn fill_windows_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
                 .unwrap_or(UNIX_EPOCH)
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
-                .unwrap_or(0)
+                .unwrap_or(0),
         );
         meta.mtime = Some(
             md.modified()
                 .unwrap_or(UNIX_EPOCH)
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
-                .unwrap_or(0)
+                .unwrap_or(0),
         );
         meta.ctime = Some(
             md.created()
                 .unwrap_or(UNIX_EPOCH)
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
-                .unwrap_or(0)
+                .unwrap_or(0),
         );
 
         // Security Descriptor
@@ -198,7 +209,8 @@ fn fill_windows_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
             NULL as *mut _,
             NULL as *mut _,
             &mut psd as *mut _,
-        ) == 0 {
+        ) == 0
+        {
             meta.security_descriptor = Some(buffer);
         }
 

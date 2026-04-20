@@ -1,9 +1,9 @@
-pub mod scanner;
 pub mod backup;
-pub mod utility;
-pub mod native;
 pub mod frame;
 pub mod logging;
+pub mod native;
+pub mod scanner;
+pub mod utility;
 
 #[cfg(feature = "nfs")]
 pub mod nfs;
