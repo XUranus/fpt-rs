@@ -66,19 +66,19 @@ struct Args {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     aggregate: bool,
 
-    /// Maximum size of aggregate blob files in MB [default: 64]
-    #[arg(long, value_name = "SIZE_MB", default_value = "64")]
+    /// Maximum size of aggregate blob files in MB [default: 4]
+    #[arg(long, value_name = "SIZE_MB", default_value = "4")]
     max_blob_size: u64,
 
     /// File size threshold for aggregation in KB [default: 1024]
     #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
     aggregate_threshold: u64,
-    /// Number of parallel NFS connections [default: 4]
-    #[arg(long, value_name = "N", default_value = "4")]
+    /// Number of parallel NFS connections [default: 32]
+    #[arg(long, value_name = "N", default_value = "32")]
     nfs_connections: usize,
 
-    /// Number of SMB client connections per SMB endpoint [default: 2]
-    #[arg(long, value_name = "N", default_value = "2")]
+    /// Number of SMB client connections per SMB endpoint [default: 1]
+    #[arg(long, value_name = "N", default_value = "1")]
     smb_connections: usize,
 
     /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)

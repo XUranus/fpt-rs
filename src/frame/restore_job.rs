@@ -212,7 +212,7 @@ impl BackupRestoreJob for FileRestoreJob {
                     enable_hardlink: false,
                     enable_delete: false,
                     enable_mtime: false,
-                    smb_connection_count: 2,
+                    smb_connection_count: 1,
                     backup_source: DataLocation::Local(PathBuf::new()), // unused for restore
                     backup_target: DataLocation::Local(PathBuf::new()), // unused for restore
                     restore_target: cfg.restore_target.clone(),

@@ -115,7 +115,7 @@ struct Args {
     smb_query_buffer_mb: u32,
 
     /// Number of parallel NFS connections (used when a source is an NFS URL)
-    #[arg(long, default_value = "4", value_name = "COUNT")]
+    #[arg(long, default_value = "32", value_name = "COUNT")]
     nfs_connections: usize,
 
     /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)

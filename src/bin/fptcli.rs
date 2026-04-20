@@ -57,7 +57,7 @@ enum Commands {
         jobs: usize,
 
         /// Aggregate blob size in MB (only for aggregated format)
-        #[arg(long, default_value = "64", value_name = "MB")]
+        #[arg(long, default_value = "4", value_name = "MB")]
         blob_size: u64,
 
         /// Aggregate file threshold in KB (only for aggregated format)
@@ -81,7 +81,7 @@ enum Commands {
         workers: usize,
 
         /// Number of parallel NFS connections (used when source or target is an NFS URL)
-        #[arg(long, default_value = "4", value_name = "COUNT")]
+        #[arg(long, default_value = "32", value_name = "COUNT")]
         nfs_connections: usize,
 
         /// Number of SMB client connections per SMB endpoint
@@ -128,7 +128,7 @@ enum Commands {
         jobs: usize,
 
         /// Number of worker threads per subtask
-        #[arg(long, short = 'w', default_value = "4", value_name = "COUNT")]
+        #[arg(long, short = 'w', default_value = "8", value_name = "COUNT")]
         workers: usize,
 
         /// Restore hardlinks
@@ -140,7 +140,7 @@ enum Commands {
         mtime: bool,
 
         /// Number of parallel NFS connections (used when copy or target is an NFS URL)
-        #[arg(long, default_value = "4", value_name = "COUNT")]
+        #[arg(long, default_value = "32", value_name = "COUNT")]
         nfs_connections: usize,
 
         /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)

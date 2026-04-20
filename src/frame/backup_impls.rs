@@ -66,7 +66,7 @@ impl BackupConfig {
             control_file: control_file.into(),
             aggregate_config: AggregateConfig::default(),
             remote_target_prefix: None,
-            smb_connection_count: 2,
+            smb_connection_count: 1,
             enable_hardlink: false,
             enable_delete: false,
             enable_mtime: false,

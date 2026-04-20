@@ -80,7 +80,7 @@ impl Default for BackupJobConfig {
             enable_delete: false,
             enable_mtime: false,
             max_concurrent_subtasks: 4,
-            smb_connection_count: 2,
+            smb_connection_count: 1,
             incremental_base: None,
             verbose: 0,
         }
