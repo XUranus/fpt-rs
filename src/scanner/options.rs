@@ -47,6 +47,13 @@ pub struct ScanOption {
     /// Configuration for sharded control files.
     pub shard_option: ShardOption,
 
+    /// SMB query-directory buffer size in bytes.
+    ///
+    /// Larger values can reduce the number of `QUERY_DIRECTORY` round-trips
+    /// when scanning large directories over SMB. The SMB transport will cap
+    /// this to the negotiated transact size.
+    pub smb_query_buffer_size: u32,
+
     /// When true, only collect scan statistics and skip on-disk outputs.
     pub stats_only: bool,
 }
@@ -207,6 +214,7 @@ impl Default for ScanOption {
                 spill_load_batch_size: 20_000,
             },
             shard_option: ShardOption::default(),
+            smb_query_buffer_size: 8 * 1024 * 1024,
             stats_only: false,
         }
     }
@@ -320,6 +328,12 @@ impl ScanOption {
     /// Sets the maximum shard file size in bytes.
     pub fn shard_max_size(mut self, size: u64) -> Self {
         self.shard_option.max_size = size;
+        self
+    }
+
+    /// Sets the SMB query-directory buffer size in bytes.
+    pub fn smb_query_buffer_size(mut self, size: u32) -> Self {
+        self.smb_query_buffer_size = size;
         self
     }
 

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use smb_client::{DirAccessMask, Directory, FileAccessMask, FileAllInformation, FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath};
+use smb_client::{CreateDisposition, CreateOptions, DirAccessMask, Directory, FileAccessMask, FileAllInformation, FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath};
 use tokio::sync::mpsc;
 
 use crate::scanner::models::DirBatchScanResult;
@@ -94,12 +94,19 @@ impl SmbScanner {
         task: DirTask,
         scan_option: &ScanOption,
     ) -> DirScanOutput {
-        let open_args = FileCreateArgs::make_open_existing(
+        let dir_access = if task.seed.is_some() {
+            DirAccessMask::new().with_list_directory(true)
+        } else {
             DirAccessMask::new()
                 .with_list_directory(true)
                 .with_read_attributes(true)
-                .into(),
-        );
+        };
+        let open_args = FileCreateArgs {
+            disposition: CreateDisposition::Open,
+            attributes: smb_client::FileAttributes::new().with_directory(true),
+            options: CreateOptions::new().with_directory_file(true),
+            desired_access: dir_access.into(),
+        };
 
         let resource = match self.client.create_file(&task.unc, &open_args).await {
             Ok(r) => r,
@@ -150,7 +157,12 @@ impl SmbScanner {
         let mut children = Vec::new();
 
         let dir = Arc::new(dir);
-        let query_result = Directory::query::<FileIdBothDirectoryInformation>(&dir, "*").await;
+        let query_result = Directory::query_with_options::<FileIdBothDirectoryInformation>(
+            &dir,
+            "*",
+            scan_option.smb_query_buffer_size,
+        )
+        .await;
         let mut stream = match query_result {
             Ok(stream) => stream,
             Err(e) => {

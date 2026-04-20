@@ -95,6 +95,10 @@ struct Args {
     #[arg(long, value_name = "BYTES")]
     shard_max_size: Option<u64>,
 
+    /// SMB query-directory buffer size in MiB.
+    #[arg(long, default_value = "8", value_name = "MIB")]
+    smb_query_buffer_mb: u32,
+
     /// Number of parallel NFS connections (used when a source is an NFS URL)
     #[arg(long, default_value = "4", value_name = "COUNT")]
     nfs_connections: usize,
@@ -180,6 +184,7 @@ fn build_scan_option(args: &Args) -> ScanOption {
         .prev_meta_dir(args.prev_meta_dir.clone())
         .enable_sharding(args.shard)
         .shard_num(args.shard_num)
+        .smb_query_buffer_size(args.smb_query_buffer_mb.saturating_mul(1024 * 1024))
         .stats_only(args.stats_only);
 
     if let Some(max) = args.shard_max_entries_copy {
