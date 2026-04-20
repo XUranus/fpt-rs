@@ -195,11 +195,40 @@ Current state:
 - `src/smb/scanner.rs` traverses the configured share/sub-path and emits `DirBatchScanResult`
 - the standard metadata writers and control-file generation path are reused unchanged
 - hardlink counts are queried on demand when `scan_hardlinks` is enabled
+- SMB scan performance has been improved substantially by:
+  - reusing parent directory-entry metadata for non-root directories instead of re-querying each directory
+  - making the SMB query-directory buffer size configurable via `ScanOption::smb_query_buffer_size` and `fsscan --smb-query-buffer-mb`
+  - avoiding synchronous per-directory `CLOSE` waits on the scan hot path and letting `smb-rs` close dropped handles asynchronously
 
 Remaining gaps:
 
 - reparse points are currently treated conservatively and are not resolved to symlink targets
-- traversal is currently single-walker async traversal, not yet parallelized like the NFS scanner
+- traversal still pays one SMB `CREATE` per scanned directory, which remains the dominant scanner cost on deep trees
+- deferred close currently causes some benign `smb-rs` close errors during client disconnect because background close tasks race with session teardown
+
+### SMB Scanner Performance Notes
+
+Measured on a local Samba server with a tree of about `3905` files and `3906`
+directories:
+
+- initial SMB scan time was about `40s`
+- reusing parent directory metadata reduced scan time to about `20s`
+- increasing SMB query buffer size from the default to `8 MiB` reduced scan time further to about `18s`
+- deferring per-directory close waits reduced scan time again to about `10s`
+
+Instrumented timing showed that the dominant cost was not directory enumeration
+itself, but the per-directory open/close lifecycle:
+
+- `QUERY_DIRECTORY` time was negligible
+- root `query_info` time was negligible
+- per-directory `CREATE` calls dominated scan time
+- synchronous per-directory `CLOSE` calls were also very expensive until deferred
+
+This means the next meaningful SMB scanner wins are likely to come from:
+
+- reducing the number of directory opens required by the traversal model
+- using more efficient relative-handle directory operations if `smb-rs` grows that capability
+- minimizing optional per-file metadata work for workloads that do not need it
 
 ### Phase 3: SMB Read/Write Primitives
 

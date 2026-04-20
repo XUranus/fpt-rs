@@ -5,6 +5,8 @@
 //! metadata/control-file pipeline can be reused unchanged.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use smb_client::{CreateDisposition, CreateOptions, DirAccessMask, Directory, FileAccessMask, FileAllInformation, FileCreateArgs, FileIdBothDirectoryInformation, FileStandardInformation, Resource, UncPath};
@@ -23,6 +25,90 @@ pub struct SmbScanner {
     client: Arc<smb_client::Client>,
     location: SmbLocation,
     devno: u64,
+    metrics: Arc<SmbScanMetrics>,
+}
+
+#[derive(Default)]
+struct SmbScanMetrics {
+    dir_open_calls: AtomicU64,
+    dir_open_ns: AtomicU64,
+    dir_query_info_calls: AtomicU64,
+    dir_query_info_ns: AtomicU64,
+    dir_query_calls: AtomicU64,
+    dir_query_ns: AtomicU64,
+    link_count_calls: AtomicU64,
+    link_count_ns: AtomicU64,
+    close_calls: AtomicU64,
+    close_ns: AtomicU64,
+}
+
+impl SmbScanMetrics {
+    fn add_dir_open(&self, started: Instant) {
+        self.dir_open_calls.fetch_add(1, Ordering::Relaxed);
+        self.dir_open_ns
+            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    }
+
+    fn add_dir_query_info(&self, started: Instant) {
+        self.dir_query_info_calls.fetch_add(1, Ordering::Relaxed);
+        self.dir_query_info_ns
+            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    }
+
+    fn add_dir_query(&self, started: Instant) {
+        self.dir_query_calls.fetch_add(1, Ordering::Relaxed);
+        self.dir_query_ns
+            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    }
+
+    fn add_link_count(&self, started: Instant) {
+        self.link_count_calls.fetch_add(1, Ordering::Relaxed);
+        self.link_count_ns
+            .fetch_add(started.elapsed().as_nanos().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+    }
+
+    fn log_summary(&self) {
+        fn fmt_ms(total_ns: u64) -> String {
+            format!("{:.3} ms", total_ns as f64 / 1_000_000.0)
+        }
+        fn fmt_avg(total_ns: u64, calls: u64) -> String {
+            if calls == 0 {
+                "0.000 ms".to_string()
+            } else {
+                format!("{:.3} ms", total_ns as f64 / calls as f64 / 1_000_000.0)
+            }
+        }
+
+        let dir_open_calls = self.dir_open_calls.load(Ordering::Relaxed);
+        let dir_open_ns = self.dir_open_ns.load(Ordering::Relaxed);
+        let dir_query_info_calls = self.dir_query_info_calls.load(Ordering::Relaxed);
+        let dir_query_info_ns = self.dir_query_info_ns.load(Ordering::Relaxed);
+        let dir_query_calls = self.dir_query_calls.load(Ordering::Relaxed);
+        let dir_query_ns = self.dir_query_ns.load(Ordering::Relaxed);
+        let link_count_calls = self.link_count_calls.load(Ordering::Relaxed);
+        let link_count_ns = self.link_count_ns.load(Ordering::Relaxed);
+        let close_calls = self.close_calls.load(Ordering::Relaxed);
+        let close_ns = self.close_ns.load(Ordering::Relaxed);
+
+        log::info!(
+            "SMB scan timing: dir_open={} total={} avg={}, dir_query_info={} total={} avg={}, dir_query={} total={} avg={}, link_count={} total={} avg={}, close={} total={} avg={}",
+            dir_open_calls,
+            fmt_ms(dir_open_ns),
+            fmt_avg(dir_open_ns, dir_open_calls),
+            dir_query_info_calls,
+            fmt_ms(dir_query_info_ns),
+            fmt_avg(dir_query_info_ns, dir_query_info_calls),
+            dir_query_calls,
+            fmt_ms(dir_query_ns),
+            fmt_avg(dir_query_ns, dir_query_calls),
+            link_count_calls,
+            fmt_ms(link_count_ns),
+            fmt_avg(link_count_ns, link_count_calls),
+            close_calls,
+            fmt_ms(close_ns),
+            fmt_avg(close_ns, close_calls),
+        );
+    }
 }
 
 struct DirTask {
@@ -45,6 +131,7 @@ impl SmbScanner {
             client,
             location: location.clone(),
             devno: share_devno(&location.host, &location.share),
+            metrics: Arc::new(SmbScanMetrics::default()),
         })
     }
 
@@ -86,6 +173,7 @@ impl SmbScanner {
         }
 
         self.client.close().await.map_err(|e| e.to_string())?;
+        self.metrics.log_summary();
         Ok(())
     }
 
@@ -108,9 +196,11 @@ impl SmbScanner {
             desired_access: dir_access.into(),
         };
 
+        let open_started = Instant::now();
         let resource = match self.client.create_file(&task.unc, &open_args).await {
             Ok(r) => r,
             Err(e) => {
+                self.metrics.add_dir_open(open_started);
                 log::error!("SMB open dir {} failed: {}", task.path, e);
                 if let Some(seed) = task.seed {
                     return DirScanOutput {
@@ -126,6 +216,7 @@ impl SmbScanner {
                 return DirScanOutput { batch: None, children: Vec::new() };
             }
         };
+        self.metrics.add_dir_open(open_started);
 
         let dir = match resource {
             Resource::Directory(dir) => dir,
@@ -139,11 +230,16 @@ impl SmbScanner {
         let batch_dir = if let Some(seed) = &task.seed {
             smb_seed_to_dir_meta(seed, &task.path, self.devno)
         } else {
+            let query_info_started = Instant::now();
             match dir.query_info::<FileAllInformation>().await {
-                Ok(info) => smb_all_info_to_dir_meta(&info, &task.path, self.devno),
+                Ok(info) => {
+                    self.metrics.add_dir_query_info(query_info_started);
+                    smb_all_info_to_dir_meta(&info, &task.path, self.devno)
+                }
                 Err(e) => {
+                    self.metrics.add_dir_query_info(query_info_started);
                     log::error!("SMB query_info failed for {}: {}", task.path, e);
-                    let _ = dir.close().await;
+                    drop(dir);
                     return DirScanOutput { batch: None, children: Vec::new() };
                 }
             }
@@ -157,73 +253,76 @@ impl SmbScanner {
         let mut children = Vec::new();
 
         let dir = Arc::new(dir);
-        let query_result = Directory::query_with_options::<FileIdBothDirectoryInformation>(
-            &dir,
-            "*",
-            scan_option.smb_query_buffer_size,
-        )
-        .await;
-        let mut stream = match query_result {
-            Ok(stream) => stream,
-            Err(e) => {
-                log::error!("SMB query dir failed for {}: {}", task.path, e);
-                let _ = dir.close().await;
-                return DirScanOutput {
-                    batch: Some(batch),
-                    children: Vec::new(),
-                };
-            }
-        };
-
-        while let Some(entry_result) = stream.next().await {
-            let entry = match entry_result {
-                Ok(entry) => entry,
+        {
+            let query_started = Instant::now();
+            let query_result = Directory::query_with_options::<FileIdBothDirectoryInformation>(
+                &dir,
+                "*",
+                scan_option.smb_query_buffer_size,
+            )
+            .await;
+            self.metrics.add_dir_query(query_started);
+            let mut stream = match query_result {
+                Ok(stream) => stream,
                 Err(e) => {
-                    log::warn!("SMB dir entry read failed in {}: {}", task.path, e);
-                    continue;
+                    log::error!("SMB query dir failed for {}: {}", task.path, e);
+                    return DirScanOutput {
+                        batch: Some(batch),
+                        children: Vec::new(),
+                    };
                 }
             };
 
-            let name = entry.file_name.to_string();
-            if name == "." || name == ".." {
-                continue;
-            }
+            while let Some(entry_result) = stream.next().await {
+                let entry = match entry_result {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        log::warn!("SMB dir entry read failed in {}: {}", task.path, e);
+                        continue;
+                    }
+                };
 
-            if should_skip(&name, &entry, scan_option) {
-                continue;
-            }
-
-            let child_path = format!("{}/{}", task.path, name);
-            let child_unc = task.unc.clone().with_add_path(&name);
-
-            if entry.file_attributes.directory() && !entry.file_attributes.reparse_point() {
-                if scan_option.max_depth.is_some_and(|max| task.depth >= max) {
+                let name = entry.file_name.to_string();
+                if name == "." || name == ".." {
                     continue;
                 }
-                children.push(DirTask {
-                    unc: child_unc,
-                    path: child_path,
-                    depth: task.depth + 1,
-                    seed: Some(smb_dir_seed_from_entry(&entry)),
-                });
-                continue;
+
+                if should_skip(&name, &entry, scan_option) {
+                    continue;
+                }
+
+                let child_path = format!("{}/{}", task.path, name);
+                let child_unc = task.unc.clone().with_add_path(&name);
+
+                if entry.file_attributes.directory() && !entry.file_attributes.reparse_point() {
+                    if scan_option.max_depth.is_some_and(|max| task.depth >= max) {
+                        continue;
+                    }
+                    children.push(DirTask {
+                        unc: child_unc,
+                        path: child_path,
+                        depth: task.depth + 1,
+                        seed: Some(smb_dir_seed_from_entry(&entry)),
+                    });
+                    continue;
+                }
+
+                let links = if scan_option.meta_option.scan_hardlinks {
+                    self.query_link_count(&child_unc).await.unwrap_or(1)
+                } else {
+                    1
+                };
+
+                batch.files.push(smb_dir_info_to_file_meta(
+                    &entry,
+                    self.devno,
+                    None,
+                    links,
+                ));
             }
-
-            let links = if scan_option.meta_option.scan_hardlinks {
-                self.query_link_count(&child_unc).await.unwrap_or(1)
-            } else {
-                1
-            };
-
-            batch.files.push(smb_dir_info_to_file_meta(
-                &entry,
-                self.devno,
-                None,
-                links,
-            ));
         }
 
-        let _ = dir.close().await;
+        drop(dir);
         DirScanOutput {
             batch: Some(batch),
             children,
@@ -231,6 +330,7 @@ impl SmbScanner {
     }
 
     async fn query_link_count(&self, path: &UncPath) -> Result<u64, String> {
+        let started = Instant::now();
         let open_args = FileCreateArgs::make_open_existing(
             FileAccessMask::new().with_generic_read(true),
         );
@@ -253,6 +353,7 @@ impl SmbScanner {
             Resource::Pipe(_) => 1,
         };
         close_resource(resource).await?;
+        self.metrics.add_link_count(started);
         Ok(links)
     }
 }
