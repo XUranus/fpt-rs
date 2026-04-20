@@ -245,3 +245,86 @@ pub async fn run_smb_to_smb_copy_pipeline(
     )
     .await;
 }
+
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub async fn run_nfs_to_smb_copy_pipeline(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    nfs_source_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    source_pool: Arc<NfsConnectionPool>,
+    target_location: SmbLocation,
+    target_client: Arc<smb_client::Client>,
+    stats: Arc<BackupStats>,
+) {
+    let mapping = EntryMapping::remote_to_prefixed_target(
+        nfs_source_base,
+        PathBuf::from(target_prefix),
+    );
+    let source = NfsSource {
+        pool: Arc::clone(&source_pool),
+        dir_cache: new_file_handle_cache(),
+        root_fh: source_pool.root_fh(),
+        read_chunk: source_pool.server_rtmax,
+    };
+    let target = SmbTarget {
+        location: target_location,
+        client: target_client,
+        dir_cache: crate::smb::aio::new_dir_cache(),
+    };
+    let target = AggregatingTarget::new(target, aggregate_config);
+
+    run_copy_pipeline(
+        control_file,
+        meta_dir,
+        mapping,
+        source,
+        target,
+        stats,
+        "NFS->SMB",
+        NFS_MAX_CONCURRENT_TASKS.min(SMB_MAX_CONCURRENT_TASKS),
+    )
+    .await;
+}
+
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub async fn run_smb_to_nfs_copy_pipeline(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    smb_source_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    source_location: SmbLocation,
+    source_client: Arc<smb_client::Client>,
+    target_pool: Arc<NfsConnectionPool>,
+    stats: Arc<BackupStats>,
+) {
+    let mapping = EntryMapping::remote_to_prefixed_target(
+        smb_source_base,
+        PathBuf::from(target_prefix),
+    );
+    let source = SmbSource {
+        location: source_location,
+        client: source_client,
+    };
+    let target = NfsTarget {
+        pool: Arc::clone(&target_pool),
+        dir_cache: new_dir_handle_cache(),
+        root_fh: target_pool.root_fh(),
+        write_chunk: target_pool.server_wtmax,
+    };
+    let target = AggregatingTarget::new(target, aggregate_config);
+
+    run_copy_pipeline(
+        control_file,
+        meta_dir,
+        mapping,
+        source,
+        target,
+        stats,
+        "SMB->NFS",
+        NFS_MAX_CONCURRENT_TASKS.min(SMB_MAX_CONCURRENT_TASKS),
+    )
+    .await;
+}

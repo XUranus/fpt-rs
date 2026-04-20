@@ -9,14 +9,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nfs3_client::nfs3_types::nfs3::{
     CREATE3args, MKDIR3args, Nfs3Option, Nfs3Result, SETATTR3args,
     WRITE3args, createhow3, diropargs3, filename3, nfs_fh3, sattr3,
-    sattrguard3, set_gid3, set_mtime, set_mode3, set_uid3, stable_how,
+    sattrguard3, set_gid3, set_mtime, set_mode3, set_uid3, stable_how, nfsstat3,
 };
 use nfs3_client::nfs3_types::xdr_codec::Opaque;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 
 use crate::backup::fcb::{FileControlBlock, TargetHandleState};
 use crate::nfs::connection::NfsConnectionPool;
@@ -81,24 +83,30 @@ pub async fn nfs_write_task(
         .unwrap_or_default();
 
     log::debug!("NFS CREATE: name={file_name} in dir for {dst_path:?}");
-    let create_res = {
-        let mut conn = pool.acquire().await;
-        conn.create(&CREATE3args {
-            where_: diropargs3 {
-                dir: dir_fh.clone(),
-                name: filename3::from(file_name.as_bytes()),
-            },
-            how: createhow3::UNCHECKED(sattr3 {
-                mode: set_mode3::Some(0o644),
-                uid: set_uid3::None,
-                gid: set_gid3::None,
-                size: nfs3_client::nfs3_types::nfs3::set_size3::None,
-                atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
-                mtime: set_mtime::SET_TO_SERVER_TIME,
-            }),
-        })
-        .await
-    };
+    let create_res = retry_nfs_op(
+        || async {
+            let mut conn = pool.acquire().await;
+            conn.create(&CREATE3args {
+                where_: diropargs3 {
+                    dir: dir_fh.clone(),
+                    name: filename3::from(file_name.as_bytes()),
+                },
+                how: createhow3::UNCHECKED(sattr3 {
+                    mode: set_mode3::Some(0o644),
+                    uid: set_uid3::None,
+                    gid: set_gid3::None,
+                    size: nfs3_client::nfs3_types::nfs3::set_size3::None,
+                    atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
+                    mtime: set_mtime::SET_TO_SERVER_TIME,
+                }),
+            })
+            .await
+        },
+        |res| matches!(res, Ok(Nfs3Result::Err((nfsstat3::NFS3ERR_JUKEBOX, _)))),
+        "create",
+        &dst_path.to_string_lossy(),
+    )
+    .await;
 
     let file_fh = match create_res {
         Ok(Nfs3Result::Ok(ok)) => match ok.obj {
@@ -141,18 +149,24 @@ pub async fn nfs_write_task(
         let end = (written + write_chunk as usize).min(total);
         let chunk = &data[written..end];
 
-        let write_res = {
-            let mut conn = pool.acquire().await;
-            log::debug!("NFS WRITE RPC: path={dst_path:?} offset={written} len={}", chunk.len());
-            conn.write(&WRITE3args {
-                file: file_fh.clone(),
-                offset: written as u64,
-                count: chunk.len() as u32,
-                stable: stable_how::DATA_SYNC,
-                data: Opaque::borrowed(chunk),
-            })
-            .await
-        };
+        let write_res = retry_nfs_op(
+            || async {
+                let mut conn = pool.acquire().await;
+                log::debug!("NFS WRITE RPC: path={dst_path:?} offset={written} len={}", chunk.len());
+                conn.write(&WRITE3args {
+                    file: file_fh.clone(),
+                    offset: written as u64,
+                    count: chunk.len() as u32,
+                    stable: stable_how::DATA_SYNC,
+                    data: Opaque::borrowed(chunk),
+                })
+                .await
+            },
+            |res| matches!(res, Ok(Nfs3Result::Err((nfsstat3::NFS3ERR_JUKEBOX, _)))),
+            "write",
+            &dst_path.to_string_lossy(),
+        )
+        .await;
 
         match write_res {
             Ok(Nfs3Result::Ok(ok)) => {
@@ -191,6 +205,41 @@ pub async fn nfs_write_task(
     fcb.dst_state = TargetHandleState::Written;
     fcb.dst_offset = total as u64;
     NfsWriterResult::Written(fcb)
+}
+
+const NFS_RETRY_ATTEMPTS: usize = 5;
+const NFS_RETRY_BASE_DELAY_MS: u64 = 50;
+
+async fn retry_nfs_op<F, Fut, T, P>(
+    mut op: F,
+    should_retry: P,
+    op_name: &str,
+    path: &str,
+) -> Result<T, nfs3_client::error::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, nfs3_client::error::Error>>,
+    P: Fn(&Result<T, nfs3_client::error::Error>) -> bool,
+{
+    let mut attempt = 0usize;
+    loop {
+        let result = op().await;
+        if !should_retry(&result) || attempt >= NFS_RETRY_ATTEMPTS {
+            return result;
+        }
+
+        let delay_ms = NFS_RETRY_BASE_DELAY_MS * (1u64 << attempt);
+        log::warn!(
+            "NFS {} {} got transient JUKEBOX response, retry {}/{} after {}ms",
+            op_name,
+            path,
+            attempt + 1,
+            NFS_RETRY_ATTEMPTS,
+            delay_ms,
+        );
+        sleep(Duration::from_millis(delay_ms)).await;
+        attempt += 1;
+    }
 }
 
 // ---------------------------------------------------------------------------

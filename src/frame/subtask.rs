@@ -143,10 +143,24 @@ pub fn run_backup_subtask(
                 .run()
                 .map_err(map_backup_err)
         }
+        #[cfg(all(feature = "nfs", feature = "smb"))]
+        (DataLocation::Nfs(nfs_source), DataLocation::Smb(smb_target)) => {
+            use crate::frame::backup_impls::NfsSourceSmbTargetFileBackup;
+            NfsSourceSmbTargetFileBackup::new(backup_cfg, nfs_source.clone(), smb_target.clone())
+                .run()
+                .map_err(map_backup_err)
+        }
         #[cfg(feature = "smb")]
         (DataLocation::Local(_), DataLocation::Smb(smb_target)) => {
             use crate::frame::backup_impls::SmbFileBackup;
             SmbFileBackup::new(backup_cfg, smb_target.clone())
+                .run()
+                .map_err(map_backup_err)
+        }
+        #[cfg(all(feature = "nfs", feature = "smb"))]
+        (DataLocation::Smb(smb_source), DataLocation::Nfs(nfs_target)) => {
+            use crate::frame::backup_impls::SmbSourceNfsTargetFileBackup;
+            SmbSourceNfsTargetFileBackup::new(backup_cfg, smb_source.clone(), nfs_target.clone())
                 .run()
                 .map_err(map_backup_err)
         }
@@ -164,12 +178,16 @@ pub fn run_backup_subtask(
                 .run()
                 .map_err(map_backup_err)
         }
-        #[cfg(feature = "smb")]
+        #[cfg(all(feature = "smb", not(feature = "nfs")))]
         _ if config.backup_source.is_smb() || config.backup_target.is_smb() => {
             Err(SubtaskError::Engine(
                 "this SMB backup direction is not implemented yet".to_string()
             ))
         }
+        #[cfg(any(
+            all(not(feature = "nfs"), not(feature = "smb")),
+            all(feature = "nfs", not(feature = "smb"))
+        ))]
         _ => Err(SubtaskError::Engine(
             "this backup direction is not compiled in".to_string()
         )),

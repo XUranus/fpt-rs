@@ -321,6 +321,58 @@ impl BackupTask {
             ));
         }
 
+        #[cfg(all(feature = "nfs", feature = "smb"))]
+        if let (Some(ref src_loc), Some(ref tgt_loc)) = (&nfs_source, &smb_target) {
+            let terminate_handle = crate::backup::aio::spawn_nfs_to_smb_backup(
+                src_loc.clone(),
+                tgt_loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                smb_target_d_repo_path.clone().unwrap_or_default(),
+                self.option.aggregate_config,
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
+
+            return Ok(Self::running_backup(
+                self.option,
+                stats,
+                terminate_handle,
+                terminate_indicator,
+            ));
+        }
+
+        #[cfg(all(feature = "nfs", feature = "smb"))]
+        if let (Some(ref src_loc), Some(ref tgt_loc)) = (&smb_source, &nfs_target) {
+            let terminate_handle = crate::backup::aio::spawn_smb_to_nfs_backup(
+                src_loc.clone(),
+                tgt_loc.clone(),
+                control_file.clone(),
+                meta_dir.clone(),
+                ctrl_dir.clone(),
+                source_dir_base.clone(),
+                nfs_target_d_repo_path.clone().unwrap_or_default(),
+                self.option.aggregate_config,
+                Arc::clone(&stats),
+                Arc::clone(&terminate_indicator),
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            );
+
+            return Ok(Self::running_backup(
+                self.option,
+                stats,
+                terminate_handle,
+                terminate_indicator,
+            ));
+        }
+
         // When an NFS target is configured (local source → NFS target),
         // run the entire pipeline on the AIO (async) path and skip the BIO pipeline.
         #[cfg(feature = "nfs")]

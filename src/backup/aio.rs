@@ -295,6 +295,143 @@ pub fn spawn_smb_to_smb_backup(
     })
 }
 
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub fn spawn_nfs_to_smb_backup(
+    nfs_source: NfsLocation,
+    smb_target: SmbLocation,
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    stats: Arc<BackupStats>,
+    terminate_indicator: Arc<AtomicBool>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-nfs-to-smb")
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("NFS->SMB: failed to build async runtime: {e}");
+                terminate_indicator.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let source_pool = match NfsConnectionPool::new(&nfs_source).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("NFS->SMB: failed to connect to source: {e}");
+                    return;
+                }
+            };
+            let target_client = match crate::smb::aio::connect_client(&smb_target).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("NFS->SMB: failed to connect to target: {e}");
+                    return;
+                }
+            };
+
+            run_nfs_to_smb_backup(
+                control_file,
+                meta_dir,
+                ctrl_dir,
+                source_dir_base,
+                target_prefix,
+                aggregate_config,
+                source_pool,
+                smb_target,
+                target_client,
+                stats,
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            )
+            .await;
+        });
+
+        terminate_indicator.store(true, Ordering::Relaxed);
+    })
+}
+
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub fn spawn_smb_to_nfs_backup(
+    smb_source: SmbLocation,
+    nfs_target: NfsLocation,
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    stats: Arc<BackupStats>,
+    terminate_indicator: Arc<AtomicBool>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("bifrost-smb-to-nfs")
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("SMB->NFS: failed to build async runtime: {e}");
+                terminate_indicator.store(true, Ordering::Relaxed);
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let source_client = match crate::smb::aio::connect_client(&smb_source).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("SMB->NFS: failed to connect to source: {e}");
+                    return;
+                }
+            };
+            let target_pool = match NfsConnectionPool::new(&nfs_target).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("SMB->NFS: failed to connect to target: {e}");
+                    let _ = source_client.close().await;
+                    return;
+                }
+            };
+
+            run_smb_to_nfs_backup(
+                control_file,
+                meta_dir,
+                ctrl_dir,
+                source_dir_base,
+                target_prefix,
+                aggregate_config,
+                smb_source,
+                source_client,
+                target_pool,
+                stats,
+                enable_hardlink_phase,
+                enable_delete_phase,
+                enable_mtime_phase,
+            )
+            .await;
+        });
+
+        terminate_indicator.store(true, Ordering::Relaxed);
+    })
+}
+
 #[cfg(feature = "nfs")]
 pub fn spawn_nfs_to_local_backup(
     nfs_source: NfsLocation,
@@ -668,6 +805,93 @@ pub async fn run_smb_to_smb_backup(
         &source_dir_base,
         &target_prefix,
         &target_location,
+        enable_hardlink_phase,
+        enable_delete_phase,
+        enable_mtime_phase,
+    )
+    .await;
+}
+
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub async fn run_nfs_to_smb_backup(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    source_pool: Arc<NfsConnectionPool>,
+    target_location: SmbLocation,
+    target_client: Arc<smb_client::Client>,
+    stats: Arc<BackupStats>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    directions::run_nfs_to_smb_copy_pipeline(
+        control_file,
+        meta_dir,
+        source_dir_base.clone(),
+        target_prefix.clone(),
+        aggregate_config,
+        source_pool,
+        target_location.clone(),
+        target_client,
+        stats,
+    )
+    .await;
+
+    run_smb_target_phases(
+        &ctrl_dir,
+        &source_dir_base,
+        &target_prefix,
+        &target_location,
+        enable_hardlink_phase,
+        enable_delete_phase,
+        enable_mtime_phase,
+    )
+    .await;
+}
+
+#[cfg(all(feature = "nfs", feature = "smb"))]
+pub async fn run_smb_to_nfs_backup(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    ctrl_dir: PathBuf,
+    source_dir_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    source_location: SmbLocation,
+    source_client: Arc<smb_client::Client>,
+    target_pool: Arc<NfsConnectionPool>,
+    stats: Arc<BackupStats>,
+    enable_hardlink_phase: bool,
+    enable_delete_phase: bool,
+    enable_mtime_phase: bool,
+) {
+    directions::run_smb_to_nfs_copy_pipeline(
+        control_file,
+        meta_dir,
+        source_dir_base.clone(),
+        target_prefix.clone(),
+        aggregate_config,
+        source_location,
+        source_client,
+        Arc::clone(&target_pool),
+        stats,
+    )
+    .await;
+
+    let file_cache = new_file_handle_cache();
+    let dir_cache = new_dir_handle_cache();
+
+    run_nfs_target_phases(
+        &ctrl_dir,
+        &source_dir_base,
+        &target_prefix,
+        target_pool,
+        file_cache,
+        dir_cache,
         enable_hardlink_phase,
         enable_delete_phase,
         enable_mtime_phase,

@@ -18,6 +18,7 @@ use crate::smb::fstat::{
     smb_dir_seed_from_entry, smb_seed_to_dir_meta,
 };
 
+#[derive(Clone)]
 pub struct SmbScanner {
     client: Arc<smb_client::Client>,
     location: SmbLocation,
@@ -29,6 +30,11 @@ struct DirTask {
     path: String,
     depth: usize,
     seed: Option<SmbDirSeed>,
+}
+
+struct DirScanOutput {
+    batch: Option<DirBatchScanResult>,
+    children: Vec<DirTask>,
 }
 
 impl SmbScanner {
@@ -57,15 +63,34 @@ impl SmbScanner {
     ) -> Result<(), String> {
         let root_unc = self.location.root_unc_path()?;
         let root_path = self.location.synthetic_root().to_string_lossy().into_owned();
-        let mut stack = vec![DirTask {
+        let mut pending = vec![DirTask {
             unc: root_unc,
             path: root_path,
             depth: 0,
             seed: None,
         }];
+        let max_concurrent = scan_option.worker_count.max(1);
+        let mut active = tokio::task::JoinSet::<DirScanOutput>::new();
+        let scan_option = Arc::new(scan_option.clone());
 
-        while let Some(task) = stack.pop() {
-            self.scan_one_dir(task, scan_option, &tx, &mut stack).await;
+        while !pending.is_empty() || !active.is_empty() {
+            while active.len() < max_concurrent && !pending.is_empty() {
+                let task = pending.pop().expect("pending non-empty");
+                let scanner = self.clone();
+                let scan_option = Arc::clone(&scan_option);
+                active.spawn(async move { scanner.scan_one_dir(task, &scan_option).await });
+            }
+
+            match active.join_next().await {
+                Some(Ok(output)) => {
+                    if let Some(batch) = output.batch {
+                        let _ = tx.send(batch).await;
+                    }
+                    pending.extend(output.children);
+                }
+                Some(Err(e)) => return Err(format!("SMB scan task panicked: {e}")),
+                None => break,
+            }
         }
 
         self.client.close().await.map_err(|e| e.to_string())?;
@@ -76,9 +101,7 @@ impl SmbScanner {
         &self,
         task: DirTask,
         scan_option: &ScanOption,
-        tx: &mpsc::Sender<DirBatchScanResult>,
-        stack: &mut Vec<DirTask>,
-    ) {
+    ) -> DirScanOutput {
         let open_args = FileCreateArgs::make_open_existing(
             DirAccessMask::new()
                 .with_list_directory(true)
@@ -91,15 +114,17 @@ impl SmbScanner {
             Err(e) => {
                 log::error!("SMB open dir {} failed: {}", task.path, e);
                 if let Some(seed) = task.seed {
-                    let batch = DirBatchScanResult {
-                        dir: smb_seed_to_dir_meta(&seed, &task.path, self.devno),
-                        files: Vec::new(),
-                        partial: false,
-                        complete: true,
+                    return DirScanOutput {
+                        batch: Some(DirBatchScanResult {
+                            dir: smb_seed_to_dir_meta(&seed, &task.path, self.devno),
+                            files: Vec::new(),
+                            partial: false,
+                            complete: true,
+                        }),
+                        children: Vec::new(),
                     };
-                    let _ = tx.send(batch).await;
                 }
-                return;
+                return DirScanOutput { batch: None, children: Vec::new() };
             }
         };
 
@@ -108,7 +133,7 @@ impl SmbScanner {
             other => {
                 log::warn!("SMB path {} did not resolve to a directory", task.path);
                 let _ = close_resource(other).await;
-                return;
+                return DirScanOutput { batch: None, children: Vec::new() };
             }
         };
 
@@ -118,15 +143,17 @@ impl SmbScanner {
                 log::error!("SMB query_info failed for {}: {}", task.path, e);
                 let _ = dir.close().await;
                 if let Some(seed) = task.seed {
-                    let batch = DirBatchScanResult {
-                        dir: smb_seed_to_dir_meta(&seed, &task.path, self.devno),
-                        files: Vec::new(),
-                        partial: false,
-                        complete: true,
+                    return DirScanOutput {
+                        batch: Some(DirBatchScanResult {
+                            dir: smb_seed_to_dir_meta(&seed, &task.path, self.devno),
+                            files: Vec::new(),
+                            partial: false,
+                            complete: true,
+                        }),
+                        children: Vec::new(),
                     };
-                    let _ = tx.send(batch).await;
                 }
-                return;
+                return DirScanOutput { batch: None, children: Vec::new() };
             }
         };
 
@@ -143,6 +170,7 @@ impl SmbScanner {
             complete: true,
         };
         batch.dir.common.name = dir_name;
+        let mut children = Vec::new();
 
         let dir = Arc::new(dir);
         let query_result = Directory::query::<FileIdBothDirectoryInformation>(&dir, "*").await;
@@ -151,8 +179,10 @@ impl SmbScanner {
             Err(e) => {
                 log::error!("SMB query dir failed for {}: {}", task.path, e);
                 let _ = dir.close().await;
-                let _ = tx.send(batch).await;
-                return;
+                return DirScanOutput {
+                    batch: Some(batch),
+                    children: Vec::new(),
+                };
             }
         };
 
@@ -181,7 +211,7 @@ impl SmbScanner {
                 if scan_option.max_depth.is_some_and(|max| task.depth >= max) {
                     continue;
                 }
-                stack.push(DirTask {
+                children.push(DirTask {
                     unc: child_unc,
                     path: child_path,
                     depth: task.depth + 1,
@@ -205,7 +235,10 @@ impl SmbScanner {
         }
 
         let _ = dir.close().await;
-        let _ = tx.send(batch).await;
+        DirScanOutput {
+            batch: Some(batch),
+            children,
+        }
     }
 
     async fn query_link_count(&self, path: &UncPath) -> Result<u64, String> {
