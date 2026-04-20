@@ -13,13 +13,18 @@ use log::info;
 use bifrost::backup::aggregate::AggregateConfig;
 use bifrost::frame::{
     BackupConfig,
+    DataLocation,
     FileBackup,
     LocalFileBackup,
 };
 #[cfg(feature = "nfs")]
 use bifrost::frame::NfsFileBackup;
 #[cfg(feature = "nfs")]
-use bifrost::nfs::NfsLocation;
+use bifrost::frame::backup_impls::{NfsSourceFileBackup, NfsSourceTargetFileBackup};
+#[cfg(feature = "smb")]
+use bifrost::frame::backup_impls::{SmbFileBackup, SmbSourceFileBackup, SmbSourceTargetFileBackup};
+#[cfg(all(feature = "nfs", feature = "smb"))]
+use bifrost::frame::backup_impls::{NfsSourceSmbTargetFileBackup, SmbSourceNfsTargetFileBackup};
 
 /// Bifrost Backup Executor
 ///
@@ -30,12 +35,12 @@ use bifrost::nfs::NfsLocation;
 struct Args {
     /// Source base directory (used to construct source file paths)
     #[arg(long, short = 's', required = true, value_name = "DIR")]
-    source_dir: PathBuf,
+    source_dir: String,
 
     /// Target base directory for backup output (local FS).
     /// Ignored when --nfs-target-host is set.
     #[arg(long, short = 't', required = true, value_name = "DIR")]
-    target_dir: PathBuf,
+    target_dir: String,
 
     /// Metadata directory containing meta_*.dat files
     #[arg(long, short = 'm', required = true, value_name = "DIR")]
@@ -72,25 +77,17 @@ struct Args {
     /// File size threshold for aggregation in KB [default: 1024]
     #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
     aggregate_threshold: u64,
-
-    // ── NFS target options (require --features nfs) ──────────────────────────
-    /// NFS target: server IP or hostname.
-    /// When set, files are written to the NFS server via the AIO pipeline
-    /// instead of the local --target-dir.
-    #[arg(long, value_name = "HOST", requires = "nfs_target_export")]
-    nfs_target_host: Option<String>,
-
-    /// NFS target: export path on the server (e.g. /export/backup).
-    #[arg(long, value_name = "PATH", requires = "nfs_target_host")]
-    nfs_target_export: Option<String>,
-
-    /// NFS target: sub-path within the export to use as the working root.
-    #[arg(long, value_name = "PATH")]
-    nfs_target_sub_path: Option<String>,
-
-    /// NFS target: number of parallel TCP connections [default: 4]
+    /// Number of parallel NFS connections [default: 4]
     #[arg(long, value_name = "N", default_value = "4")]
-    nfs_target_connections: usize,
+    nfs_connections: usize,
+
+    /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
+    #[arg(long, value_name = "UID")]
+    nfs_uid: Option<u32>,
+
+    /// AUTH_UNIX gid to present to the NFS server (overrides gid= in URL)
+    #[arg(long, value_name = "GID")]
+    nfs_gid: Option<u32>,
 
     /// Verbose logging (-v=INFO, -vv=DEBUG, -vvv=TRACE)
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -135,50 +132,106 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AggregateConfig::default()
     };
 
+    let source = parse_data_location(&args.source_dir, args.nfs_connections, args.nfs_uid, args.nfs_gid)?;
+    let target = parse_data_location(&args.target_dir, args.nfs_connections, args.nfs_uid, args.nfs_gid)?;
+    let local_target_dir = match &target {
+        DataLocation::Local(path) => path.clone(),
+        _ => PathBuf::from("/"),
+    };
+
     let backup_cfg = BackupConfig::new(
-        args.source_dir.clone(),
-        args.target_dir.clone(),
+        source.base_path(),
+        local_target_dir,
         args.meta_dir.clone(),
         ctrl_dir,
         args.control_file.clone(),
     )
     .aggregate_config(aggregate_config)
+    .remote_target_prefix((!target.is_local()).then(|| String::new()))
     .enable_hardlink(args.hardlink)
     .enable_delete(args.delete)
     .enable_mtime(args.mtime);
 
-    // ── NFS target branch ─────────────────────────────────────────────────────
-    #[cfg(feature = "nfs")]
-    if let Some(ref host) = args.nfs_target_host {
-        let export = args.nfs_target_export.as_deref().unwrap_or("");
-        let mut loc = NfsLocation::new(host, export)
-            .connection_count(args.nfs_target_connections);
-        if let Some(ref sub) = args.nfs_target_sub_path {
-            loc = loc.sub_path(sub);
-        }
-        info!("NFS target: {}:{} sub_path={:?} connections={}",
-              host, export,
-              args.nfs_target_sub_path.as_deref().unwrap_or(""),
-              args.nfs_target_connections);
-
-        info!("Starting NFS backup task");
-        let stats = NfsFileBackup::new(backup_cfg, loc).run()?;
-        print_summary(&stats);
-        return Ok(());
-    }
-
-    #[cfg(not(feature = "nfs"))]
-    if args.nfs_target_host.is_some() {
-        return Err("NFS target requested but binary was built without the `nfs` feature.\n\
-                    Rebuild with: cargo build --features nfs".into());
-    }
-
-    // ── Local target branch ───────────────────────────────────────────────────
-    info!("Starting local backup task");
-    let stats = LocalFileBackup::new(backup_cfg).run()?;
+    info!("Starting backup task: source={} target={}", source, target);
+    let stats = run_backup(backup_cfg, &source, &target)?;
     print_summary(&stats);
 
     Ok(())
+}
+
+fn run_backup(
+    backup_cfg: BackupConfig,
+    source: &DataLocation,
+    target: &DataLocation,
+) -> Result<bifrost::frame::TransferStats, Box<dyn std::error::Error>> {
+    match (source, target) {
+        (DataLocation::Local(_), DataLocation::Local(_)) => Ok(LocalFileBackup::new(backup_cfg).run()?),
+        #[cfg(feature = "nfs")]
+        (DataLocation::Local(_), DataLocation::Nfs(nfs_target)) => Ok(NfsFileBackup::new(backup_cfg, nfs_target.clone()).run()?),
+        #[cfg(feature = "nfs")]
+        (DataLocation::Nfs(nfs_source), DataLocation::Local(_)) => Ok(NfsSourceFileBackup::new(backup_cfg, nfs_source.clone()).run()?),
+        #[cfg(feature = "nfs")]
+        (DataLocation::Nfs(nfs_source), DataLocation::Nfs(nfs_target)) => Ok(NfsSourceTargetFileBackup::new(backup_cfg, nfs_source.clone(), nfs_target.clone()).run()?),
+        #[cfg(feature = "smb")]
+        (DataLocation::Local(_), DataLocation::Smb(smb_target)) => Ok(SmbFileBackup::new(backup_cfg, smb_target.clone()).run()?),
+        #[cfg(feature = "smb")]
+        (DataLocation::Smb(smb_source), DataLocation::Local(_)) => Ok(SmbSourceFileBackup::new(backup_cfg, smb_source.clone()).run()?),
+        #[cfg(feature = "smb")]
+        (DataLocation::Smb(smb_source), DataLocation::Smb(smb_target)) => Ok(SmbSourceTargetFileBackup::new(backup_cfg, smb_source.clone(), smb_target.clone()).run()?),
+        #[cfg(all(feature = "nfs", feature = "smb"))]
+        (DataLocation::Nfs(nfs_source), DataLocation::Smb(smb_target)) => Ok(NfsSourceSmbTargetFileBackup::new(backup_cfg, nfs_source.clone(), smb_target.clone()).run()?),
+        #[cfg(all(feature = "nfs", feature = "smb"))]
+        (DataLocation::Smb(smb_source), DataLocation::Nfs(nfs_target)) => Ok(SmbSourceNfsTargetFileBackup::new(backup_cfg, smb_source.clone(), nfs_target.clone()).run()?),
+        #[allow(unreachable_patterns)]
+        _ => Err("Unsupported source/target combination for this build".into()),
+    }
+}
+
+#[cfg(feature = "nfs")]
+fn parse_nfs_location(
+    url: &str,
+    connections: usize,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<DataLocation, Box<dyn std::error::Error>> {
+    let mut loc = bifrost::nfs::NfsLocation::from_url(url)?
+        .connection_count(connections);
+    let default_uid = if loc.uid == 0 { unsafe { libc::geteuid() as u32 } } else { loc.uid };
+    let default_gid = if loc.gid == 0 { unsafe { libc::getegid() as u32 } } else { loc.gid };
+    loc = loc.credentials(uid.unwrap_or(default_uid), gid.unwrap_or(default_gid));
+    Ok(DataLocation::nfs(loc))
+}
+
+fn parse_data_location(
+    spec: &str,
+    connections: usize,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<DataLocation, Box<dyn std::error::Error>> {
+    if spec.starts_with("nfs://") {
+        #[cfg(feature = "nfs")]
+        {
+            return parse_nfs_location(spec, connections, uid, gid);
+        }
+        #[cfg(not(feature = "nfs"))]
+        {
+            let _ = (connections, uid, gid);
+            return Err("NFS support not compiled in. Rebuild with --features nfs".into());
+        }
+    }
+    if spec.starts_with("smb://") || spec.starts_with(r"smb:\\") {
+        #[cfg(feature = "smb")]
+        {
+            return Ok(DataLocation::smb(bifrost::smb::SmbLocation::from_url(spec)?));
+        }
+        #[cfg(not(feature = "smb"))]
+        {
+            let _ = (connections, uid, gid);
+            return Err("SMB support not compiled in. Rebuild with --features smb".into());
+        }
+    }
+    let _ = (connections, uid, gid);
+    Ok(DataLocation::local(PathBuf::from(spec)))
 }
 
 fn print_summary(stats: &bifrost::frame::TransferStats) {

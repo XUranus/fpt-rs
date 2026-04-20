@@ -78,15 +78,25 @@ pub struct HardlinkControlFileWriter {
 impl HardlinkControlFileWriter {
     /// Creates a new hardlink control file and writes the header.
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::new_with_source(path, "local", "/")
+    }
+
+    pub fn new_with_source<P: AsRef<Path>>(
+        path: P,
+        source_kind: &str,
+        source_root: &str,
+    ) -> io::Result<Self> {
         let file = File::create(path)?;
         let mut fwriter = BufWriter::new(file);
         writeln!(
             fwriter,
-            "#BIFROST_HARDLINK_CTRL_FILE V1 FILES=0 INODES=0 TIME={}",
+            "#BIFROST_HARDLINK_CTRL_FILE V2 FILES=0 INODES=0 TIME={} SOURCE_KIND={} SOURCE_ROOT={}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs()
+                .as_secs(),
+            source_kind,
+            source_root,
         )?;
         writeln!(fwriter)?; // Empty line after header
         Ok(Self {
@@ -349,7 +359,16 @@ impl HardlinkIndex {
 
     /// Writes all hardlink groups to a control file.
     pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
-        let mut writer = HardlinkControlFileWriter::new(path)?;
+        self.write_to_file_with_source(path, "local", "/")
+    }
+
+    pub fn write_to_file_with_source<P: AsRef<Path>>(
+        &self,
+        path: P,
+        source_kind: &str,
+        source_root: &str,
+    ) -> io::Result<()> {
+        let mut writer = HardlinkControlFileWriter::new_with_source(path, source_kind, source_root)?;
         
         for group in &self.groups {
             writer.write_inode(&HardlinkInodeEntry {

@@ -40,6 +40,7 @@ pub use cache_storage::{
 
 pub use filecontrol::{
     ControlEntry,
+    ControlFileHeader,
     ControlFileReader,
     ControlFileWriter,
     DirControlEntry,

@@ -34,7 +34,7 @@ use crate::{
     scanner::{
         engine::bio,
         models::{DirBatchScanResult, DirScanEntry, ScanStatistics, ScanStatsSnapshot},
-        options::ScanOption,
+        options::{ControlPathOption, ScanOption},
     },
     utility::{BlockingQueue, SpillQueue},
 };
@@ -218,8 +218,12 @@ impl Scanner {
 
             if !scan_option.stats_only {
                 // Generate final control files
-                if let Err(e) = engine::generate_control_files(&scan_option.target_dir) {
+                if let Err(e) = engine::generate_control_files(&scan_option) {
                     error!("Failed to generate control files: {}", e);
+                }
+
+                if let Err(e) = normalize_control_artifacts(&scan_option) {
+                    error!("Failed to normalize control artifacts: {}", e);
                 }
 
                 // Write hardlink control file if hardlink scanning was enabled
@@ -227,15 +231,23 @@ impl Scanner {
                     if let Some(index) = hardlink_index_clone {
                         if let Ok(idx) = index.lock() {
                             let hardlink_ctrl_path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
-                            if let Err(e) = idx.write_to_file(&hardlink_ctrl_path) {
+                            if let Err(e) = idx.write_to_file_with_source(
+                                &hardlink_ctrl_path,
+                                &scan_option.control_path.source_kind,
+                                &scan_option.control_path.source_root,
+                            ) {
                                 error!("Failed to write hardlink control file: {}", e);
                             } else {
                                 info!("Hardlink control file written to {:?}", hardlink_ctrl_path);
                                 info!("Found {} hardlink groups with {} total files", 
                                     idx.group_count(), idx.total_file_count());
-                            }
+                                }
                         }
                     }
+                }
+
+                if let Err(e) = normalize_hardlink_control_file(&scan_option) {
+                    error!("Failed to normalize hardlink control file: {}", e);
                 }
             }
 
@@ -393,8 +405,10 @@ pub async fn run_nfs_scan(
 
     if !scan_opt_arc.stats_only {
         // Generate control files (copy.txt, hardlink.txt, etc.)
-        engine::generate_control_files(&scan_opt_arc.target_dir)
+        engine::generate_control_files(&scan_opt_arc)
             .map_err(|e| format!("generate_control_files failed: {e}"))?;
+        normalize_control_artifacts(&scan_opt_arc)
+            .map_err(|e| format!("normalize control artifacts failed: {e}"))?;
     }
 
     let snap = stats.snapshot();
@@ -471,10 +485,166 @@ pub async fn run_smb_scan(
     }
 
     if !scan_opt_arc.stats_only {
-        engine::generate_control_files(&scan_opt_arc.target_dir)
+        engine::generate_control_files(&scan_opt_arc)
             .map_err(|e| format!("generate_control_files failed: {e}"))?;
+        normalize_control_artifacts(&scan_opt_arc)
+            .map_err(|e| format!("normalize control artifacts failed: {e}"))?;
     }
 
     let snap = stats.snapshot();
     Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))
+}
+
+fn normalize_control_artifacts(scan_option: &ScanOption) -> Result<(), String> {
+    normalize_copy_controls(scan_option)?;
+    normalize_delete_control_file(scan_option)?;
+    normalize_mtime_control_file(scan_option)?;
+    Ok(())
+}
+
+fn normalize_copy_controls(scan_option: &ScanOption) -> Result<(), String> {
+    use crate::scanner::metadata::{
+        ControlEntry, ControlFileHeader, ControlFileReader, ControlFileWriter,
+    };
+
+    let ctrl_dir = &scan_option.target_dir.ctrl_dir;
+    let entries = std::fs::read_dir(ctrl_dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !file_name.starts_with("copy") || path.extension().and_then(|e| e.to_str()) != Some("txt") {
+            continue;
+        }
+
+        let reader = ControlFileReader::open(&path).map_err(|e| e.to_string())?;
+        let rewritten: Vec<ControlEntry> = reader
+            .map(|result| {
+                result.map(|entry| match entry {
+                    ControlEntry::Dir(mut dir) => {
+                        dir.path = normalize_control_path(&scan_option.control_path, &dir.path);
+                        ControlEntry::Dir(dir)
+                    }
+                    ControlEntry::File(file) => ControlEntry::File(file),
+                })
+            })
+            .collect::<Result<_, _>>()
+            .map_err(|e: std::io::Error| e.to_string())?;
+
+        let tmp = path.with_extension("tmp");
+        let header = ControlFileHeader {
+            source_kind: scan_option.control_path.source_kind.clone(),
+            source_root: scan_option.control_path.source_root.clone(),
+            ..ControlFileHeader::default()
+        };
+        let mut writer = ControlFileWriter::new_with_header(&tmp, &header).map_err(|e| e.to_string())?;
+        for entry in &rewritten {
+            match entry {
+                ControlEntry::Dir(dir) => writer.write_dir(dir).map_err(|e| e.to_string())?,
+                ControlEntry::File(file) => writer.write_file(file).map_err(|e| e.to_string())?,
+            }
+        }
+        writer.finish().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn normalize_delete_control_file(scan_option: &ScanOption) -> Result<(), String> {
+    use crate::scanner::metadata::{DeleteControlFileReader, DeleteControlFileWriter};
+
+    let path = scan_option.target_dir.ctrl_dir.join("delete.txt");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let reader = DeleteControlFileReader::open(&path).map_err(|e| e.to_string())?;
+    let entries: Vec<_> = reader.collect::<Result<_, _>>().map_err(|e: std::io::Error| e.to_string())?;
+    let tmp = path.with_extension("tmp");
+    let mut writer = DeleteControlFileWriter::new_with_source(
+        &tmp,
+        &scan_option.control_path.source_kind,
+        &scan_option.control_path.source_root,
+    ).map_err(|e| e.to_string())?;
+    for entry in entries {
+        writer.write_entry(&crate::scanner::metadata::DeleteEntry {
+            entry_type: entry.entry_type,
+            path: normalize_control_path(&scan_option.control_path, &entry.path),
+        }).map_err(|e| e.to_string())?;
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn normalize_mtime_control_file(scan_option: &ScanOption) -> Result<(), String> {
+    use crate::scanner::metadata::{MtimeControlFileReader, MtimeControlFileWriter};
+
+    let path = scan_option.target_dir.ctrl_dir.join("mtime.txt");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let reader = MtimeControlFileReader::open(&path).map_err(|e| e.to_string())?;
+    let entries: Vec<_> = reader.collect::<Result<_, _>>().map_err(|e: std::io::Error| e.to_string())?;
+    let tmp = path.with_extension("tmp");
+    let mut writer = MtimeControlFileWriter::new_with_source(
+        &tmp,
+        &scan_option.control_path.source_kind,
+        &scan_option.control_path.source_root,
+    ).map_err(|e| e.to_string())?;
+    for mut entry in entries {
+        entry.path = normalize_control_path(&scan_option.control_path, &entry.path);
+        writer.write_dir(&entry).map_err(|e| e.to_string())?;
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn normalize_hardlink_control_file(scan_option: &ScanOption) -> Result<(), String> {
+    use crate::scanner::metadata::{
+        HardlinkControlFileReader, HardlinkControlFileWriter, HardlinkEntry, HardlinkFileEntry,
+    };
+
+    let path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
+    if !path.exists() {
+        return Ok(());
+    }
+    let reader = HardlinkControlFileReader::open(&path).map_err(|e| e.to_string())?;
+    let entries: Vec<_> = reader.collect::<Result<_, _>>().map_err(|e: std::io::Error| e.to_string())?;
+    let tmp = path.with_extension("tmp");
+    let mut writer = HardlinkControlFileWriter::new_with_source(
+        &tmp,
+        &scan_option.control_path.source_kind,
+        &scan_option.control_path.source_root,
+    ).map_err(|e| e.to_string())?;
+    for entry in entries {
+        match entry {
+            HardlinkEntry::Inode(inode) => writer.write_inode(&inode).map_err(|e| e.to_string())?,
+            HardlinkEntry::File(file) => {
+                writer.write_file(&HardlinkFileEntry {
+                    path: normalize_control_path(&scan_option.control_path, &file.path),
+                    ..file
+                }).map_err(|e| e.to_string())?
+            }
+        }
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn normalize_control_path(cfg: &ControlPathOption, path: &str) -> String {
+    let physical = PathBuf::from(path);
+    let logical_root = PathBuf::from(&cfg.source_root);
+    if !physical.starts_with(&cfg.physical_base) && physical.starts_with(&logical_root) {
+        return path.to_string();
+    }
+    let base = cfg.physical_base.clone();
+    let rel = physical
+        .strip_prefix(&base)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| physical.clone());
+
+    format!("/{}", rel.to_string_lossy().trim_start_matches('/'))
 }

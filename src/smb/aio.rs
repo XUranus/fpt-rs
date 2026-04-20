@@ -438,7 +438,22 @@ fn join_relative(base: &str, child: &str) -> String {
 fn relative_path_buf(source_dir_base: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(source_dir_base)
         .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| path.to_path_buf())
+        .unwrap_or_else(|_| {
+            if path.is_absolute() {
+                let logical_root_name = source_dir_base.file_name().and_then(|n| n.to_str());
+                let first_segment = path
+                    .strip_prefix("/")
+                    .ok()
+                    .and_then(|p| p.iter().next())
+                    .and_then(|s| s.to_str());
+                if logical_root_name.is_some() && logical_root_name == first_segment {
+                    return path.strip_prefix("/").map(|r| r.to_path_buf()).unwrap_or_else(|_| path.to_path_buf());
+                }
+            }
+            path.file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| path.to_path_buf())
+        })
 }
 
 pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {

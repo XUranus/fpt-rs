@@ -148,6 +148,7 @@ fn read_hardlink_groups(
     target_dir_base: &Path,
 ) -> io::Result<Vec<HardlinkGroup>> {
     let reader = HardlinkControlFileReader::open(hardlink_ctrl_path)?;
+    let logical_paths = reader.header().contains(" SOURCE_ROOT=");
     let meta_repo = MetaRepoReader::new(meta_dir)?;
 
     let mut groups: Vec<HardlinkGroup> = Vec::new();
@@ -184,6 +185,7 @@ fn read_hardlink_groups(
                                 source_dir_base,
                                 target_dir_base.to_path_buf(),
                                 file_entry.path.clone(),
+                                logical_paths,
                             );
 
                             group.files.push(HardlinkFileInfo {
@@ -354,22 +356,27 @@ fn make_relative_and_join(
     base_dir: &Path,
     target_base: PathBuf,
     path: String,
+    logical_paths: bool,
 ) -> PathBuf {
     let path_buf = PathBuf::from(&path);
 
-    // Try to strip the base_dir prefix from path
     let relative_path = if path_buf.starts_with(base_dir) {
         path_buf
             .strip_prefix(base_dir)
             .map(|p| p.to_path_buf())
             .unwrap_or(path_buf)
     } else if path_buf.is_absolute() {
-        // If path doesn't start with base_dir but is absolute,
-        // just use the last component as fallback
-        path_buf
-            .file_name()
-            .map(|name| PathBuf::from(name))
-            .unwrap_or_else(|| path_buf)
+        if logical_paths {
+            let rel = path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf);
+            return target_base.join(rel);
+        }
+        let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
+        let first_segment = path_buf.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+        if logical_root_name.is_some() && logical_root_name == first_segment {
+            path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf)
+        } else {
+            path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
+        }
     } else {
         path_buf
     };
@@ -403,6 +410,7 @@ mod tests {
             &base,
             target.clone(),
             "/home/user/source/docs/file.txt".to_string(),
+            false,
         );
         assert_eq!(result, PathBuf::from("/backup/target/docs/file.txt"));
 
@@ -411,6 +419,7 @@ mod tests {
             &base,
             target.clone(),
             "/other/path/file.txt".to_string(),
+            false,
         );
         assert_eq!(result, PathBuf::from("/backup/target/file.txt"));
     }

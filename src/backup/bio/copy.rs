@@ -82,35 +82,6 @@ pub enum BioError {
     Unknown(io::Error),
 }
 
-/// Make path relative to base_dir and then join with target_base
-/// e.g., base_dir=/tmp/bifrost_test/source, path=/tmp/bifrost_test/source/subdir
-///       -> target_base/subdir
-fn make_relative_and_join(
-    base_dir: &PathBuf,
-    target_base: PathBuf,
-    path: String,
-) -> PathBuf {
-    let path_buf = PathBuf::from(&path);
-    
-    // Try to strip the base_dir prefix from path
-    let relative_path = if path_buf.starts_with(base_dir) {
-        path_buf.strip_prefix(base_dir)
-            .map(|p| p.to_path_buf())
-            .unwrap_or(path_buf)
-    } else if path_buf.is_absolute() {
-        // If path doesn't start with base_dir but is absolute,
-        // just use the last component as fallback
-        path_buf.file_name()
-            .map(|name| PathBuf::from(name))
-            .unwrap_or_else(|| path_buf)
-    } else {
-        path_buf
-    };
-    
-    target_base.join(relative_path)
-}
-
-
 pub fn spawn_file_entry_producer(
     control_file: PathBuf,
     meta_dir: PathBuf,
@@ -122,6 +93,7 @@ pub fn spawn_file_entry_producer(
     let meta_repo_reader = MetaRepoReader::new(meta_dir).unwrap();
     std::thread::spawn(move || {
         let control_reader = ControlFileReader::open(control_file).unwrap();
+        let logical_source_root = PathBuf::from(control_reader.header().source_root.clone());
         let mut dirpath = PathBuf::new();
 
         for entry in control_reader {
@@ -130,20 +102,17 @@ pub fn spawn_file_entry_producer(
                 ControlEntry::Dir(dentry) => {
                     let dmeta = meta_repo_reader.get_dmeta((dentry.meta_fid, dentry.meta_offset)).unwrap();
                     let mut dcb = DirControlBlock::from(dmeta);
-                    // Source path uses the absolute path from control file
-                    dcb.src_path = PathBuf::from(dentry.path.clone());
-                    // Target path: make relative to source base and join with target base
-                    dcb.dst_path = make_relative_and_join(&source_dir_base, target_dir_base.clone(), dentry.path.clone());
+                    dcb.src_path = resolve_local_source_path(&source_dir_base, &logical_source_root, &dentry.path);
+                    dcb.dst_path = logical_target_path(target_dir_base.clone(), &dentry.path);
                     dirpath = dentry.path.into();
                     ControlBlockVarient::DirControlBlock(dcb)
                 },
                 ControlEntry::File(fentry) => {
                     let fmeta = meta_repo_reader.get_fmeta((fentry.meta_fid, fentry.meta_offset)).unwrap();
                     let mut fcb: FileControlBlock = FileControlBlock::from(fmeta);
-                    // Source path uses absolute path from dirpath + filename
-                    fcb.src_path = PathBuf::from(&dirpath).join(fentry.name.clone());
-                    // Target path: make dirpath relative to source base and join with target base + filename
-                    let relative_dir = make_relative_and_join(&source_dir_base, target_dir_base.clone(), dirpath.to_string_lossy().to_string());
+                    fcb.src_path = resolve_local_source_path(&source_dir_base, &logical_source_root, &dirpath.to_string_lossy())
+                        .join(fentry.name.clone());
+                    let relative_dir = logical_target_path(target_dir_base.clone(), &dirpath.to_string_lossy());
                     fcb.dst_path = relative_dir.join(fentry.name.clone());
                     ControlBlockVarient::FileControlBlock(fcb)
                 }
@@ -153,6 +122,28 @@ pub fn spawn_file_entry_producer(
         shared_state.entry_produce_done.store(true, Ordering::Relaxed);
         info!("file entry producer thread end.");
     })
+}
+
+fn resolve_local_source_path(source_root: &Path, logical_source_root: &Path, control_path: &str) -> PathBuf {
+    let control_path = PathBuf::from(control_path);
+    if control_path.starts_with(source_root) {
+        return control_path;
+    }
+    let rel = control_path
+        .strip_prefix(logical_source_root)
+        .or_else(|_| control_path.strip_prefix("/"))
+        .map(|p| p.to_path_buf())
+        .unwrap_or(control_path);
+    source_root.join(rel)
+}
+
+fn logical_target_path(target_root: PathBuf, control_path: &str) -> PathBuf {
+    target_root.join(
+        PathBuf::from(control_path)
+            .strip_prefix("/")
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|_| PathBuf::from(control_path))
+    )
 }
 
 

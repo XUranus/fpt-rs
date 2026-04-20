@@ -43,10 +43,7 @@ pub async fn run_local_to_nfs_copy_pipeline(
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::local_to_prefixed_target(
-        source_dir_base,
-        PathBuf::from(target_prefix),
-    );
+    let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
     let target = NfsTarget {
         pool: Arc::clone(&pool),
         dir_cache: new_dir_handle_cache(),
@@ -79,10 +76,7 @@ pub async fn run_local_to_smb_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::local_to_prefixed_target(
-        source_dir_base,
-        PathBuf::from(target_prefix),
-    );
+    let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
     let target = SmbTarget {
         location,
         pool,
@@ -113,7 +107,8 @@ pub async fn run_aio_nfs_to_local_pipeline(
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::remote_to_local(nfs_source_base);
+    let _ = nfs_source_base;
+    let mapping = EntryMapping::remote_to_local();
     let source = NfsSource {
         pool: Arc::clone(&pool),
         dir_cache: new_file_handle_cache(),
@@ -149,10 +144,8 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::remote_to_prefixed_target(
-        nfs_source_base,
-        PathBuf::from(target_prefix),
-    );
+    let _ = nfs_source_base;
+    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let source = NfsSource {
         pool: Arc::clone(&source_pool),
         dir_cache: new_file_handle_cache(),
@@ -191,7 +184,8 @@ pub async fn run_smb_to_local_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::remote_to_local(smb_source_base);
+    let _ = smb_source_base;
+    let mapping = EntryMapping::remote_to_local();
     let source = SmbSource { location, pool };
     let target = LocalTarget {
         base: local_target_base,
@@ -240,10 +234,8 @@ pub async fn run_smb_to_smb_copy_pipeline(
         return;
     }
 
-    let mapping = EntryMapping::remote_to_prefixed_target(
-        smb_source_base,
-        PathBuf::from(target_prefix),
-    );
+    let _ = smb_source_base;
+    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let source = SmbSource {
         location: source_location,
         pool: source_pool,
@@ -280,10 +272,8 @@ async fn run_smb_to_smb_streaming_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::remote_to_prefixed_target(
-        smb_source_base,
-        PathBuf::from(target_prefix),
-    );
+    let _ = smb_source_base;
+    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let dir_target = SmbTarget {
         location: target_location.clone(),
         pool: Arc::clone(&target_pool),
@@ -416,10 +406,8 @@ pub async fn run_nfs_to_smb_copy_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::remote_to_prefixed_target(
-        nfs_source_base,
-        PathBuf::from(target_prefix),
-    );
+    let _ = nfs_source_base;
+    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let source = NfsSource {
         pool: Arc::clone(&source_pool),
         dir_cache: new_file_handle_cache(),
@@ -458,10 +446,8 @@ pub async fn run_smb_to_nfs_copy_pipeline(
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
 ) {
-    let mapping = EntryMapping::remote_to_prefixed_target(
-        smb_source_base,
-        PathBuf::from(target_prefix),
-    );
+    let _ = smb_source_base;
+    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let source = SmbSource {
         location: source_location,
         pool: source_pool,

@@ -5,10 +5,10 @@ use crate::scanner::metadata::{DirDiff, FileDiff};
 use crate::scanner::{
     ScanWorkerContext,
     metadata::{
-        ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
+        ControlFileHeader, ControlFileWriter, DirCacheEntry, DirCacheIterator, DirCacheRandomReader, DirCacheWriter, DirControlEntry, FileCacheEntry, FileCacheIterator, FileCacheRandomReader, FileCacheWriter, FileControlEntry, FixedSize, HardlinkIndex, MetaRepoReader, MetaRepoWriter, MtimeControlFileWriter, MtimeDirEntry,
         generate_incremental_control_files,
     },
-    models::DirBatchScanResult, options::TargetDirOption
+    models::DirBatchScanResult, options::ScanOption
 };
 
 pub mod bio;
@@ -141,11 +141,17 @@ fn process_scan_result(
 
 
 
-pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io::Error> {
+pub fn generate_control_files(scan_option : &ScanOption) -> Result<(), io::Error> {
+    let target_option = &scan_option.target_dir;
     let meta_dir = target_option.meta_dir.clone();
     let ctrl_dir = target_option.ctrl_dir.clone();
     let dcache_dir = target_option.meta_dir.clone();
     let fcache_dir = target_option.meta_dir.clone();
+    let ctrl_header = ControlFileHeader {
+        source_kind: scan_option.control_path.source_kind.clone(),
+        source_root: scan_option.control_path.source_root.clone(),
+        ..ControlFileHeader::default()
+    };
 
     // Ensure ctrl_dir exists
     fs::create_dir_all(&ctrl_dir)?;
@@ -163,6 +169,8 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
             Some(prev_meta_dir.as_path()),
             meta_dir.as_path(),
             ctrl_dir.as_path(),
+            &scan_option.control_path.source_kind,
+            &scan_option.control_path.source_root,
         ) {
             Ok(stats) => {
                 info!("Incremental control files generated:");
@@ -179,7 +187,11 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
         
         // Still generate mtime.txt for all directories (needed for mtime phase)
         let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
-        let mut mtime_writer = MtimeControlFileWriter::new(mtime_file_path).unwrap();
+        let mut mtime_writer = MtimeControlFileWriter::new_with_source(
+            mtime_file_path,
+            &scan_option.control_path.source_kind,
+            &scan_option.control_path.source_root,
+        ).unwrap();
         
         let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
             .filter_map(|f| f.ok())
@@ -211,8 +223,12 @@ pub fn generate_control_files(target_option : &TargetDirOption) -> Result<(), io
     
     // Full backup mode - generate copy.txt with all entries marked as NN
     let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
-    let mut copy_writer = ControlFileWriter::new(copy_file_path).unwrap();    
-    let mut mtime_writer = MtimeControlFileWriter::new(mtime_file_path).unwrap();
+    let mut copy_writer = ControlFileWriter::new_with_header(copy_file_path, &ctrl_header).unwrap();    
+    let mut mtime_writer = MtimeControlFileWriter::new_with_source(
+        mtime_file_path,
+        &scan_option.control_path.source_kind,
+        &scan_option.control_path.source_root,
+    ).unwrap();
 
     let dcaches : Vec<PathBuf> = fs::read_dir(dcache_dir.clone()).unwrap()
         .filter_map(|f| f.ok())

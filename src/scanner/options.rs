@@ -14,6 +14,17 @@
 
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+pub struct ControlPathOption {
+    /// Physical base prefix stripped from metadata paths when emitting
+    /// logical control-file paths.
+    pub physical_base: PathBuf,
+    /// Logical root path recorded in control-file headers, such as `/ds2`.
+    pub source_root: String,
+    /// Source kind recorded in control-file headers (`local`, `nfs`, `smb`).
+    pub source_kind: String,
+}
+
 /// Configuration options for the filesystem scanner.
 #[derive(Debug, Clone)]
 pub struct ScanOption {
@@ -53,6 +64,9 @@ pub struct ScanOption {
     /// when scanning large directories over SMB. The SMB transport will cap
     /// this to the negotiated transact size.
     pub smb_query_buffer_size: u32,
+
+    /// Logical control-path normalization config.
+    pub control_path: ControlPathOption,
 
     /// When true, only collect scan statistics and skip on-disk outputs.
     pub stats_only: bool,
@@ -215,6 +229,11 @@ impl Default for ScanOption {
             },
             shard_option: ShardOption::default(),
             smb_query_buffer_size: 8 * 1024 * 1024,
+            control_path: ControlPathOption {
+                physical_base: PathBuf::from("/"),
+                source_root: "/".to_string(),
+                source_kind: "local".to_string(),
+            },
             stats_only: false,
         }
     }
@@ -334,6 +353,21 @@ impl ScanOption {
     /// Sets the SMB query-directory buffer size in bytes.
     pub fn smb_query_buffer_size(mut self, size: u32) -> Self {
         self.smb_query_buffer_size = size;
+        self
+    }
+
+    /// Sets logical control-path normalization parameters.
+    pub fn control_path(
+        mut self,
+        physical_base: PathBuf,
+        source_root: impl Into<String>,
+        source_kind: impl Into<String>,
+    ) -> Self {
+        self.control_path = ControlPathOption {
+            physical_base,
+            source_root: source_root.into(),
+            source_kind: source_kind.into(),
+        };
         self
     }
 

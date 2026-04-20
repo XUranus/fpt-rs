@@ -26,7 +26,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::scanner::metadata::{
-    DeleteControlFileWriter, DeleteEntry, DeleteEntryType,
+    ControlFileHeader, DeleteControlFileWriter, DeleteEntry, DeleteEntryType,
     DirCacheEntry, DirCacheRandomReader, FileCacheEntry, FileCacheRandomReader,
     DirControlEntry, DirDiff, FileControlEntry, FileDiff,
     ControlFileWriter, MetaRepoReader, FixedSize,
@@ -148,9 +148,19 @@ impl IncrementalDiff {
         &self,
         copy_file_path: &Path,
         delete_file_path: &Path,
+        source_kind: &str,
+        source_root: &str,
     ) -> io::Result<DiffStats> {
-        let mut copy_writer = ControlFileWriter::new(copy_file_path)?;
-        let mut delete_writer = DeleteControlFileWriter::new(delete_file_path)?;
+        let mut copy_writer = ControlFileWriter::new_with_header(copy_file_path, &ControlFileHeader {
+            source_kind: source_kind.to_string(),
+            source_root: source_root.to_string(),
+            ..ControlFileHeader::default()
+        })?;
+        let mut delete_writer = DeleteControlFileWriter::new_with_source(
+            delete_file_path,
+            source_kind,
+            source_root,
+        )?;
         let curr_meta_reader = MetaRepoReader::new(self.curr_meta_dir.clone())?;
         let prev_meta_reader = self.prev_meta_dir.as_ref()
             .and_then(|dir| MetaRepoReader::new(dir.clone()).ok());
@@ -482,6 +492,8 @@ pub fn generate_incremental_control_files(
     prev_meta_dir: Option<&Path>,
     curr_meta_dir: &Path,
     ctrl_dir: &Path,
+    source_kind: &str,
+    source_root: &str,
 ) -> io::Result<DiffStats> {
     std::fs::create_dir_all(ctrl_dir)?;
     
@@ -489,7 +501,7 @@ pub fn generate_incremental_control_files(
     let delete_file_path = ctrl_dir.join("delete.txt");
     
     let diff = IncrementalDiff::from_dirs(prev_meta_dir, curr_meta_dir)?;
-    diff.generate_control_files(&copy_file_path, &delete_file_path)
+    diff.generate_control_files(&copy_file_path, &delete_file_path, source_kind, source_root)
 }
 
 /// A simplified diff generator that works with sorted inode lists.

@@ -64,10 +64,16 @@ impl ScannerConfig {
     pub fn stats_only(mut self, enabled: bool) -> Self { self.stats_only = enabled; self }
 
     /// Build a [`ScanOption`] from this config.
-    pub(crate) fn to_scan_option(&self) -> ScanOption {
+    pub(crate) fn to_scan_option(
+        &self,
+        control_base: PathBuf,
+        source_root: impl Into<String>,
+        source_kind: impl Into<String>,
+    ) -> ScanOption {
         let mut opt = ScanOption::new(self.ctrl_dir.clone(), self.meta_dir.clone())
             .worker_count(self.worker_count)
             .writer_count(self.writer_count)
+            .control_path(control_base, source_root, source_kind)
             .stats_only(self.stats_only);
         if let Some(ref prev) = self.prev_meta_dir {
             opt = opt.prev_meta_dir(Some(prev.clone()));
@@ -128,7 +134,11 @@ impl FileScanner for LocalFileScanner {
     fn scan(&self) -> Result<ScanStats, LocalScanError> {
         use crate::scanner::Scanner;
 
-        let scan_option = self.config.to_scan_option();
+        let scan_option = self.config.to_scan_option(
+            self.source.clone(),
+            "/",
+            "local",
+        );
         let mut scanner = Scanner::new(scan_option);
         scanner.enqueue_path(self.source.clone())
             .map_err(|e| LocalScanError::Enqueue(e.to_string()))?;
@@ -204,7 +214,17 @@ mod nfs_impl {
         type Error = NfsScanError;
 
         fn scan(&self) -> Result<ScanStats, NfsScanError> {
-            let scan_option = self.config.to_scan_option();
+            let base_path = if self.source.sub_path.is_empty() {
+                PathBuf::from(&self.source.export)
+            } else {
+                PathBuf::from(&self.source.export).join(self.source.sub_path.trim_start_matches('/'))
+            };
+            let control_base = base_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base_path.clone());
+            let logical_root = base_path
+                .file_name()
+                .map(|n| format!("/{}", n.to_string_lossy()))
+                .unwrap_or_else(|| "/".to_string());
+            let scan_option = self.config.to_scan_option(control_base, logical_root, "nfs");
 
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -268,7 +288,13 @@ mod smb_impl {
         type Error = SmbScanError;
 
         fn scan(&self) -> Result<ScanStats, SmbScanError> {
-            let scan_option = self.config.to_scan_option();
+            let base_path = self.source.synthetic_root();
+            let control_base = base_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| base_path.clone());
+            let logical_root = base_path
+                .file_name()
+                .map(|n| format!("/{}", n.to_string_lossy()))
+                .unwrap_or_else(|| "/".to_string());
+            let scan_option = self.config.to_scan_option(control_base, logical_root, "smb");
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .worker_threads(self.config.worker_count.max(1))

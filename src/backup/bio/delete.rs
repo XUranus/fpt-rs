@@ -100,6 +100,7 @@ pub fn process_deletes(
 
     // Read all entries from the control file
     let reader = DeleteControlFileReader::open(delete_ctrl_path)?;
+    let logical_paths = reader.header().contains(" SOURCE_ROOT=");
 
     for entry_result in reader {
         let entry = match entry_result {
@@ -117,7 +118,8 @@ pub fn process_deletes(
         let target_path = make_relative_and_join(
             source_dir_base, 
             target_dir_base.to_path_buf(), 
-            entry.path.clone()
+            entry.path.clone(),
+            logical_paths,
         );
 
         match entry.entry_type {
@@ -155,7 +157,7 @@ pub fn process_deletes(
     // Delete directories (in reverse order to delete deepest first)
     dirs_to_delete.sort_by(|a, b| b.cmp(a)); // Reverse sort
     for dir_path in dirs_to_delete {
-        let target_path = make_relative_and_join(source_dir_base, target_dir_base.to_path_buf(), dir_path);
+        let target_path = make_relative_and_join(source_dir_base, target_dir_base.to_path_buf(), dir_path, logical_paths);
 
         if !target_path.exists() {
             debug!("Target directory does not exist, skipping: {:?}", target_path);
@@ -207,22 +209,27 @@ fn make_relative_and_join(
     base_dir: &Path,
     target_base: PathBuf,
     path: String,
+    logical_paths: bool,
 ) -> PathBuf {
     let path_buf = PathBuf::from(&path);
 
-    // Try to strip the base_dir prefix from path
     let relative_path = if path_buf.starts_with(base_dir) {
         path_buf
             .strip_prefix(base_dir)
             .map(|p| p.to_path_buf())
             .unwrap_or(path_buf)
     } else if path_buf.is_absolute() {
-        // If path doesn't start with base_dir but is absolute,
-        // just use the last component as fallback
-        path_buf
-            .file_name()
-            .map(|name| PathBuf::from(name))
-            .unwrap_or_else(|| path_buf)
+        if logical_paths {
+            let rel = path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf);
+            return target_base.join(rel);
+        }
+        let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
+        let first_segment = path_buf.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+        if logical_root_name.is_some() && logical_root_name == first_segment {
+            path_buf.strip_prefix("/").map(|p| p.to_path_buf()).unwrap_or(path_buf)
+        } else {
+            path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
+        }
     } else {
         path_buf
     };
@@ -255,6 +262,7 @@ mod tests {
             &base,
             target.clone(),
             "/home/user/source/docs".to_string(),
+            false,
         );
         assert_eq!(result, PathBuf::from("/backup/target/docs"));
 
@@ -263,6 +271,7 @@ mod tests {
             &base,
             target.clone(),
             "/other/path".to_string(),
+            false,
         );
         assert_eq!(result, PathBuf::from("/backup/target/path"));
     }

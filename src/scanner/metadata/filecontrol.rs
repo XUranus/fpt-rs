@@ -33,6 +33,7 @@
 //! F DM 00000000 00000300 -------- 00000009 notes.txt
 //! ```
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
@@ -87,6 +88,32 @@ pub struct DirControlEntry {
     pub meta_offset: u32,
     /// Number of files directly contained in this directory.
     pub files_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ControlFileHeader {
+    pub version: u32,
+    pub file_count: u64,
+    pub dir_count: u64,
+    pub time: u64,
+    pub source_kind: String,
+    pub source_root: String,
+}
+
+impl Default for ControlFileHeader {
+    fn default() -> Self {
+        Self {
+            version: 2,
+            file_count: 0,
+            dir_count: 0,
+            time: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            source_kind: "local".to_string(),
+            source_root: "/".to_string(),
+        }
+    }
 }
 
 impl FileDiff {
@@ -164,15 +191,24 @@ impl ControlFileWriter {
     /// The file is created or truncated. The header includes placeholder counts
     /// (`FILE=0 DIRS=0`) since final counts are not known at creation time.
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::new_with_header(path, &ControlFileHeader::default())
+    }
+
+    pub fn new_with_header<P: AsRef<Path>>(
+        path: P,
+        header: &ControlFileHeader,
+    ) -> io::Result<Self> {
         let file = File::create(path)?; // ✅ Use create(), not open()
         let mut fwriter = BufWriter::new(file);
         writeln!(
             fwriter,
-            "#BIFROST_BACKUP_CTRL_FILE V1 FILE=0 DIRS=0 TIME={}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
+            "#BIFROST_BACKUP_CTRL_FILE V{} FILE={} DIRS={} TIME={} SOURCE_KIND={} SOURCE_ROOT={}",
+            header.version,
+            header.file_count,
+            header.dir_count,
+            header.time,
+            header.source_kind,
+            header.source_root,
         )?;
         Ok(Self {
             fwriter,
@@ -274,8 +310,7 @@ pub enum ControlEntry {
 /// Not thread-safe.
 pub struct ControlFileReader {
     freader: BufReader<File>,
-    #[allow(dead_code)]
-    header: String,
+    header: ControlFileHeader,
 }
 
 impl ControlFileReader {
@@ -295,7 +330,13 @@ impl ControlFileReader {
             ));
         }
 
+        let header = parse_control_header(&header)?;
+
         Ok(Self { freader, header })
+    }
+
+    pub fn header(&self) -> &ControlFileHeader {
+        &self.header
     }
 
     /// Splits the next control-file line into a fixed number of prefix fields and the raw tail.
@@ -331,6 +372,37 @@ impl ControlFileReader {
 
         Ok((fields, &line[idx..]))
     }
+}
+
+fn parse_control_header(header: &str) -> io::Result<ControlFileHeader> {
+    let tokens: Vec<&str> = header.split_whitespace().collect();
+    if tokens.len() < 5 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid control header",
+        ));
+    }
+
+    let version = tokens[1]
+        .strip_prefix('V')
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(1);
+
+    let mut kv = HashMap::new();
+    for token in tokens.iter().skip(2) {
+        if let Some((k, v)) = token.split_once('=') {
+            kv.insert(k, v);
+        }
+    }
+
+    Ok(ControlFileHeader {
+        version,
+        file_count: kv.get("FILE").and_then(|v| v.parse().ok()).unwrap_or(0),
+        dir_count: kv.get("DIRS").and_then(|v| v.parse().ok()).unwrap_or(0),
+        time: kv.get("TIME").and_then(|v| v.parse().ok()).unwrap_or(0),
+        source_kind: kv.get("SOURCE_KIND").copied().unwrap_or("local").to_string(),
+        source_root: kv.get("SOURCE_ROOT").copied().unwrap_or("/").to_string(),
+    })
 }
 
 impl Iterator for ControlFileReader {

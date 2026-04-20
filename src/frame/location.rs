@@ -165,6 +165,40 @@ impl DataLocation {
             DataLocation::Smb(l) => l.synthetic_root(),
         }
     }
+
+    /// Physical prefix stripped from metadata paths when emitting logical
+    /// control-file paths.
+    pub fn control_path_base(&self) -> PathBuf {
+        if let DataLocation::Local(p) = self {
+            return p.clone();
+        }
+        let base = self.base_path();
+        base.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or(base)
+    }
+
+    /// Logical source root recorded in control-file headers.
+    pub fn logical_source_root(&self) -> String {
+        if matches!(self, DataLocation::Local(_)) {
+            return "/".to_string();
+        }
+        let base = self.base_path();
+        base.file_name()
+            .map(|name| format!("/{}", name.to_string_lossy()))
+            .unwrap_or_else(|| "/".to_string())
+    }
+
+    /// Stable source kind name for control-file headers.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            DataLocation::Local(_) => "local",
+            #[cfg(feature = "nfs")]
+            DataLocation::Nfs(_) => "nfs",
+            #[cfg(feature = "smb")]
+            DataLocation::Smb(_) => "smb",
+        }
+    }
 }
 
 impl std::fmt::Display for DataLocation {

@@ -38,6 +38,8 @@ pub struct BackupConfig {
     pub control_file: PathBuf,
     /// Aggregation settings.
     pub aggregate_config: AggregateConfig,
+    /// Override relative target prefix used for remote D_REPO writes.
+    pub remote_target_prefix: Option<String>,
     /// Whether to run the hardlink phase.
     pub enable_hardlink: bool,
     /// Whether to run the delete phase.
@@ -61,6 +63,7 @@ impl BackupConfig {
             ctrl_dir:         ctrl_dir.into(),
             control_file:     control_file.into(),
             aggregate_config: AggregateConfig::default(),
+            remote_target_prefix: None,
             enable_hardlink:  false,
             enable_delete:    false,
             enable_mtime:     false,
@@ -69,6 +72,9 @@ impl BackupConfig {
 
     pub fn aggregate_config(mut self, cfg: AggregateConfig) -> Self {
         self.aggregate_config = cfg; self
+    }
+    pub fn remote_target_prefix(mut self, prefix: Option<String>) -> Self {
+        self.remote_target_prefix = prefix; self
     }
     pub fn enable_hardlink(mut self, v: bool) -> Self { self.enable_hardlink = v; self }
     pub fn enable_delete(mut self, v: bool) -> Self   { self.enable_delete = v; self }
@@ -190,7 +196,7 @@ mod nfs_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+            .nfs_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
 
             run_backup_task(option)
         }
@@ -268,7 +274,7 @@ mod nfs_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_source(self.nfs_source.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+            .nfs_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
 
             run_backup_task(option)
         }
@@ -311,7 +317,7 @@ mod mixed_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .nfs_source(self.nfs_source.clone())
             .smb_target(self.smb_target.clone())
-            .smb_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+            .smb_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
 
             run_backup_task(option)
         }
@@ -347,7 +353,7 @@ mod mixed_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .smb_source(self.smb_source.clone())
             .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+            .nfs_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
 
             run_backup_task(option)
         }
@@ -391,7 +397,7 @@ mod smb_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .smb_target(self.smb_target.clone())
-            .smb_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+            .smb_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
 
             run_backup_task(option)
         }
@@ -462,7 +468,7 @@ mod smb_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .smb_source(self.smb_source.clone())
             .smb_target(self.smb_target.clone())
-            .smb_target_d_repo_path(extract_repo_relative_path(&cfg.local_target_dir));
+            .smb_target_d_repo_path(cfg.remote_target_prefix.clone().unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)));
 
             run_backup_task(option)
         }

@@ -132,7 +132,8 @@ pub async fn run_restore_copy_pipeline<T>(
 
     let producer_handle = {
         let entry_tx = entry_tx.clone();
-        let mapping = EntryMapping::remote_to_local(original_source_base);
+        let _ = original_source_base;
+        let mapping = EntryMapping::remote_to_local();
         tokio::task::spawn_blocking(move || {
             produce_entries(control_file, meta_dir, mapping, entry_tx, log_prefix);
         })

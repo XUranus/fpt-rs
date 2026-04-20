@@ -139,8 +139,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bifrost::logging::add_file(p);
     }
 
-    let scan_option = build_scan_option(&args);
-
     let mut totals = ScanSummary::default();
     let total_start = Instant::now();
 
@@ -151,6 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             args.nfs_uid,
             args.nfs_gid,
         )?;
+        let scan_option = build_scan_option(&args, &location);
 
         let started = Instant::now();
         let summary = run_scan(&location, scan_option.clone())?;
@@ -168,7 +167,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_scan_option(args: &Args) -> ScanOption {
+fn build_scan_option(args: &Args, location: &DataLocation) -> ScanOption {
     let mut opt = ScanOption::new(args.ctrl_dir.clone(), args.meta_dir.clone())
         .worker_count(args.workers)
         .writer_count(args.writers)
@@ -185,6 +184,11 @@ fn build_scan_option(args: &Args) -> ScanOption {
         .enable_sharding(args.shard)
         .shard_num(args.shard_num)
         .smb_query_buffer_size(args.smb_query_buffer_mb.saturating_mul(1024 * 1024))
+        .control_path(
+            location.control_path_base(),
+            location.logical_source_root(),
+            location.kind_name(),
+        )
         .stats_only(args.stats_only);
 
     if let Some(max) = args.shard_max_entries_copy {

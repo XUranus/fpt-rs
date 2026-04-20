@@ -57,15 +57,25 @@ pub struct MtimeControlFileWriter {
 impl MtimeControlFileWriter {
     /// Creates a new mtime control file and writes the header.
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        Self::new_with_source(path, "local", "/")
+    }
+
+    pub fn new_with_source<P: AsRef<Path>>(
+        path: P,
+        source_kind: &str,
+        source_root: &str,
+    ) -> io::Result<Self> {
         let file = File::create(path)?;
         let mut fwriter = BufWriter::new(file);
         writeln!(
             fwriter,
-            "#BIFROST_MTIME_CTRL_FILE V1 DIRS=0 TIME={}",
+            "#BIFROST_MTIME_CTRL_FILE V2 DIRS=0 TIME={} SOURCE_KIND={} SOURCE_ROOT={}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs()
+                .as_secs(),
+            source_kind,
+            source_root,
         )?;
         writeln!(fwriter)?; // Empty line after header
         Ok(Self {

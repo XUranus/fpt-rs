@@ -180,7 +180,16 @@ fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> Stri
     let rel = Path::new(path)
         .strip_prefix(base)
         .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| PathBuf::from(path));
+        .unwrap_or_else(|_| {
+            let p = Path::new(path);
+            let logical_root_name = base.file_name().and_then(|n| n.to_str());
+            let first_segment = p.strip_prefix("/").ok().and_then(|p| p.iter().next()).and_then(|s| s.to_str());
+            if logical_root_name.is_some() && logical_root_name == first_segment {
+                p.strip_prefix("/").map(|r| r.to_path_buf()).unwrap_or_else(|_| PathBuf::from(path))
+            } else {
+                p.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from(path))
+            }
+        });
     let prefixed = if target_prefix.is_empty() {
         rel
     } else {
