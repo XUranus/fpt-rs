@@ -161,6 +161,10 @@ impl log::Log for RoutingLogger {
             return;
         }
 
+        if should_suppress_record(record) {
+            return;
+        }
+
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         let line = format!(
             "{} [{}] {} - {}",
@@ -216,4 +220,15 @@ impl log::Log for RoutingLogger {
             }
         }
     }
+}
+
+fn should_suppress_record(record: &log::Record) -> bool {
+    if record.target() != "smb::resource" {
+        return false;
+    }
+
+    let msg = record.args().to_string();
+    msg.starts_with("Error closing file:")
+        && (msg.contains("Unexpected Message, Received message for different tree, or tree disconnecting.")
+            || msg.contains("Network Name Deleted (0xc00000c9)"))
 }

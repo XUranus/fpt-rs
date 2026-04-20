@@ -37,7 +37,7 @@ pub fn start_meta_writers(
             let mut meta_writer = MetaRepoWriter::new(meta_dir).unwrap();
             let mut dcache_writer: DirCacheWriter = DirCacheWriter::new(dcache_dir, i as u32).unwrap();
             let mut fcache_writer: FileCacheWriter = FileCacheWriter::new(fcache_dir, i as u32).unwrap();
-            info!("Writer thread {} started\n", i);
+            info!("Writer thread {} started", i);
             loop {
                 // pop path from output meta queue and process
                 if let Some(dir_scan_result) = output_queue.pop() {
@@ -54,7 +54,7 @@ pub fn start_meta_writers(
                     break;
                 }
             }
-            info!("Writer thread {} exit\n", i);
+            info!("Writer thread {} exit", i);
         });
         writer_handles.push(handle);
     }

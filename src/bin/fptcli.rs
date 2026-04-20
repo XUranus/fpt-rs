@@ -80,7 +80,7 @@ enum Commands {
         mtime: bool,
 
         /// Number of worker threads per subtask
-        #[arg(long, short = 'w', default_value = "4", value_name = "COUNT")]
+        #[arg(long, short = 'w', default_value = "8", value_name = "COUNT")]
         workers: usize,
 
         /// Number of parallel NFS connections (used when source or target is an NFS URL)

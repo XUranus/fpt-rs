@@ -28,7 +28,7 @@ struct Args {
     meta_dir: PathBuf,
 
     /// Number of traversal worker threads (local) / concurrent RPC tasks (NFS/SMB)
-    #[arg(long, short = 'w', default_value = "4", value_name = "COUNT")]
+    #[arg(long, short = 'w', default_value = "8", value_name = "COUNT")]
     workers: usize,
 
     /// Number of metadata writer threads
