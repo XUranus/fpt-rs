@@ -206,6 +206,24 @@ Remaining gaps:
 - traversal still pays one SMB `CREATE` per scanned directory, which remains the dominant scanner cost on deep trees
 - deferred close currently causes some benign `smb-rs` close errors during client disconnect because background close tasks race with session teardown
 
+### SMB Backup Stability Notes
+
+During `local -> SMB` backup testing with large files, a separate stall was found in
+the SMB write loop:
+
+- the backup thread stayed alive but stopped making progress
+- the last log line was typically a `write_block()` on the same file
+- `smb-rs` logged `STATUS_PENDING` for the write, but completion never arrived
+
+The Bifrost-side mitigation now used in `src/smb/aio.rs` is:
+
+- query negotiated SMB `max_read_size` / `max_write_size`
+- avoid fixed `1 MiB` transfer chunks
+- clamp active SMB read/write chunk sizes to a conservative `256 KiB`
+
+This was enough to make the previously stuck `local -> SMB` backup complete
+reliably on the local Samba test server.
+
 ### SMB Scanner Performance Notes
 
 Measured on a local Samba server with a tree of about `3905` files and `3906`
