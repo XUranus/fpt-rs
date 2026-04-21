@@ -64,9 +64,38 @@ struct Opts {
     #[arg(short, long, default_value_t = 8)]
     threads: usize,
 
+    /// Prefix for generated directory names. The numeric index is appended directly.
+    #[arg(long, default_value = "d")]
+    dir_prefix: String,
+
+    /// Prefix for generated file names. The numeric index is appended directly.
+    #[arg(long, default_value = "f")]
+    file_prefix: String,
+
+    /// Include the full directory index path in directory names.
+    /// Example: --dir-prefix vdb. --file-prefix file. --index-base 1 creates
+    /// vdb.1/vdb.1.2/vdb.1.2.3/file.4.
+    #[arg(long)]
+    level_names: bool,
+
+    /// First index used in generated names
+    #[arg(long, default_value_t = 0)]
+    index_base: u32,
+
+    /// Seed for deterministic pseudo-random file content
+    #[arg(long, default_value_t = 0xB1F0_5715_DA7A_5EED)]
+    seed: u64,
+
     /// Skip confirmation prompt
     #[arg(short, long)]
     yes: bool,
+}
+
+#[derive(Clone)]
+struct WorkItem {
+    path: PathBuf,
+    current_depth: u32,
+    indexes: Vec<u32>,
 }
 
 /// Calculate total files, directories, and size
@@ -74,11 +103,9 @@ fn estimate_total(opts: &Opts) -> (u64, u64, u64) {
     let mut total_dirs = 0u64;
     let mut total_files = 0u64;
 
-    // At each level, we create dirs directories
-    // Level 0: 1 directory (root)
-    // Level 1: dirs directories
-    // Level 2: dirs^2 directories
-    // ... up to depth levels
+    // Files are created in the root and every directory above `depth`.
+    // Subdirectories are created below each of those directories, so the
+    // created-directory count excludes the pre-existing output root.
 
     let dirs_per_level = opts.dirs as u64;
     let files_per_dir = opts.files as u64;
@@ -86,8 +113,8 @@ fn estimate_total(opts: &Opts) -> (u64, u64, u64) {
 
     for level in 0..depth {
         let dir_count_at_level = dirs_per_level.pow(level as u32);
-        total_dirs += dir_count_at_level;
         total_files += dir_count_at_level * files_per_dir;
+        total_dirs += dirs_per_level.pow(level as u32 + 1);
     }
 
     let total_size = total_files * opts.size;
@@ -166,12 +193,14 @@ fn main() {
     let total_size = Arc::new(AtomicU64::new(0));
     let pending_work = Arc::new(AtomicU64::new(1)); // Start with 1 for root
 
-    // Pre-allocate file content buffer (zero-filled)
-    let content = vec![0u8; opts.size as usize];
-
-    // Work queue: (directory_path, current_depth)
+    // Work queue: directory path plus its logical index chain.
     let (tx, rx) = channel::unbounded();
-    tx.send((root, 0)).unwrap();
+    tx.send(WorkItem {
+        path: root,
+        current_depth: 0,
+        indexes: Vec::new(),
+    })
+    .unwrap();
 
     // Spawn worker threads
     let mut handles = vec![];
@@ -181,16 +210,16 @@ fn main() {
         let dir_count = Arc::clone(&dir_count);
         let total_size = Arc::clone(&total_size);
         let pending = Arc::clone(&pending_work);
-        let content = content.clone();
         let opts = opts.clone();
         let tx = tx.clone();
 
         let handle = thread::spawn(move || {
+            let mut content = vec![0u8; opts.size as usize];
             loop {
                 // Try to receive work item
                 match rx.try_recv() {
-                    Ok((path, current_depth)) => {
-                        if current_depth >= opts.depth {
+                    Ok(work) => {
+                        if work.current_depth >= opts.depth {
                             // Just count down and skip
                             pending.fetch_sub(1, Ordering::SeqCst);
                             continue;
@@ -199,15 +228,28 @@ fn main() {
                         // Create subdirectories
                         let mut new_dirs = Vec::with_capacity(opts.dirs as usize);
                         for i in 0..opts.dirs {
-                            let subdir = path.join(format!("d{}", i));
+                            let name_index = opts.index_base.saturating_add(i);
+                            let mut child_indexes = work.indexes.clone();
+                            child_indexes.push(name_index);
+                            let subdir =
+                                work.path.join(dir_name(&opts, &child_indexes, name_index));
                             fs::create_dir_all(&subdir).expect("Failed to create subdirectory");
                             dir_count.fetch_add(1, Ordering::Relaxed);
-                            new_dirs.push(subdir);
+                            new_dirs.push(WorkItem {
+                                path: subdir,
+                                current_depth: work.current_depth + 1,
+                                indexes: child_indexes,
+                            });
                         }
 
                         // Create files
                         for i in 0..opts.files {
-                            let file_path = path.join(format!("f{}", i));
+                            let name_index = opts.index_base.saturating_add(i);
+                            let file_path = work.path.join(file_name(&opts, name_index));
+                            fill_random_data(
+                                &mut content,
+                                file_seed(&opts, &work.indexes, name_index),
+                            );
                             fs::write(&file_path, &content).expect("Failed to write file");
                             file_count.fetch_add(1, Ordering::Relaxed);
                             total_size.fetch_add(opts.size, Ordering::Relaxed);
@@ -217,8 +259,8 @@ fn main() {
                         let new_work = new_dirs.len() as u64;
                         if new_work > 0 {
                             pending.fetch_add(new_work, Ordering::SeqCst);
-                            for subdir in new_dirs {
-                                tx.send((subdir, current_depth + 1)).unwrap();
+                            for work in new_dirs {
+                                tx.send(work).unwrap();
                             }
                         }
 
@@ -334,4 +376,47 @@ fn main() {
             format_bytes(bytes_per_sec as u64)
         );
     }
+}
+
+fn dir_name(opts: &Opts, indexes: &[u32], current_index: u32) -> String {
+    if opts.level_names {
+        let suffix = indexes
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(".");
+        format!("{}{}", opts.dir_prefix, suffix)
+    } else {
+        format!("{}{}", opts.dir_prefix, current_index)
+    }
+}
+
+fn file_name(opts: &Opts, file_index: u32) -> String {
+    format!("{}{}", opts.file_prefix, file_index)
+}
+
+fn file_seed(opts: &Opts, dir_indexes: &[u32], file_index: u32) -> u64 {
+    let mut seed = opts.seed ^ file_index as u64;
+    for (level, index) in dir_indexes.iter().enumerate() {
+        seed ^= ((*index as u64) << (level % 24)) ^ ((level as u64 + 1) * 0x9E37_79B9);
+        seed = splitmix64(seed);
+    }
+    seed
+}
+
+fn fill_random_data(buf: &mut [u8], seed: u64) {
+    let mut state = seed;
+    for chunk in buf.chunks_mut(8) {
+        state = splitmix64(state);
+        let bytes = state.to_le_bytes();
+        chunk.copy_from_slice(&bytes[..chunk.len()]);
+    }
+}
+
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }

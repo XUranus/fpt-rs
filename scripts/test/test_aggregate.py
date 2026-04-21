@@ -24,6 +24,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from test.test_framework import BifrostTestBase, TestRunner, TestResult
 
 
+def detect_sqlite_entry_table(cursor):
+    """Return the aggregate SQLite table name used by the current build."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cursor.fetchall()}
+    if "entries" in tables:
+        return "entries"
+    if "aggregate_index" in tables:
+        return "aggregate_index"
+    return None
+
+
 class AggregateBackupTest(BifrostTestBase):
     """Test aggregate backup and restore functionality."""
 
@@ -180,8 +191,8 @@ class AggregateBackupTest(BifrostTestBase):
         """Verify that the aggregate index was created and contains entries."""
         self.log_info("Verifying aggregate index...")
 
-        # Look for SQLite index file
-        index_files = list(self.backup_dir.glob("*.sqlite"))
+        # Look for SQLite index files anywhere under the backup tree
+        index_files = list(self.backup_dir.rglob("*.sqlite"))
 
         if not index_files:
             # Index might be in a different location or using in-memory storage
@@ -194,13 +205,12 @@ class AggregateBackupTest(BifrostTestBase):
             conn = sqlite3.connect(str(index_file))
             cursor = conn.cursor()
 
-            # Check for aggregate_index table
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='aggregate_index'")
-            if not cursor.fetchone():
-                return False, "aggregate_index table not found in SQLite database"
+            table_name = detect_sqlite_entry_table(cursor)
+            if not table_name:
+                return False, "no aggregate index table found in SQLite database"
 
             # Count entries
-            cursor.execute("SELECT COUNT(*) FROM aggregate_index")
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             count = cursor.fetchone()[0]
 
             conn.close()
@@ -344,6 +354,7 @@ class AggregateRestoreTest(BifrostTestBase):
             "-m", str(self.meta_dir),
             "-c", str(self.ctrl_dir / "copy.txt"),
             "--aggregate",
+            "--aggregate-layout", "dir-level",
             "--max-blob-size", "64",
             "--aggregate-threshold", "1024"
         ]
@@ -365,11 +376,11 @@ class AggregateRestoreTest(BifrostTestBase):
     def run_restore(self):
         """Restore files from an aggregate backup.
 
-        Aggregate backups store small files inside per-directory .AGGR_DIR/
-        subdirectories. Each .AGGR_DIR/ contains:
-          - One or more *.bifrost.blob files (concatenated raw file data)
-          - AGGREGATE_IDX.sqlite with a table (aggregate_index) that records
-            each file's name, blob name, byte offset, and byte size.
+        Aggregate restore test currently restores the DIR_LEVEL aggregate layout.
+        Each `.AGGR_DIR/` contains:
+          - One or more `*.bifrost.blob` files
+          - `AGGREGATE_IDX.sqlite` with either the legacy `aggregate_index`
+            table or the current `entries` table.
 
         This method walks the backup directory, finds every .AGGR_DIR/, reads
         the SQLite index, and extracts each file to restore_dir mirroring the
@@ -407,8 +418,13 @@ class AggregateRestoreTest(BifrostTestBase):
                 try:
                     conn = sqlite3.connect(str(index_path))
                     cursor = conn.cursor()
+                    table_name = detect_sqlite_entry_table(cursor)
+                    if not table_name:
+                        self.log_info(f"SQLite error reading {index_path}: no aggregate table found")
+                        conn.close()
+                        continue
                     cursor.execute(
-                        "SELECT file_name, blob_name, offset, size FROM aggregate_index"
+                        f"SELECT file_name, blob_name, offset, size FROM {table_name}"
                     )
                     rows = cursor.fetchall()
                     conn.close()

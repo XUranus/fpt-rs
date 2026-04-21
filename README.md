@@ -44,6 +44,18 @@ Run the Python integration suite:
 python scripts/test/test_all.py --keep-logs
 ```
 
+Run the local/NFS/SMB smoke matrix:
+
+```bash
+scripts/smoke_matrix.sh
+```
+
+For a quick local-only check:
+
+```bash
+TEST_ROOT_DIR=/tmp/bifrost-smoke TEST_BUILD=0 TEST_TRANSPORTS=local TEST_AGGREGATE_LAYOUTS=shard scripts/smoke_matrix.sh
+```
+
 Useful targeted integration tests:
 
 ```bash
@@ -160,5 +172,6 @@ Important docs:
 - [docs/nfs.md](docs/nfs.md): NFS support and module layout
 - [docs/smb.md](docs/smb.md): SMB feasibility, design, and rollout plan
 - [docs/aggregate.md](docs/aggregate.md): aggregated backup format
+- [docs/smoke_matrix.md](docs/smoke_matrix.md): full local/NFS/SMB smoke matrix
 - [docs/ctrlfile.md](docs/ctrlfile.md): control-file formats
 - [docs/logging.md](docs/logging.md): routed logging behavior

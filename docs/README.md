@@ -11,7 +11,8 @@ Start here if you are new to the repository:
 3. [nfs.md](nfs.md) if you are touching NFS-backed scan/backup paths.
 4. [smb.md](smb.md) for the SMB transport design and rollout plan.
 5. [aggregate.md](aggregate.md), [incremental.md](incremental.md), and [ctrlfile.md](ctrlfile.md) for format and pipeline details.
-6. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
+6. [smoke_matrix.md](smoke_matrix.md) for the local/NFS/SMB backup+restore smoke matrix.
+7. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
 
 Reference docs:
 
