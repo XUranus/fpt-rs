@@ -57,6 +57,7 @@ pub struct BackupJobConfig {
     pub enable_mtime: bool,
     pub max_concurrent_subtasks: usize,
     pub smb_connection_count: usize,
+    pub copy_buffer_size: usize,
 
     // ── Incremental ──────────────────────────────────────────────────────────
     pub incremental_base: Option<PathBuf>,
@@ -81,6 +82,7 @@ impl Default for BackupJobConfig {
             enable_mtime: false,
             max_concurrent_subtasks: 4,
             smb_connection_count: 1,
+            copy_buffer_size: 1024 * 1024,
             incremental_base: None,
             verbose: 0,
         }
@@ -256,6 +258,7 @@ impl BackupRestoreJob for FileBackupJob {
                 enable_delete: cfg.enable_delete,
                 enable_mtime: cfg.enable_mtime,
                 smb_connection_count: cfg.smb_connection_count,
+                copy_buffer_size: cfg.copy_buffer_size,
                 backup_source: cfg.source.clone(),
                 backup_target: cfg.target.clone(),
                 restore_target: DataLocation::Local(PathBuf::new()), // unused for backup

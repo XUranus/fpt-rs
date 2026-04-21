@@ -19,7 +19,7 @@ use crate::scanner::metadata::{DirMeta, FileMeta};
 /// Maximum buffer size for file data (4 MiB).
 ///
 /// Files larger than this are processed in chunks to limit memory usage.
-const MAX_FILE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_FILE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 /// State of the source (input) file during backup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,21 +106,17 @@ pub enum ControlBlockVarient {
 impl From<FileMeta> for FileControlBlock {
     /// Creates a new `FileControlBlock` from file metadata.
     ///
-    /// Initializes the buffer with a capacity appropriate for the file size:
-    /// - For files ≤ 4 MiB: buffer sized to hold the entire file.
-    /// - For larger files: buffer capped at `MAX_FILE_BUFFER_SIZE` (for chunked processing).
+    /// Initializes without allocating file payload storage up front.
+    ///
+    /// Buffer memory is allocated lazily when an active read operation starts.
+    /// This avoids reserving up to 4 MiB for every queued file control block,
+    /// which would otherwise explode memory usage on large file sets.
     ///
     /// Note: `src_path` and `dst_path` must be set externally before use.
     fn from(fmeta: FileMeta) -> Self {
-        let buffer_capacity = if fmeta.size as usize <= MAX_FILE_BUFFER_SIZE {
-            fmeta.size as usize
-        } else {
-            MAX_FILE_BUFFER_SIZE
-        };
-
         Self {
             meta: Box::new(fmeta),
-            buffer: Vec::with_capacity(buffer_capacity),
+            buffer: Vec::new(),
             buffer_len: 0,
             src_state: SourceHandleState::Inited,
             dst_state: TargetHandleState::Inited,

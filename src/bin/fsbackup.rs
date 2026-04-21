@@ -81,6 +81,10 @@ struct Args {
     #[arg(long, value_name = "N", default_value = "1")]
     smb_connections: usize,
 
+    /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096]
+    #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
+    buffer_size: usize,
+
     /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
     #[arg(long, value_name = "UID")]
     nfs_uid: Option<u32>,
@@ -170,6 +174,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .aggregate_config(aggregate_config)
     .remote_target_prefix((!target.is_local()).then(|| String::new()))
     .smb_connection_count(args.smb_connections)
+    .copy_buffer_size(args.buffer_size * 1024)
     .enable_hardlink(args.hardlink)
     .enable_delete(args.delete)
     .enable_mtime(args.mtime);

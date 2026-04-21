@@ -19,7 +19,7 @@ use crate::{
         aggregate_engine::{fcb_to_pending_file, AggregateBackupEngine, AggregateBackupState},
         fcb::{
             ControlBlockVarient, DirControlBlock, FileControlBlock, SourceHandleState,
-            TargetHandleState,
+            TargetHandleState, MAX_FILE_BUFFER_SIZE,
         },
         stats::BackupStats,
         SharedState,
@@ -99,7 +99,7 @@ pub fn spawn_file_entry_producer(
     meta_dir: PathBuf,
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
-    fcb_producer_tx: mpsc::Sender<ControlBlockVarient>,
+    fcb_producer_tx: mpsc::SyncSender<ControlBlockVarient>,
     shared_state: Arc<SharedState>,
 ) -> std::thread::JoinHandle<()> {
     let meta_repo_reader = MetaRepoReader::new(meta_dir).unwrap();
@@ -185,8 +185,8 @@ fn logical_target_path(target_root: PathBuf, control_path: &str) -> PathBuf {
 /// enqueues the next required I/O operation.
 pub fn spawn_reader(
     reader_rx: mpsc::Receiver<ControlBlockVarient>,
-    reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
-    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    reader_io_pool_tx: mpsc::SyncSender<ReaderBioTask>,
+    writer_tx: mpsc::SyncSender<ControlBlockVarient>,
     shared_state: Arc<SharedState>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -245,8 +245,8 @@ pub fn spawn_reader(
 /// Small files are routed to the aggregate engine instead of normal backup.
 pub fn spawn_reader_with_aggregation(
     reader_rx: mpsc::Receiver<ControlBlockVarient>,
-    reader_io_pool_tx: mpsc::Sender<ReaderBioTask>,
-    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    reader_io_pool_tx: mpsc::SyncSender<ReaderBioTask>,
+    writer_tx: mpsc::SyncSender<ControlBlockVarient>,
     shared_state: Arc<SharedState>,
     aggregate_engine: Arc<AggregateBackupEngine>,
     stats: Arc<BackupStats>,
@@ -428,8 +428,8 @@ pub fn spawn_reader_with_aggregation(
 /// and counted in statistics.
 pub fn spawn_reader_io_result_poll(
     result_rx: mpsc::Receiver<ReaderBioResult>,
-    reader_tx: mpsc::Sender<ControlBlockVarient>,
-    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    reader_tx: mpsc::SyncSender<ControlBlockVarient>,
+    writer_tx: mpsc::SyncSender<ControlBlockVarient>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -467,8 +467,8 @@ pub fn spawn_reader_io_result_poll(
 /// reader for blob creation. Large files and other operations go to the writer.
 pub fn spawn_reader_io_result_poll_with_aggregation(
     result_rx: mpsc::Receiver<ReaderBioResult>,
-    reader_tx: mpsc::Sender<ControlBlockVarient>,
-    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    reader_tx: mpsc::SyncSender<ControlBlockVarient>,
+    writer_tx: mpsc::SyncSender<ControlBlockVarient>,
     stats: Arc<BackupStats>,
     aggregate_engine: Arc<AggregateBackupEngine>,
 ) -> std::thread::JoinHandle<()> {
@@ -516,7 +516,7 @@ pub fn spawn_reader_io_result_poll_with_aggregation(
 /// For higher throughput, consider lock-free channels (e.g., `crossbeam`).
 pub fn spawn_reader_io_pool(
     task_rx: Arc<Mutex<mpsc::Receiver<ReaderBioTask>>>,
-    result_tx: mpsc::Sender<ReaderBioResult>,
+    result_tx: mpsc::SyncSender<ReaderBioResult>,
     num_threads: usize,
     shared_state: Arc<SharedState>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -567,7 +567,7 @@ pub fn spawn_reader_io_pool(
 /// enqueues the next required I/O operation.
 pub fn spawn_writer(
     writer_rx: mpsc::Receiver<ControlBlockVarient>,
-    writer_io_pool_tx: mpsc::Sender<WriterBioTask>,
+    writer_io_pool_tx: mpsc::SyncSender<WriterBioTask>,
     shared_state: Arc<SharedState>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
@@ -632,7 +632,7 @@ pub fn spawn_writer(
 /// Errors are logged and counted in statistics.
 pub fn spawn_writer_io_result_poll(
     result_rx: mpsc::Receiver<WriterBioResult>,
-    writer_tx: mpsc::Sender<ControlBlockVarient>,
+    writer_tx: mpsc::SyncSender<ControlBlockVarient>,
     stats: Arc<BackupStats>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
@@ -646,8 +646,9 @@ pub fn spawn_writer_io_result_poll(
                         stats
                             .bytes_copied
                             .fetch_add(fcb.meta.size, Ordering::Relaxed);
+                    } else {
+                        let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                     }
-                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 WriterBioResult::OpenTarget(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
@@ -656,12 +657,15 @@ pub fn spawn_writer_io_result_poll(
                     // Check if write is complete
                     if fcb.dst_offset >= fcb.meta.size {
                         fcb.dst_state = TargetHandleState::Written;
+                        fcb.buffer.clear();
+                        fcb.buffer.shrink_to(0);
                         stats.files_copied.fetch_add(1, Ordering::Relaxed);
                         stats
                             .bytes_copied
                             .fetch_add(fcb.meta.size, Ordering::Relaxed);
+                    } else {
+                        let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                     }
-                    let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
                 }
                 WriterBioResult::WriteTarget(Err(_)) => {
                     stats.files_failed.fetch_add(1, Ordering::Relaxed);
@@ -781,10 +785,12 @@ fn read_source(mut fcb: FileControlBlock) -> ReaderBioResult {
         return ReaderBioResult::ReadSource(Err(BioError::Unknown(e)));
     }
 
-    // Ensure buffer is sized appropriately
-    if fcb.buffer.len() == 0 {
-        fcb.buffer
-            .resize(fcb.meta.size.saturating_sub(offset) as usize, 0);
+    // Allocate only for the active chunk. This keeps queued FCBs cheap and
+    // prevents large file sets from pre-reserving payload buffers in memory.
+    let remaining = fcb.meta.size.saturating_sub(offset) as usize;
+    let chunk_len = remaining.min(MAX_FILE_BUFFER_SIZE);
+    if fcb.buffer.len() != chunk_len {
+        fcb.buffer.resize(chunk_len, 0);
     }
 
     match file.read(&mut fcb.buffer) {

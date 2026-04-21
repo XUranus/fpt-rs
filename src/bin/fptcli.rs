@@ -88,6 +88,10 @@ enum Commands {
         #[arg(long, default_value = "1", value_name = "COUNT")]
         smb_connections: usize,
 
+        /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096]
+        #[arg(long, default_value = "1024", value_name = "SIZE_KB")]
+        buffer_size: usize,
+
         /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
         #[arg(long, value_name = "UID")]
         nfs_uid: Option<u32>,
@@ -265,6 +269,7 @@ fn cmd_backup(
     workers: usize,
     nfs_connections: usize,
     smb_connections: usize,
+    buffer_size: usize,
     nfs_uid: Option<u32>,
     nfs_gid: Option<u32>,
     temp_dir: Option<PathBuf>,
@@ -313,6 +318,7 @@ fn cmd_backup(
         enable_mtime: mtime && !matches!(format, BackupFormat::Aggregated),
         max_concurrent_subtasks: jobs,
         smb_connection_count: smb_connections.max(1),
+        copy_buffer_size: (buffer_size * 1024).clamp(256 * 1024, 4 * 1024 * 1024),
         incremental_base,
         verbose,
     };
@@ -545,6 +551,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             nfs_connections,
             smb_connections,
+            buffer_size,
             nfs_uid,
             nfs_gid,
             temp_dir,
@@ -564,6 +571,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             nfs_connections,
             smb_connections,
+            buffer_size,
             nfs_uid,
             nfs_gid,
             temp_dir,

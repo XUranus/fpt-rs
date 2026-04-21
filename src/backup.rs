@@ -52,6 +52,7 @@ pub struct BackupOption {
     control_file: PathBuf,
 
     worker_count: usize,
+    copy_buffer_size: usize,
 
     /// Whether to run the hardlink phase after copy phase
     enable_hardlink_phase: bool,
@@ -149,6 +150,7 @@ impl BackupOption {
     ) -> Self {
         Self {
             worker_count: 8,
+            copy_buffer_size: 1024 * 1024,
             source_dir_base,
             target_dir_base,
             meta_dir,
@@ -214,6 +216,12 @@ impl BackupOption {
     /// Set file threshold for aggregation (files smaller than this are aggregated)
     pub fn aggregate_file_threshold(mut self, threshold: u64) -> Self {
         self.aggregate_config.file_threshold = threshold;
+        self
+    }
+
+    /// Set maximum per-file copy buffer size in bytes.
+    pub fn copy_buffer_size(mut self, size: usize) -> Self {
+        self.copy_buffer_size = size.clamp(256 * 1024, 4 * 1024 * 1024);
         self
     }
 
@@ -303,6 +311,7 @@ impl Default for SharedState {
 impl BackupTask {
     pub fn start(self) -> Result<RunningBackup, BackupError> {
         let worker_count = self.option.worker_count;
+        let copy_buffer_size = self.option.copy_buffer_size;
         let control_file = self.option.control_file.clone();
         let source_dir_base = self.option.source_dir_base.clone();
         let target_dir_base = self.option.target_dir_base.clone();
@@ -553,6 +562,7 @@ impl BackupTask {
             meta_dir,
             ctrl_dir,
             worker_count,
+            copy_buffer_size,
             self.option.aggregate_config,
             enable_hardlink_phase,
             enable_delete_phase,

@@ -17,6 +17,7 @@ use crate::backup::{
 pub mod copy;
 pub mod delete;
 pub mod hardlink;
+pub mod local_copy;
 pub mod mtime;
 
 pub(crate) fn spawn_local_backup_pipeline(
@@ -26,6 +27,7 @@ pub(crate) fn spawn_local_backup_pipeline(
     meta_dir: PathBuf,
     ctrl_dir: PathBuf,
     worker_count: usize,
+    copy_buffer_size: usize,
     aggregate_config: AggregateConfig,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -35,6 +37,25 @@ pub(crate) fn spawn_local_backup_pipeline(
     terminate_indicator: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     let enable_aggregation = aggregate_config.enabled;
+    let io_capacity = worker_count.max(1) * 2;
+    let fcb_capacity = worker_count.max(1) * 4;
+
+    if !enable_aggregation {
+        return local_copy::spawn_local_common_copy_pipeline(
+            control_file,
+            source_dir_base,
+            target_dir_base,
+            meta_dir,
+            ctrl_dir,
+            worker_count,
+            copy_buffer_size,
+            enable_hardlink_phase,
+            enable_delete_phase,
+            enable_mtime_phase,
+            stats,
+            terminate_indicator,
+        );
+    }
 
     thread::spawn(move || {
         let aggregate_engine = if enable_aggregation {
@@ -61,11 +82,16 @@ pub(crate) fn spawn_local_backup_pipeline(
             None
         };
 
-        let (fcb_reader_tx, fcb_reader_rx) = mpsc::channel::<ControlBlockVarient>();
-        let (fcb_writer_tx, fcb_writer_rx) = mpsc::channel::<ControlBlockVarient>();
-        let (reader_io_task_tx, reader_io_task_rx) = mpsc::channel::<ReaderBioTask>();
-        let (reader_io_result_tx, reader_io_result_rx) = mpsc::channel::<ReaderBioResult>();
-        let (writer_io_task_tx, writer_io_task_rx) = mpsc::channel::<WriterBioTask>();
+        let (fcb_reader_tx, fcb_reader_rx) =
+            mpsc::sync_channel::<ControlBlockVarient>(fcb_capacity);
+        let (fcb_writer_tx, fcb_writer_rx) =
+            mpsc::sync_channel::<ControlBlockVarient>(fcb_capacity);
+        let (reader_io_task_tx, reader_io_task_rx) =
+            mpsc::sync_channel::<ReaderBioTask>(io_capacity);
+        let (reader_io_result_tx, reader_io_result_rx) =
+            mpsc::sync_channel::<ReaderBioResult>(io_capacity);
+        let (writer_io_task_tx, writer_io_task_rx) =
+            mpsc::sync_channel::<WriterBioTask>(io_capacity);
         let (writer_io_result_tx, writer_io_result_rx) = mpsc::channel::<WriterBioResult>();
 
         let reader_io_task_rx = Arc::new(Mutex::new(reader_io_task_rx));
@@ -83,7 +109,7 @@ pub(crate) fn spawn_local_backup_pipeline(
         let reader_handle = if let Some(ref engine) = aggregate_engine {
             copy::spawn_reader_with_aggregation(
                 fcb_reader_rx,
-                reader_io_task_tx,
+                reader_io_task_tx.clone(),
                 fcb_writer_tx.clone(),
                 Arc::clone(&shared_state),
                 Arc::clone(engine),
@@ -92,7 +118,7 @@ pub(crate) fn spawn_local_backup_pipeline(
         } else {
             copy::spawn_reader(
                 fcb_reader_rx,
-                reader_io_task_tx,
+                reader_io_task_tx.clone(),
                 fcb_writer_tx.clone(),
                 Arc::clone(&shared_state),
             )
@@ -100,7 +126,7 @@ pub(crate) fn spawn_local_backup_pipeline(
 
         let reader_io_pool = copy::spawn_reader_io_pool(
             Arc::clone(&reader_io_task_rx),
-            reader_io_result_tx,
+            reader_io_result_tx.clone(),
             worker_count,
             Arc::clone(&shared_state),
         );
@@ -108,7 +134,7 @@ pub(crate) fn spawn_local_backup_pipeline(
         let reader_io_result_poll = if let Some(ref engine) = aggregate_engine {
             copy::spawn_reader_io_result_poll_with_aggregation(
                 reader_io_result_rx,
-                fcb_reader_tx,
+                fcb_reader_tx.clone(),
                 fcb_writer_tx.clone(),
                 Arc::clone(&stats),
                 Arc::clone(engine),
@@ -116,7 +142,7 @@ pub(crate) fn spawn_local_backup_pipeline(
         } else {
             copy::spawn_reader_io_result_poll(
                 reader_io_result_rx,
-                fcb_reader_tx,
+                fcb_reader_tx.clone(),
                 fcb_writer_tx.clone(),
                 Arc::clone(&stats),
             )
@@ -124,34 +150,44 @@ pub(crate) fn spawn_local_backup_pipeline(
 
         let writer_handle = copy::spawn_writer(
             fcb_writer_rx,
-            writer_io_task_tx,
+            writer_io_task_tx.clone(),
             Arc::clone(&shared_state),
             Arc::clone(&stats),
         );
         let writer_io_pool = copy::spawn_writer_io_pool(
             writer_io_task_rx,
-            writer_io_result_tx,
+            writer_io_result_tx.clone(),
             worker_count,
             Arc::clone(&shared_state),
         );
         let writer_io_result_poll = copy::spawn_writer_io_result_poll(
             writer_io_result_rx,
-            fcb_writer_tx,
+            fcb_writer_tx.clone(),
             Arc::clone(&stats),
         );
 
         entry_producer_handle.join().unwrap();
         reader_handle.join().unwrap();
+
+        // The parent thread still owns these senders. Drop them before joining
+        // workers/pollers, otherwise those threads can block forever in recv()
+        // even after the pipeline is logically complete.
+        drop(reader_io_task_tx);
         for handle in reader_io_pool {
             handle.join().unwrap();
         }
+        drop(reader_io_result_tx);
         reader_io_result_poll.join().unwrap();
+        drop(fcb_reader_tx);
 
         writer_handle.join().unwrap();
+        drop(writer_io_task_tx);
         for handle in writer_io_pool {
             handle.join().unwrap();
         }
+        drop(writer_io_result_tx);
         writer_io_result_poll.join().unwrap();
+        drop(fcb_writer_tx);
 
         if let Some(ref engine) = aggregate_engine {
             info!("Flushing aggregate buffers...");

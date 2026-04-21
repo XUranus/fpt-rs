@@ -42,6 +42,8 @@ pub struct BackupConfig {
     pub remote_target_prefix: Option<String>,
     /// SMB client connections per SMB endpoint for async backup paths.
     pub smb_connection_count: usize,
+    /// Maximum per-file copy buffer size in bytes for local common backup paths.
+    pub copy_buffer_size: usize,
     /// Whether to run the hardlink phase.
     pub enable_hardlink: bool,
     /// Whether to run the delete phase.
@@ -67,6 +69,7 @@ impl BackupConfig {
             aggregate_config: AggregateConfig::default(),
             remote_target_prefix: None,
             smb_connection_count: 1,
+            copy_buffer_size: 1024 * 1024,
             enable_hardlink: false,
             enable_delete: false,
             enable_mtime: false,
@@ -83,6 +86,10 @@ impl BackupConfig {
     }
     pub fn smb_connection_count(mut self, count: usize) -> Self {
         self.smb_connection_count = count.max(1);
+        self
+    }
+    pub fn copy_buffer_size(mut self, size: usize) -> Self {
+        self.copy_buffer_size = size.clamp(256 * 1024, 4 * 1024 * 1024);
         self
     }
     pub fn enable_hardlink(mut self, v: bool) -> Self {
@@ -154,7 +161,8 @@ impl FileBackup for LocalFileBackup {
         .enable_hardlink_phase(cfg.enable_hardlink)
         .enable_delete_phase(cfg.enable_delete)
         .enable_mtime_phase(cfg.enable_mtime)
-        .aggregate_config(cfg.aggregate_config.clone());
+        .aggregate_config(cfg.aggregate_config.clone())
+        .copy_buffer_size(cfg.copy_buffer_size);
 
         run_backup_task(option)
     }
@@ -215,6 +223,7 @@ mod nfs_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .nfs_target(self.nfs_target.clone())
             .nfs_target_d_repo_path(
                 cfg.remote_target_prefix
@@ -257,6 +266,7 @@ mod nfs_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .nfs_source(self.nfs_source.clone());
 
             run_backup_task(option)
@@ -300,6 +310,7 @@ mod nfs_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .nfs_source(self.nfs_source.clone())
             .nfs_target(self.nfs_target.clone())
             .nfs_target_d_repo_path(
@@ -351,6 +362,7 @@ mod mixed_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .nfs_source(self.nfs_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
@@ -396,6 +408,7 @@ mod mixed_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .nfs_target(self.nfs_target.clone())
@@ -446,6 +459,7 @@ mod smb_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .smb_target_d_repo_path(
@@ -486,6 +500,7 @@ mod smb_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count);
 
@@ -526,6 +541,7 @@ mod smb_impl {
             .enable_delete_phase(cfg.enable_delete)
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
+            .copy_buffer_size(cfg.copy_buffer_size)
             .smb_source(self.smb_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
