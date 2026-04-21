@@ -99,6 +99,12 @@ pub struct ScanConfig {
     pub writer_count: usize,
     /// Previous metadata directory for incremental scanning.
     pub prev_meta_dir: Option<PathBuf>,
+    /// Whether the current backup job uses aggregate storage.
+    pub enable_aggregation: bool,
+    /// Maximum aggregate blob size in bytes.
+    pub max_aggregate_blob_size: u64,
+    /// Files smaller than this threshold are aggregate candidates.
+    pub aggregate_file_threshold: u64,
 }
 
 impl Default for ScanConfig {
@@ -107,6 +113,9 @@ impl Default for ScanConfig {
             worker_count: 4,
             writer_count: 1,
             prev_meta_dir: None,
+            enable_aggregation: false,
+            max_aggregate_blob_size: 64 * 1024 * 1024,
+            aggregate_file_threshold: 1024 * 1024,
         }
     }
 }
@@ -138,6 +147,9 @@ impl<'a> ScanJob<'a> {
             .worker_count(self.config.worker_count)
             .writer_count(self.config.writer_count)
             .prev_meta_dir(self.config.prev_meta_dir.clone())
+            .enable_aggregation(self.config.enable_aggregation)
+            .max_aggregate_blob_size(self.config.max_aggregate_blob_size)
+            .aggregate_file_threshold(self.config.aggregate_file_threshold)
     }
 
     /// Run the scan via a [`LocalFileScanner`] (blocking).

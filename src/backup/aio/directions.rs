@@ -13,7 +13,9 @@ use crate::backup::aio::aggregation::AggregatingTarget;
 use crate::backup::aio::entry::produce_entries;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
-use crate::backup::aio::transport::{LocalSource, LocalTarget, TargetWriter};
+use crate::backup::aio::transport::{
+    clamp_copy_buffer_size, LocalSource, LocalTarget, TargetWriter,
+};
 use crate::backup::fcb::ControlBlockVarient;
 use crate::backup::stats::BackupStats;
 
@@ -43,7 +45,9 @@ pub async fn run_local_to_nfs_copy_pipeline(
     aggregate_config: AggregateConfig,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let mapping =
         EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
     let target = NfsTarget {
@@ -51,6 +55,7 @@ pub async fn run_local_to_nfs_copy_pipeline(
         dir_cache: new_dir_handle_cache(),
         root_fh: pool.root_fh(),
         write_chunk: pool.server_wtmax,
+        buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 
@@ -58,7 +63,9 @@ pub async fn run_local_to_nfs_copy_pipeline(
         control_file,
         meta_dir,
         mapping,
-        LocalSource,
+        LocalSource {
+            buffer_size: copy_buffer_size,
+        },
         target,
         stats,
         "local->NFS",
@@ -77,7 +84,9 @@ pub async fn run_local_to_smb_copy_pipeline(
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(pool.size());
     let mapping =
         EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
@@ -85,6 +94,7 @@ pub async fn run_local_to_smb_copy_pipeline(
         location,
         pool,
         dir_cache: crate::smb::aio::new_dir_cache(),
+        buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 
@@ -92,7 +102,9 @@ pub async fn run_local_to_smb_copy_pipeline(
         control_file,
         meta_dir,
         mapping,
-        LocalSource,
+        LocalSource {
+            buffer_size: copy_buffer_size,
+        },
         target,
         stats,
         "local->SMB",
@@ -110,7 +122,9 @@ pub async fn run_aio_nfs_to_local_pipeline(
     aggregate_config: AggregateConfig,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let _ = nfs_source_base;
     let mapping = EntryMapping::remote_to_local();
     let source = NfsSource {
@@ -118,6 +132,7 @@ pub async fn run_aio_nfs_to_local_pipeline(
         dir_cache: new_file_handle_cache(),
         root_fh: pool.root_fh(),
         read_chunk: pool.server_rtmax,
+        buffer_size: copy_buffer_size,
     };
     let target = LocalTarget {
         base: local_target_base,
@@ -147,7 +162,9 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
     source_pool: Arc<NfsConnectionPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let _ = nfs_source_base;
     let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
     let source = NfsSource {
@@ -155,12 +172,14 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
         dir_cache: new_file_handle_cache(),
         root_fh: source_pool.root_fh(),
         read_chunk: source_pool.server_rtmax,
+        buffer_size: copy_buffer_size,
     };
     let target = NfsTarget {
         pool: Arc::clone(&target_pool),
         dir_cache: new_dir_handle_cache(),
         root_fh: target_pool.root_fh(),
         write_chunk: target_pool.server_wtmax,
+        buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 
@@ -187,11 +206,17 @@ pub async fn run_smb_to_local_copy_pipeline(
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(pool.size());
     let _ = smb_source_base;
     let mapping = EntryMapping::remote_to_local();
-    let source = SmbSource { location, pool };
+    let source = SmbSource {
+        location,
+        pool,
+        buffer_size: copy_buffer_size,
+    };
     let target = LocalTarget {
         base: local_target_base,
     };
@@ -222,7 +247,9 @@ pub async fn run_smb_to_smb_copy_pipeline(
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(source_pool.size().min(target_pool.size()));
     if !aggregate_config.enabled {
         run_smb_to_smb_streaming_pipeline(
@@ -236,6 +263,7 @@ pub async fn run_smb_to_smb_copy_pipeline(
             target_pool,
             stats,
             max_concurrent_tasks,
+            copy_buffer_size,
         )
         .await;
         return;
@@ -246,11 +274,13 @@ pub async fn run_smb_to_smb_copy_pipeline(
     let source = SmbSource {
         location: source_location,
         pool: source_pool,
+        buffer_size: copy_buffer_size,
     };
     let target = SmbTarget {
         location: target_location,
         pool: target_pool,
         dir_cache: crate::smb::aio::new_dir_cache(),
+        buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 
@@ -279,7 +309,9 @@ async fn run_smb_to_smb_streaming_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     max_concurrent_tasks: usize,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let pipeline_started = Instant::now();
     let _ = smb_source_base;
     let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
@@ -287,6 +319,7 @@ async fn run_smb_to_smb_streaming_pipeline(
         location: target_location.clone(),
         pool: Arc::clone(&target_pool),
         dir_cache: crate::smb::aio::new_dir_cache(),
+        buffer_size: copy_buffer_size,
     };
     let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
     let (entry_tx, mut entry_rx) = mpsc::channel::<ControlBlockVarient>(256);
@@ -389,6 +422,7 @@ async fn run_smb_to_smb_streaming_pipeline(
                 &dst_rel,
                 false,
                 Some(copy_metrics2),
+                copy_buffer_size,
             )
             .await
             {
@@ -465,7 +499,9 @@ pub async fn run_nfs_to_smb_copy_pipeline(
     target_location: SmbLocation,
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks =
         smb_copy_task_limit(target_pool.size()).min(NFS_MAX_CONCURRENT_TASKS);
     let _ = nfs_source_base;
@@ -475,11 +511,13 @@ pub async fn run_nfs_to_smb_copy_pipeline(
         dir_cache: new_file_handle_cache(),
         root_fh: source_pool.root_fh(),
         read_chunk: source_pool.server_rtmax,
+        buffer_size: copy_buffer_size,
     };
     let target = SmbTarget {
         location: target_location,
         pool: target_pool,
         dir_cache: crate::smb::aio::new_dir_cache(),
+        buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 
@@ -507,7 +545,9 @@ pub async fn run_smb_to_nfs_copy_pipeline(
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
 ) {
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks =
         smb_copy_task_limit(source_pool.size()).min(NFS_MAX_CONCURRENT_TASKS);
     let _ = smb_source_base;
@@ -515,12 +555,14 @@ pub async fn run_smb_to_nfs_copy_pipeline(
     let source = SmbSource {
         location: source_location,
         pool: source_pool,
+        buffer_size: copy_buffer_size,
     };
     let target = NfsTarget {
         pool: Arc::clone(&target_pool),
         dir_cache: new_dir_handle_cache(),
         root_fh: target_pool.root_fh(),
         write_chunk: target_pool.server_wtmax,
+        buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 

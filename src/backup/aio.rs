@@ -53,6 +53,7 @@ pub fn spawn_local_to_nfs_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -94,6 +95,7 @@ pub fn spawn_local_to_nfs_backup(
                 source_dir_base,
                 target_prefix,
                 aggregate_config,
+                copy_buffer_size,
                 pool,
                 stats,
                 enable_hardlink_phase,
@@ -116,6 +118,7 @@ pub fn spawn_local_to_smb_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -160,6 +163,7 @@ pub fn spawn_local_to_smb_backup(
                 source_dir_base,
                 target_prefix,
                 aggregate_config,
+                copy_buffer_size,
                 smb_target,
                 pool,
                 stats,
@@ -183,6 +187,7 @@ pub fn spawn_smb_to_local_backup(
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -227,6 +232,7 @@ pub fn spawn_smb_to_local_backup(
                 source_dir_base,
                 target_dir_base,
                 aggregate_config,
+                copy_buffer_size,
                 smb_source,
                 pool,
                 stats,
@@ -251,6 +257,7 @@ pub fn spawn_smb_to_smb_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -306,6 +313,7 @@ pub fn spawn_smb_to_smb_backup(
                 source_dir_base,
                 target_prefix,
                 aggregate_config,
+                copy_buffer_size,
                 smb_source,
                 smb_target,
                 source_pool,
@@ -332,6 +340,7 @@ pub fn spawn_nfs_to_smb_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -383,6 +392,7 @@ pub fn spawn_nfs_to_smb_backup(
                 source_dir_base,
                 target_prefix,
                 aggregate_config,
+                copy_buffer_size,
                 source_pool,
                 smb_target,
                 target_pool,
@@ -408,6 +418,7 @@ pub fn spawn_smb_to_nfs_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -460,6 +471,7 @@ pub fn spawn_smb_to_nfs_backup(
                 source_dir_base,
                 target_prefix,
                 aggregate_config,
+                copy_buffer_size,
                 smb_source,
                 source_pool,
                 target_pool,
@@ -484,6 +496,7 @@ pub fn spawn_nfs_to_local_backup(
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -525,6 +538,7 @@ pub fn spawn_nfs_to_local_backup(
                 source_dir_base,
                 target_dir_base,
                 aggregate_config,
+                copy_buffer_size,
                 pool,
                 stats,
                 enable_hardlink_phase,
@@ -548,6 +562,7 @@ pub fn spawn_nfs_to_nfs_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -597,6 +612,7 @@ pub fn spawn_nfs_to_nfs_backup(
                 source_dir_base,
                 target_prefix,
                 aggregate_config,
+                copy_buffer_size,
                 src_pool,
                 tgt_pool,
                 stats,
@@ -620,6 +636,7 @@ pub async fn run_local_to_nfs_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -634,6 +651,7 @@ pub async fn run_local_to_nfs_backup(
         aggregate_config,
         Arc::clone(&pool),
         Arc::clone(&stats),
+        copy_buffer_size,
     )
     .await;
 
@@ -663,6 +681,7 @@ pub async fn run_local_to_smb_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
@@ -679,6 +698,7 @@ pub async fn run_local_to_smb_backup(
         location.clone(),
         pool,
         stats,
+        copy_buffer_size,
     )
     .await;
 
@@ -703,6 +723,7 @@ pub async fn run_nfs_to_local_backup(
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -717,6 +738,7 @@ pub async fn run_nfs_to_local_backup(
         aggregate_config,
         pool,
         stats,
+        copy_buffer_size,
     )
     .await;
 
@@ -740,6 +762,7 @@ pub async fn run_nfs_to_nfs_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     source_pool: Arc<NfsConnectionPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
@@ -756,6 +779,7 @@ pub async fn run_nfs_to_nfs_backup(
         source_pool,
         Arc::clone(&target_pool),
         stats,
+        copy_buffer_size,
     )
     .await;
 
@@ -785,6 +809,7 @@ pub async fn run_smb_to_local_backup(
     source_dir_base: PathBuf,
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
@@ -801,6 +826,7 @@ pub async fn run_smb_to_local_backup(
         location,
         pool,
         stats,
+        copy_buffer_size,
     )
     .await;
 
@@ -824,6 +850,7 @@ pub async fn run_smb_to_smb_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     source_location: SmbLocation,
     target_location: SmbLocation,
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
@@ -844,6 +871,7 @@ pub async fn run_smb_to_smb_backup(
         source_pool,
         target_pool,
         stats,
+        copy_buffer_size,
     )
     .await;
 
@@ -867,6 +895,7 @@ pub async fn run_nfs_to_smb_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     source_pool: Arc<NfsConnectionPool>,
     target_location: SmbLocation,
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
@@ -885,6 +914,7 @@ pub async fn run_nfs_to_smb_backup(
         target_location.clone(),
         target_pool,
         stats,
+        copy_buffer_size,
     )
     .await;
 
@@ -908,6 +938,7 @@ pub async fn run_smb_to_nfs_backup(
     source_dir_base: PathBuf,
     target_prefix: String,
     aggregate_config: AggregateConfig,
+    copy_buffer_size: usize,
     source_location: SmbLocation,
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<NfsConnectionPool>,
@@ -926,6 +957,7 @@ pub async fn run_smb_to_nfs_backup(
         source_pool,
         Arc::clone(&target_pool),
         stats,
+        copy_buffer_size,
     )
     .await;
 

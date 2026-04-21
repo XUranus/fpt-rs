@@ -7,8 +7,14 @@ use std::sync::Arc;
 use futures_util::future::BoxFuture;
 use tokio::task;
 
-use crate::backup::aio::local_fs::{read_local_file, write_local_file};
-use crate::backup::fcb::{FileControlBlock, SourceHandleState};
+use crate::backup::aio::local_fs::{read_local_file_chunk, write_local_file_chunk};
+use crate::backup::fcb::{FileControlBlock, SourceHandleState, TargetHandleState};
+
+pub const DEFAULT_COPY_BUFFER_SIZE: usize = 1024 * 1024;
+
+pub fn clamp_copy_buffer_size(size: usize) -> usize {
+    size.clamp(256 * 1024, 4 * 1024 * 1024)
+}
 
 pub trait SourceReader: Clone + Send + Sync + 'static {
     fn read_file(
@@ -34,27 +40,37 @@ pub trait TargetWriter: Clone + Send + Sync + 'static {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct LocalSource;
+#[derive(Clone)]
+pub struct LocalSource {
+    pub buffer_size: usize,
+}
 
 impl SourceReader for LocalSource {
     fn read_file(
         &self,
         mut fcb: FileControlBlock,
     ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
+        let buffer_size = clamp_copy_buffer_size(self.buffer_size);
         Box::pin(async move {
             let src_path = fcb.src_path.clone();
             let meta_size = fcb.meta.size;
-            let read_result: Result<Vec<u8>, String> =
-                task::spawn_blocking(move || read_local_file(&src_path, meta_size))
-                    .await
-                    .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
+            let offset = fcb.src_offset;
+            let read_result: Result<Vec<u8>, String> = task::spawn_blocking(move || {
+                read_local_file_chunk(&src_path, offset, meta_size, buffer_size)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
 
             match read_result {
                 Ok(buf) => {
                     fcb.buffer_len = buf.len();
+                    fcb.src_offset = fcb.src_offset.saturating_add(buf.len() as u64);
                     fcb.buffer = buf;
-                    fcb.src_state = SourceHandleState::Read;
+                    fcb.src_state = if fcb.src_offset >= fcb.meta.size {
+                        SourceHandleState::Read
+                    } else {
+                        SourceHandleState::PartialRead
+                    };
                     Ok(fcb)
                 }
                 Err(msg) => Err((fcb, msg)),
@@ -83,17 +99,27 @@ impl TargetWriter for LocalTarget {
 
     fn write_file(
         &self,
-        fcb: FileControlBlock,
+        mut fcb: FileControlBlock,
     ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
         let dst_path = self.base.join(&fcb.dst_path);
         let buf = fcb.buffer.clone();
+        let offset = fcb.dst_offset;
         Box::pin(async move {
-            let result = task::spawn_blocking(move || write_local_file(&dst_path, &buf))
-                .await
-                .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
+            let result =
+                task::spawn_blocking(move || write_local_file_chunk(&dst_path, offset, &buf))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
 
             match result {
-                Ok(()) => Ok(fcb),
+                Ok(()) => {
+                    fcb.dst_offset = fcb.dst_offset.saturating_add(fcb.buffer_len as u64);
+                    fcb.dst_state = if fcb.dst_offset >= fcb.meta.size {
+                        TargetHandleState::Written
+                    } else {
+                        TargetHandleState::PartialWritten
+                    };
+                    Ok(fcb)
+                }
                 Err(msg) => Err((fcb, msg)),
             }
         })
@@ -107,6 +133,7 @@ pub struct NfsSource {
     pub dir_cache: crate::nfs::aio::reader::FileHandleCache,
     pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
     pub read_chunk: u32,
+    pub buffer_size: usize,
 }
 
 #[cfg(feature = "nfs")]
@@ -123,7 +150,9 @@ impl SourceReader for NfsSource {
                 Arc::clone(&this.pool),
                 Arc::clone(&this.dir_cache),
                 this.root_fh.clone(),
-                this.read_chunk,
+                this.read_chunk
+                    .min(clamp_copy_buffer_size(this.buffer_size) as u32),
+                clamp_copy_buffer_size(this.buffer_size),
             )
             .await
             {
@@ -141,6 +170,7 @@ pub struct NfsTarget {
     pub dir_cache: crate::nfs::aio::writer::DirHandleCache,
     pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
     pub write_chunk: u32,
+    pub buffer_size: usize,
 }
 
 #[cfg(feature = "nfs")]
@@ -172,7 +202,8 @@ impl TargetWriter for NfsTarget {
                 Arc::clone(&this.pool),
                 Arc::clone(&this.dir_cache),
                 this.root_fh.clone(),
-                this.write_chunk,
+                this.write_chunk
+                    .min(clamp_copy_buffer_size(this.buffer_size) as u32),
             )
             .await
             {
@@ -188,6 +219,7 @@ impl TargetWriter for NfsTarget {
 pub struct SmbSource {
     pub location: crate::smb::SmbLocation,
     pub pool: Arc<crate::smb::aio::SmbClientPool>,
+    pub buffer_size: usize,
 }
 
 #[cfg(feature = "smb")]
@@ -200,18 +232,25 @@ impl SourceReader for SmbSource {
         Box::pin(async move {
             let rel_path = fcb.src_path.to_string_lossy().replace('\\', "/");
             let client = this.pool.client();
-            match crate::smb::aio::read_relative_file(
+            match crate::smb::aio::read_relative_file_chunk(
                 &client,
                 &this.location,
                 &rel_path,
                 fcb.meta.size,
+                fcb.src_offset,
+                clamp_copy_buffer_size(this.buffer_size),
             )
             .await
             {
                 Ok(buf) => {
                     fcb.buffer_len = buf.len();
+                    fcb.src_offset = fcb.src_offset.saturating_add(buf.len() as u64);
                     fcb.buffer = buf;
-                    fcb.src_state = SourceHandleState::Read;
+                    fcb.src_state = if fcb.src_offset >= fcb.meta.size {
+                        SourceHandleState::Read
+                    } else {
+                        SourceHandleState::PartialRead
+                    };
                     Ok(fcb)
                 }
                 Err(msg) => Err((fcb, msg)),
@@ -231,6 +270,7 @@ pub struct SmbTarget {
     pub location: crate::smb::SmbLocation,
     pub pool: Arc<crate::smb::aio::SmbClientPool>,
     pub dir_cache: crate::smb::aio::DirCache,
+    pub buffer_size: usize,
 }
 
 #[cfg(feature = "smb")]
@@ -251,22 +291,32 @@ impl TargetWriter for SmbTarget {
 
     fn write_file(
         &self,
-        fcb: FileControlBlock,
+        mut fcb: FileControlBlock,
     ) -> BoxFuture<'static, Result<FileControlBlock, (FileControlBlock, String)>> {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.dst_path.to_string_lossy().replace('\\', "/");
             let client = this.pool.client();
-            match crate::smb::aio::write_relative_file(
+            match crate::smb::aio::write_relative_file_chunk(
                 &client,
                 &this.location,
                 &this.dir_cache,
                 &rel_path,
                 &fcb.buffer,
+                fcb.dst_offset,
+                clamp_copy_buffer_size(this.buffer_size),
             )
             .await
             {
-                Ok(()) => Ok(fcb),
+                Ok(()) => {
+                    fcb.dst_offset = fcb.dst_offset.saturating_add(fcb.buffer_len as u64);
+                    fcb.dst_state = if fcb.dst_offset >= fcb.meta.size {
+                        TargetHandleState::Written
+                    } else {
+                        TargetHandleState::PartialWritten
+                    };
+                    Ok(fcb)
+                }
                 Err(msg) => Err((fcb, msg)),
             }
         })

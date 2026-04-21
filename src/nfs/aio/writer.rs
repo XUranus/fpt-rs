@@ -133,6 +133,7 @@ pub async fn nfs_write_task(
     let data = &fcb.buffer[..fcb.buffer_len];
     let total = data.len();
     let mut written = 0usize;
+    let start_offset = fcb.dst_offset;
 
     log::debug!("NFS WRITE: path={dst_path:?} total_size={total}");
 
@@ -149,7 +150,7 @@ pub async fn nfs_write_task(
                 );
                 conn.write(&WRITE3args {
                     file: file_fh.clone(),
-                    offset: written as u64,
+                    offset: start_offset + written as u64,
                     count: chunk.len() as u32,
                     stable: stable_how::DATA_SYNC,
                     data: Opaque::borrowed(chunk),
@@ -169,13 +170,19 @@ pub async fn nfs_write_task(
             Ok(Nfs3Result::Err((stat, _))) => {
                 return NfsWriterResult::Failed(
                     fcb,
-                    format!("write {dst_path:?} at offset {written}: NFS error {stat}"),
+                    format!(
+                        "write {dst_path:?} at offset {}: NFS error {stat}",
+                        start_offset + written as u64
+                    ),
                 );
             }
             Err(e) => {
                 return NfsWriterResult::Failed(
                     fcb,
-                    format!("write {dst_path:?} at offset {written}: {e}"),
+                    format!(
+                        "write {dst_path:?} at offset {}: {e}",
+                        start_offset + written as u64
+                    ),
                 );
             }
         }
@@ -196,8 +203,12 @@ pub async fn nfs_write_task(
         log::warn!("setattr failed for {:?}: {e}", dst_path);
     }
 
-    fcb.dst_state = TargetHandleState::Written;
-    fcb.dst_offset = total as u64;
+    fcb.dst_state = if fcb.dst_offset >= fcb.meta.size {
+        TargetHandleState::Written
+    } else {
+        TargetHandleState::PartialWritten
+    };
+    fcb.dst_offset = start_offset + total as u64;
     NfsWriterResult::Written(fcb)
 }
 

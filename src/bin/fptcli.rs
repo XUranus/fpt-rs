@@ -48,6 +48,10 @@ enum Commands {
         #[arg(long, short = 'f', value_enum, default_value = "common")]
         format: BackupFormat,
 
+        /// Shortcut for `--format aggregated`
+        #[arg(long, action = clap::ArgAction::SetTrue)]
+        aggregate: bool,
+
         /// Previous backup copy for incremental (only valid with aggregated format)
         #[arg(long, short = 'i', value_name = "DIR")]
         incremental_base: Option<PathBuf>,
@@ -258,7 +262,8 @@ fn parse_data_location(
 fn cmd_backup(
     data: String,
     target: String,
-    format: BackupFormat,
+    mut format: BackupFormat,
+    aggregate: bool,
     incremental_base: Option<PathBuf>,
     jobs: usize,
     blob_size: u64,
@@ -276,6 +281,10 @@ fn cmd_backup(
     verbose: u8,
     log_file: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if aggregate {
+        format = BackupFormat::Aggregated;
+    }
+
     if incremental_base.is_some() && matches!(format, BackupFormat::Common) {
         return Err("Incremental backup is only supported with aggregated format".into());
     }
@@ -300,6 +309,9 @@ fn cmd_backup(
         worker_count: workers,
         writer_count: 1,
         prev_meta_dir: None, // set by BackupJob for incremental
+        enable_aggregation: matches!(format, BackupFormat::Aggregated),
+        max_aggregate_blob_size: blob_size * 1024 * 1024,
+        aggregate_file_threshold: threshold * 1024,
     };
 
     let config = BackupJobConfig {
@@ -329,6 +341,7 @@ fn cmd_backup(
     );
     println!("Source : {}", config.source);
     println!("Target : {}", config.target);
+    let summary_format_tag = config.format_tag.clone();
 
     // Initialize logger.  BackupJob will add module→file routes after prereq.
     bifrost::logging::init(verbose);
@@ -348,6 +361,14 @@ fn cmd_backup(
     println!("{}", "=".repeat(60));
     println!("Source type : {}", location_kind(&data));
     println!("Target type : {}", location_kind(&target));
+    println!("Format      : {}", summary_format_tag);
+    if matches!(format, BackupFormat::Aggregated) {
+        println!("Aggregation : enabled");
+        println!("Blob size   : {} MiB", blob_size);
+        println!("Threshold   : {} KiB", threshold);
+    } else {
+        println!("Aggregation : disabled");
+    }
     println!("Source path : {}", data);
     println!("Target path : {}", target);
     println!("Copy UUID   : {}", result.copy_uuid);
@@ -541,6 +562,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data,
             target,
             format,
+            aggregate,
             incremental_base,
             jobs,
             blob_size,
@@ -561,6 +583,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             data,
             target,
             format,
+            aggregate,
             incremental_base,
             jobs,
             blob_size,

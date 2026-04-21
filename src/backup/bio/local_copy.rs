@@ -1,5 +1,8 @@
-use crate::backup::bio::{hardlink, mtime, delete};
+use crate::backup::aggregate::{AggregateConfig, PendingFile};
+use crate::backup::aggregate_engine::{AggregateBackupEngine, AggregateBackupState};
+use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::stats::BackupStats;
+use crate::scanner::metadata::FileMeta;
 use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
 use log::{error, info};
 use std::fs::File;
@@ -23,6 +26,7 @@ pub(crate) fn spawn_local_common_copy_pipeline(
     ctrl_dir: PathBuf,
     worker_count: usize,
     copy_buffer_size: usize,
+    aggregate_config: AggregateConfig,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
@@ -30,6 +34,22 @@ pub(crate) fn spawn_local_common_copy_pipeline(
     terminate_indicator: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        let aggregate_state = if aggregate_config.enabled {
+            match AggregateBackupEngine::new(
+                aggregate_config.clone(),
+                source_dir_base.clone(),
+                target_dir_base.clone(),
+            ) {
+                Ok(engine) => Some(Arc::new(AggregateBackupState::new(Arc::new(engine)))),
+                Err(e) => {
+                    error!("Failed to create aggregate engine: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let queue_capacity = worker_count.max(1) * 2;
         let (job_tx, job_rx) = mpsc::sync_channel::<LocalCopyJob>(queue_capacity);
         let worker_rx = Arc::new(std::sync::Mutex::new(job_rx));
@@ -67,6 +87,7 @@ pub(crate) fn spawn_local_common_copy_pipeline(
             &target_dir_base,
             &job_tx,
             &stats,
+            aggregate_state.as_ref(),
         ) {
             error!("Local copy producer failed: {}", e);
         }
@@ -76,6 +97,15 @@ pub(crate) fn spawn_local_common_copy_pipeline(
             if let Err(e) = handle.join() {
                 error!("Local copy worker join failed: {:?}", e);
             }
+        }
+
+        if let Some(agg_state) = aggregate_state {
+            flush_aggregate_state(&agg_state, &stats);
+            let agg_stats = agg_state.engine.stats();
+            info!(
+                "Aggregate stats: {} blobs created, {} files aggregated",
+                agg_stats.blobs_created, agg_stats.files_aggregated
+            );
         }
 
         run_followup_phases(
@@ -99,6 +129,7 @@ fn produce_local_copy_jobs(
     target_dir_base: &Path,
     job_tx: &mpsc::SyncSender<LocalCopyJob>,
     stats: &Arc<BackupStats>,
+    aggregate_state: Option<&Arc<AggregateBackupState>>,
 ) -> io::Result<()> {
     let meta_repo_reader = MetaRepoReader::new(meta_dir.to_path_buf())?;
     let control_reader = ControlFileReader::open(control_file)?;
@@ -136,8 +167,16 @@ fn produce_local_copy_jobs(
                     &dirpath.to_string_lossy(),
                 )
                 .join(&fentry.name);
-                let dst_path =
-                    logical_target_path(target_dir_base, &dirpath.to_string_lossy()).join(&fentry.name);
+                let dst_path = logical_target_path(target_dir_base, &dirpath.to_string_lossy())
+                    .join(&fentry.name);
+                if let Some(agg_state) = aggregate_state {
+                    if fmeta.common.symlink_target_path.is_none()
+                        && agg_state.engine.should_aggregate(fmeta.size)
+                    {
+                        aggregate_one_local_file(agg_state, stats, &fmeta, &src_path)?;
+                        continue;
+                    }
+                }
                 job_tx
                     .send(LocalCopyJob {
                         meta: fmeta,
@@ -145,16 +184,74 @@ fn produce_local_copy_jobs(
                         dst_path,
                     })
                     .map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "local copy workers disconnected",
-                        )
+                        io::Error::new(io::ErrorKind::BrokenPipe, "local copy workers disconnected")
                     })?;
             }
         }
     }
 
     Ok(())
+}
+
+fn aggregate_one_local_file(
+    agg_state: &AggregateBackupState,
+    stats: &BackupStats,
+    meta: &FileMeta,
+    src_path: &Path,
+) -> io::Result<()> {
+    let data = std::fs::read(src_path)?;
+    let pending = PendingFile {
+        file_name: meta.common.name.clone(),
+        data,
+        ctime: meta.common.ctime as u64,
+        mtime: meta.common.mtime as u64,
+        mode: meta.common.mode,
+        xattrs: meta.common.xattributes.clone(),
+        acl: meta.common.posix_access_acl.clone(),
+    };
+    let dir_path = src_path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
+        write_aggregate_blob(agg_state, stats, &dir, files);
+    }
+    Ok(())
+}
+
+fn flush_aggregate_state(agg_state: &AggregateBackupState, stats: &BackupStats) {
+    for (dir, files) in agg_state.flush_all() {
+        write_aggregate_blob(agg_state, stats, &dir, files);
+    }
+}
+
+fn write_aggregate_blob(
+    agg_state: &AggregateBackupState,
+    stats: &BackupStats,
+    dir: &str,
+    files: Vec<PendingFile>,
+) {
+    let file_count = files.len() as u64;
+    let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
+    match agg_state.engine.create_blob(dir, files) {
+        Ok(blob_meta) => {
+            info!(
+                "Created blob {} for dir {} with {} files",
+                blob_meta.blob_name, dir, blob_meta.file_count
+            );
+            stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
+            stats
+                .bytes_copied
+                .fetch_add(bytes_in_blob, Ordering::Relaxed);
+        }
+        Err(e) => {
+            error!("Failed to create aggregate blob for dir {}: {}", dir, e);
+            stats
+                .files_failed
+                .fetch_add(file_count.max(1), Ordering::Relaxed);
+        }
+    }
 }
 
 fn copy_one_local_file(

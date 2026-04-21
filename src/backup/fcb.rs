@@ -19,6 +19,7 @@ use crate::scanner::metadata::{DirMeta, FileMeta};
 /// Maximum buffer size for file data (4 MiB).
 ///
 /// Files larger than this are processed in chunks to limit memory usage.
+#[allow(dead_code)]
 pub(crate) const MAX_FILE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 
 /// State of the source (input) file during backup.

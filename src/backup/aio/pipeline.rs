@@ -83,27 +83,46 @@ pub async fn run_copy_pipeline<S, T>(
                     let read_path = fcb.src_path.clone();
                     let write_path = fcb.dst_path.clone();
 
-                    let fcb = match source2.read_file(fcb).await {
-                        Ok(fcb) => fcb,
-                        Err((fcb, msg)) => {
-                            error!("{log_prefix}: read {:?}: {msg}", fcb.src_path);
+                    let mut fcb = fcb;
+                    loop {
+                        fcb = match source2.read_file(fcb).await {
+                            Ok(fcb) => fcb,
+                            Err((fcb, msg)) => {
+                                error!("{log_prefix}: read {:?}: {msg}", fcb.src_path);
+                                stats2.files_failed.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                        };
+
+                        if fcb.buffer_len == 0 && fcb.src_offset < fcb.meta.size {
+                            error!(
+                                "{log_prefix}: read {:?}: zero-length chunk before EOF",
+                                fcb.src_path
+                            );
                             stats2.files_failed.fetch_add(1, Ordering::Relaxed);
                             return;
                         }
-                    };
 
-                    match target2.write_file(fcb).await {
-                        Ok(done_fcb) => {
+                        fcb = match target2.write_file(fcb).await {
+                            Ok(done_fcb) => done_fcb,
+                            Err((fcb, msg)) => {
+                                error!("{log_prefix}: write {:?}: {msg}", fcb.dst_path);
+                                stats2.files_failed.fetch_add(1, Ordering::Relaxed);
+                                return;
+                            }
+                        };
+
+                        if fcb.src_offset >= fcb.meta.size {
                             debug!("{log_prefix}: copied {:?} -> {:?}", read_path, write_path);
                             stats2.files_copied.fetch_add(1, Ordering::Relaxed);
                             stats2
                                 .bytes_copied
-                                .fetch_add(done_fcb.meta.size, Ordering::Relaxed);
+                                .fetch_add(fcb.meta.size, Ordering::Relaxed);
+                            break;
                         }
-                        Err((fcb, msg)) => {
-                            error!("{log_prefix}: write {:?}: {msg}", fcb.dst_path);
-                            stats2.files_failed.fetch_add(1, Ordering::Relaxed);
-                        }
+
+                        fcb.buffer.clear();
+                        fcb.buffer_len = 0;
                     }
                 });
                 task_handles.push(h);

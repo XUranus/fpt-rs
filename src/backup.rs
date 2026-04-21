@@ -288,6 +288,7 @@ impl BackupOption {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct SharedState {
     pub entry_produce_done: AtomicBool,
     pub reader_done: AtomicBool,
@@ -353,6 +354,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -379,6 +381,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 smb_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -406,6 +409,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -434,6 +438,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -461,6 +466,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 target_dir_base.clone(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -487,6 +493,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 smb_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -513,6 +520,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 smb_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -539,6 +547,7 @@ impl BackupTask {
                 source_dir_base.clone(),
                 target_dir_base.clone(),
                 self.option.aggregate_config,
+                copy_buffer_size,
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -986,6 +995,7 @@ fn run_restore_copy_phase(
                 dir_cache: crate::nfs::aio::writer::new_dir_handle_cache(),
                 root_fh,
                 write_chunk,
+                buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
             };
             restore_pipeline::run_restore_copy_pipeline(
                 option.control_file.clone(),
@@ -1018,6 +1028,7 @@ fn run_restore_copy_phase(
                 location: smb_target,
                 pool,
                 dir_cache: crate::smb::aio::new_dir_cache(),
+                buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
             };
             restore_pipeline::run_restore_copy_pipeline(
                 option.control_file.clone(),

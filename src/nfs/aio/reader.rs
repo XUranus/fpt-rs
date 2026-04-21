@@ -17,9 +17,6 @@ use crate::backup::fcb::{FileControlBlock, SourceHandleState};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
 
-/// Maximum buffer size for a single read pass (4 MiB, matching the BIO pipeline).
-const MAX_FILE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
-
 /// Shared cache mapping NFS directory path strings to their file handles.
 ///
 /// Reusing the same `Arc<RwLock<...>>` type as the writer's [`DirHandleCache`]
@@ -53,6 +50,7 @@ pub async fn nfs_read_task(
     dir_cache: FileHandleCache,
     root_fh: nfs_fh3,
     read_chunk: u32,
+    max_buffer_size: usize,
 ) -> NfsReaderResult {
     let src_path = fcb.src_path.clone();
     log::debug!(
@@ -75,7 +73,7 @@ pub async fn nfs_read_task(
     let start_offset = fcb.src_offset;
     let file_size = fcb.meta.size;
     let remaining = file_size.saturating_sub(start_offset) as usize;
-    let buf_cap = remaining.min(MAX_FILE_BUFFER_SIZE);
+    let buf_cap = remaining.min(max_buffer_size.max(1));
 
     fcb.buffer.clear();
     fcb.buffer.reserve(buf_cap);

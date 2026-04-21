@@ -220,17 +220,46 @@ pub async fn write_relative_file(
     relative_path: &str,
     buf: &[u8],
 ) -> Result<(), String> {
-    let write_chunk = negotiated_write_chunk(client, location).await;
+    write_relative_file_chunk(
+        client,
+        location,
+        dir_cache,
+        relative_path,
+        buf,
+        0,
+        SMB_MAX_SAFE_WRITE_CHUNK,
+    )
+    .await
+}
+
+pub async fn write_relative_file_chunk(
+    client: &smb_client::Client,
+    location: &SmbLocation,
+    dir_cache: &DirCache,
+    relative_path: &str,
+    buf: &[u8],
+    file_offset: u64,
+    buffer_cap: usize,
+) -> Result<(), String> {
+    let write_chunk = negotiated_write_chunk(client, location)
+        .await
+        .min(buffer_cap.max(1));
     let relative_path = normalize_relative_path(relative_path);
     if let Some((parent, _)) = relative_path.rsplit_once('/') {
         ensure_relative_directory(client, location, dir_cache, parent).await?;
     }
 
     let unc = relative_unc_path(location, &relative_path)?;
-    let file_args = smb_client::FileCreateArgs::make_overwrite(
-        smb_client::FileAttributes::new(),
-        smb_client::CreateOptions::new().with_non_directory_file(true),
-    );
+    let file_args = if file_offset == 0 {
+        smb_client::FileCreateArgs::make_overwrite(
+            smb_client::FileAttributes::new(),
+            smb_client::CreateOptions::new().with_non_directory_file(true),
+        )
+    } else {
+        smb_client::FileCreateArgs::make_open_existing(
+            smb_client::FileAccessMask::new().with_generic_write(true),
+        )
+    };
     let resource = client
         .create_file(&unc, &file_args)
         .await
@@ -248,12 +277,16 @@ pub async fn write_relative_file(
     while (offset as usize) < buf.len() {
         let end = ((offset as usize) + write_chunk).min(buf.len());
         let written = file
-            .write_block(&buf[offset as usize..end], offset, None)
+            .write_block(&buf[offset as usize..end], file_offset + offset, None)
             .await
-            .map_err(|e| format!("write {} @{}: {e}", unc, offset))?;
+            .map_err(|e| format!("write {} @{}: {e}", unc, file_offset + offset))?;
         if written == 0 {
             let _ = file.close().await;
-            return Err(format!("short write to {} at offset {}", unc, offset));
+            return Err(format!(
+                "short write to {} at offset {}",
+                unc,
+                file_offset + offset
+            ));
         }
         offset += written as u64;
     }
@@ -270,7 +303,28 @@ pub async fn read_relative_file(
     relative_path: &str,
     expected_size: u64,
 ) -> Result<Vec<u8>, String> {
-    let read_chunk = negotiated_read_chunk(client, location).await;
+    read_relative_file_chunk(
+        client,
+        location,
+        relative_path,
+        expected_size,
+        0,
+        usize::MAX,
+    )
+    .await
+}
+
+pub async fn read_relative_file_chunk(
+    client: &smb_client::Client,
+    location: &SmbLocation,
+    relative_path: &str,
+    expected_size: u64,
+    file_offset: u64,
+    buffer_cap: usize,
+) -> Result<Vec<u8>, String> {
+    let read_chunk = negotiated_read_chunk(client, location)
+        .await
+        .min(buffer_cap.max(1));
     let relative_path = normalize_relative_path(relative_path);
     let unc = relative_unc_path(location, &relative_path)?;
     let open_args = smb_client::FileCreateArgs::make_open_existing(
@@ -289,10 +343,12 @@ pub async fn read_relative_file(
         }
     };
 
-    let mut data = Vec::with_capacity(expected_size.min(usize::MAX as u64) as usize);
-    let mut offset = 0u64;
-    loop {
-        let mut chunk = vec![0u8; read_chunk];
+    let remaining = expected_size.saturating_sub(file_offset) as usize;
+    let target_len = remaining.min(buffer_cap.max(1));
+    let mut data = Vec::with_capacity(target_len);
+    let mut offset = file_offset;
+    while data.len() < target_len {
+        let mut chunk = vec![0u8; read_chunk.min(target_len - data.len())];
         let read_len = file
             .read_block(&mut chunk, offset, None, false)
             .await
@@ -320,9 +376,15 @@ pub async fn copy_relative_file_streaming(
     target_relative_path: &str,
     ensure_parent_dir: bool,
     metrics: Option<Arc<SmbCopyMetrics>>,
+    buffer_cap: usize,
 ) -> Result<(), String> {
-    let read_chunk = negotiated_read_chunk(&source_pool.client(), source_location).await;
-    let write_chunk = negotiated_write_chunk(&target_pool.client(), target_location).await;
+    let buffer_cap = buffer_cap.max(1);
+    let read_chunk = negotiated_read_chunk(&source_pool.client(), source_location)
+        .await
+        .min(buffer_cap);
+    let write_chunk = negotiated_write_chunk(&target_pool.client(), target_location)
+        .await
+        .min(buffer_cap);
     let source_relative_path = normalize_relative_path(source_relative_path);
     let target_relative_path = normalize_relative_path(target_relative_path);
 

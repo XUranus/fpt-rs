@@ -34,6 +34,12 @@ pub struct ScannerConfig {
     pub prev_meta_dir: Option<PathBuf>,
     /// When true, only collect scan statistics and skip on-disk outputs.
     pub stats_only: bool,
+    /// Whether the backup job stores small files in aggregate blobs.
+    pub enable_aggregation: bool,
+    /// Maximum aggregate blob size in bytes.
+    pub max_aggregate_blob_size: u64,
+    /// Files smaller than this threshold are aggregate candidates.
+    pub aggregate_file_threshold: u64,
 }
 
 impl Default for ScannerConfig {
@@ -45,6 +51,9 @@ impl Default for ScannerConfig {
             writer_count: 1,
             prev_meta_dir: None,
             stats_only: false,
+            enable_aggregation: false,
+            max_aggregate_blob_size: 64 * 1024 * 1024,
+            aggregate_file_threshold: 1024 * 1024,
         }
     }
 }
@@ -74,6 +83,18 @@ impl ScannerConfig {
         self.stats_only = enabled;
         self
     }
+    pub fn enable_aggregation(mut self, enabled: bool) -> Self {
+        self.enable_aggregation = enabled;
+        self
+    }
+    pub fn max_aggregate_blob_size(mut self, size: u64) -> Self {
+        self.max_aggregate_blob_size = size;
+        self
+    }
+    pub fn aggregate_file_threshold(mut self, threshold: u64) -> Self {
+        self.aggregate_file_threshold = threshold;
+        self
+    }
 
     /// Build a [`ScanOption`] from this config.
     pub(crate) fn to_scan_option(
@@ -86,7 +107,10 @@ impl ScannerConfig {
             .worker_count(self.worker_count)
             .writer_count(self.writer_count)
             .control_path(control_base, source_root, source_kind)
-            .stats_only(self.stats_only);
+            .stats_only(self.stats_only)
+            .enable_aggregation(self.enable_aggregation)
+            .max_aggregate_blob_size(self.max_aggregate_blob_size)
+            .aggregate_file_threshold(self.aggregate_file_threshold);
         if let Some(ref prev) = self.prev_meta_dir {
             opt = opt.prev_meta_dir(Some(prev.clone()));
         }
