@@ -296,28 +296,24 @@ pub fn spawn_reader_with_aggregation(
                                     }
 
                                     let pending = fcb_to_pending_file(&fcb);
-                                    let dir_path = fcb
-                                        .src_path
-                                        .parent()
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_default();
+                                    let relative_path =
+                                        fcb.dst_path.to_string_lossy().replace('\\', "/");
 
-                                    // Add to buffer
-                                    if let Some((dir, files)) =
-                                        agg_state.add_file(&dir_path, pending)
+                                    if let Some((bucket_key, files)) =
+                                        agg_state.add_file(&relative_path, pending)
                                     {
-                                        // Buffer is full, create blob - count files NOW when they are written
                                         let file_count = files.len() as u64;
                                         let bytes_in_blob: u64 =
                                             files.iter().map(|f| f.data.len() as u64).sum();
 
-                                        match agg_state.engine.create_blob(&dir, files) {
+                                        match agg_state.engine.create_blob(&bucket_key, files) {
                                             Ok(blob_meta) => {
                                                 info!(
-                                                    "Created blob {} for dir {} with {} files",
-                                                    blob_meta.blob_name, dir, blob_meta.file_count
+                                                    "Created blob {} for bucket {} with {} files",
+                                                    blob_meta.blob_path,
+                                                    bucket_key,
+                                                    blob_meta.file_count
                                                 );
-                                                // Update stats for aggregated files when blob is created
                                                 stats
                                                     .files_copied
                                                     .fetch_add(file_count, Ordering::Relaxed);
@@ -327,8 +323,8 @@ pub fn spawn_reader_with_aggregation(
                                             }
                                             Err(e) => {
                                                 error!(
-                                                    "Failed to create blob for dir {}: {}",
-                                                    dir, e
+                                                    "Failed to create blob for bucket {}: {}",
+                                                    bucket_key, e
                                                 );
                                                 stats
                                                     .files_failed
@@ -379,19 +375,18 @@ pub fn spawn_reader_with_aggregation(
                     {
                         // Flush remaining aggregate buffers before exiting
                         let remaining = agg_state.flush_all();
-                        for (dir, files) in remaining {
+                        for (bucket_key, files) in remaining {
                             if !files.is_empty() {
                                 let file_count = files.len() as u64;
                                 let bytes_in_blob: u64 =
                                     files.iter().map(|f| f.data.len() as u64).sum();
 
-                                match agg_state.engine.create_blob(&dir, files) {
+                                match agg_state.engine.create_blob(&bucket_key, files) {
                                     Ok(blob_meta) => {
                                         info!(
-                                            "Created final blob {} for dir {} with {} files",
-                                            blob_meta.blob_name, dir, blob_meta.file_count
+                                            "Created final blob {} for bucket {} with {} files",
+                                            blob_meta.blob_path, bucket_key, blob_meta.file_count
                                         );
-                                        // Update stats for aggregated files
                                         stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
                                         stats
                                             .bytes_copied
@@ -399,14 +394,15 @@ pub fn spawn_reader_with_aggregation(
                                     }
                                     Err(e) => {
                                         error!(
-                                            "Failed to create final blob for dir {}: {}",
-                                            dir, e
+                                            "Failed to create final blob for bucket {}: {}",
+                                            bucket_key, e
                                         );
                                         stats.files_failed.fetch_add(file_count, Ordering::Relaxed);
                                     }
                                 }
                             }
                         }
+                        let _ = agg_state.engine.flush_all_indexes();
                         shared_state.reader_done.store(true, Ordering::Relaxed);
                         break;
                     }

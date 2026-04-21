@@ -2,31 +2,33 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tempfile::NamedTempFile;
+use tempfile::Builder as TempFileBuilder;
 
 use crate::backup::aggregate::{
-    should_aggregate, AggregateBlobMeta, AggregateConfig, PendingFile, ThreadSafeSnowflake,
+    should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateLayout,
+    PendingFile, ThreadSafeSnowflake, AGGREGATE_DIR_NAME, AGGREGATE_ROOT_DIR,
 };
-use crate::backup::aggregate_index::AggregateIndex;
+use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
+use crate::backup::aggregate_engine::parent_dir_of;
+use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::backup::aio::transport::TargetWriter;
 use crate::backup::fcb::{FileControlBlock, SourceHandleState};
 use crate::scanner::metadata::FileMeta;
 
-struct DirAggregationState {
+struct BucketAggregationState {
     pending_files: Vec<PendingFile>,
     pending_size: u64,
-    blobs: Vec<AggregateBlobMeta>,
 }
 
-impl DirAggregationState {
+impl BucketAggregationState {
     fn new() -> Self {
         Self {
             pending_files: Vec::new(),
             pending_size: 0,
-            blobs: Vec::new(),
         }
     }
 }
@@ -35,7 +37,9 @@ impl DirAggregationState {
 pub struct AggregatingTarget<T: TargetWriter> {
     inner: T,
     config: AggregateConfig,
-    state: Arc<Mutex<HashMap<String, DirAggregationState>>>,
+    state: Arc<Mutex<HashMap<String, BucketAggregationState>>>,
+    blobs: Arc<Mutex<Vec<AggregateBlobMeta>>>,
+    bytes_seen: Arc<AtomicU64>,
     ids: Arc<ThreadSafeSnowflake>,
 }
 
@@ -45,6 +49,8 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             inner,
             config,
             state: Arc::new(Mutex::new(HashMap::new())),
+            blobs: Arc::new(Mutex::new(Vec::new())),
+            bytes_seen: Arc::new(AtomicU64::new(0)),
             ids: Arc::new(ThreadSafeSnowflake::default()),
         }
     }
@@ -55,38 +61,60 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             && fcb.src_state == SourceHandleState::Read
     }
 
-    #[allow(dead_code)]
-    async fn flush_dir_locked(
-        &self,
-        dir_key: &str,
-        dir_state: &mut DirAggregationState,
-    ) -> Result<(), String> {
-        if dir_state.pending_files.is_empty() {
-            return Ok(());
+    fn bucket_for_relative_path(&self, relative_path: &str) -> String {
+        match self.config.layout {
+            AggregateLayout::DirLevel => parent_dir_of(relative_path),
+            AggregateLayout::Shard => {
+                let mut hash: u64 = 1469598103934665603;
+                for b in relative_path.as_bytes() {
+                    hash ^= *b as u64;
+                    hash = hash.wrapping_mul(1099511628211);
+                }
+                let max_shards = self.config.shard_count.max(1) as u64;
+                let bytes_seen = self.bytes_seen.load(Ordering::Relaxed);
+                let desired = ((bytes_seen / self.config.max_blob_size.max(1)).saturating_add(1))
+                    .clamp(1, max_shards);
+                format!("shard-{:03}", hash % desired)
+            }
         }
+    }
 
-        let files = std::mem::take(&mut dir_state.pending_files);
-        dir_state.pending_size = 0;
-        let blob_meta = self.write_blob(dir_key, files).await?;
-        dir_state.blobs.push(blob_meta);
-        Ok(())
+    fn blob_rel_path(&self, bucket: &str, blob_name: &str) -> PathBuf {
+        match self.config.layout {
+            AggregateLayout::DirLevel => {
+                if bucket.is_empty() {
+                    PathBuf::from(AGGREGATE_DIR_NAME).join(blob_name)
+                } else {
+                    PathBuf::from(bucket)
+                        .join(AGGREGATE_DIR_NAME)
+                        .join(blob_name)
+                }
+            }
+            AggregateLayout::Shard => PathBuf::from(AGGREGATE_ROOT_DIR)
+                .join(bucket)
+                .join(blob_name),
+        }
     }
 
     async fn write_blob(
         &self,
-        dir_key: &str,
+        bucket: &str,
         files: Vec<PendingFile>,
     ) -> Result<AggregateBlobMeta, String> {
         let blob_name = self.ids.generate_blob_name();
+        let blob_rel_path = self.blob_rel_path(bucket, &blob_name);
+        if let Some(parent) = blob_rel_path.parent() {
+            self.inner.create_dir(parent.to_path_buf()).await?;
+        }
+
         let mut blob_bytes = Vec::new();
         let mut entries = Vec::with_capacity(files.len());
         let mut offset = 0u64;
-
         for file in files {
             let size = file.data.len() as u64;
             blob_bytes.extend_from_slice(&file.data);
-            entries.push(crate::backup::aggregate::AggregateFileEntry {
-                file_name: file.file_name,
+            entries.push(AggregateFileEntry {
+                relative_path: file.relative_path,
                 offset,
                 size,
                 ctime: file.ctime,
@@ -98,45 +126,86 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             offset += size;
         }
 
-        let blob_meta = AggregateBlobMeta {
-            blob_name: blob_name.clone(),
-            blob_size: blob_bytes.len() as u64,
+        let blob_rel_path_str = blob_rel_path.to_string_lossy().replace('\\', "/");
+        let blob_fcb = synthetic_fcb(PathBuf::from(&blob_rel_path_str), blob_bytes, 0o644);
+        self.inner.write_file(blob_fcb).await.map_err(|(_, e)| e)?;
+        Ok(AggregateBlobMeta {
+            blob_path: blob_rel_path_str,
+            blob_size: offset,
             file_count: entries.len() as u32,
             files: entries,
-            dir_path: dir_key.to_string(),
-        };
-
-        let blob_path = Path::new(dir_key).join(".AGGR_DIR").join(&blob_name);
-        let blob_fcb = synthetic_fcb(blob_path, blob_bytes, 0o644);
-        self.inner.write_file(blob_fcb).await.map_err(|(_, e)| e)?;
-        Ok(blob_meta)
+            shard_id: 0,
+        })
     }
 
-    async fn flush_indexes(
-        &self,
-        snapshot: Vec<(String, Vec<AggregateBlobMeta>)>,
-    ) -> Result<(), String> {
-        for (dir_key, blobs) in snapshot {
-            if blobs.is_empty() {
-                continue;
+    async fn flush_shard_index(&self) -> Result<(), String> {
+        let snapshot = self.blobs.lock().unwrap().clone();
+        if snapshot.is_empty() {
+            return Ok(());
+        }
+
+        let temp = TempFileBuilder::new()
+            .suffix(".bidx")
+            .tempfile()
+            .map_err(|e| e.to_string())?;
+        {
+            let index = AggregateIndex::open(temp.path()).map_err(|e| e.to_string())?;
+            for blob in &snapshot {
+                index.add_blob(blob).map_err(|e| e.to_string())?;
             }
-            let temp = NamedTempFile::new().map_err(|e| e.to_string())?;
-            {
-                let index = AggregateIndex::open(temp.path()).map_err(|e| e.to_string())?;
-                for blob in &blobs {
-                    index.add_blob(blob).map_err(|e| e.to_string())?;
-                }
-            }
+            index.flush().map_err(|e| e.to_string())?;
+        }
+
+        let mut bytes = Vec::new();
+        temp.reopen()
+            .map_err(|e| e.to_string())?
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        self.inner
+            .create_dir(PathBuf::from(AGGREGATE_ROOT_DIR))
+            .await?;
+        let idx_fcb = synthetic_fcb(
+            PathBuf::from(AGGREGATE_ROOT_DIR).join(BINARY_INDEX_FILE_NAME),
+            bytes,
+            0o644,
+        );
+        self.inner.write_file(idx_fcb).await.map_err(|(_, e)| e)?;
+        Ok(())
+    }
+
+    async fn flush_dir_level_indexes(&self) -> Result<(), String> {
+        let mut blobs_by_dir: HashMap<String, Vec<AggregateBlobMeta>> = HashMap::new();
+        for blob in self.blobs.lock().unwrap().iter().cloned() {
+            let dir_key = blob
+                .files
+                .first()
+                .map(|f| parent_dir_of(&f.relative_path))
+                .unwrap_or_default();
+            blobs_by_dir.entry(dir_key).or_default().push(blob);
+        }
+
+        for (dir_key, blobs) in blobs_by_dir {
+            let temp = TempFileBuilder::new()
+                .suffix(".sqlite")
+                .tempfile()
+                .map_err(|e| e.to_string())?;
+            write_dir_index(temp.path(), &blobs)?;
             let mut bytes = Vec::new();
             temp.reopen()
                 .map_err(|e| e.to_string())?
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
-
-            let idx_path = Path::new(&dir_key)
-                .join(".AGGR_DIR")
-                .join("AGGREGATE_IDX.sqlite");
-            let idx_fcb = synthetic_fcb(idx_path, bytes, 0o644);
+            let idx_rel = if dir_key.is_empty() {
+                PathBuf::from(AGGREGATE_DIR_NAME).join(SQLITE_INDEX_FILE_NAME)
+            } else {
+                PathBuf::from(&dir_key)
+                    .join(AGGREGATE_DIR_NAME)
+                    .join(SQLITE_INDEX_FILE_NAME)
+            };
+            if let Some(parent) = idx_rel.parent() {
+                self.inner.create_dir(parent.to_path_buf()).await?;
+            }
+            let idx_fcb = synthetic_fcb(idx_rel, bytes, 0o644);
             self.inner.write_file(idx_fcb).await.map_err(|(_, e)| e)?;
         }
         Ok(())
@@ -165,14 +234,9 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
                 return this.inner.write_file(fcb).await;
             }
 
-            let dir_key = fcb
-                .dst_path
-                .parent()
-                .unwrap_or_else(|| Path::new(""))
-                .to_string_lossy()
-                .to_string();
+            let relative_path = fcb.dst_path.to_string_lossy().replace('\\', "/");
             let pending = PendingFile {
-                file_name: fcb.meta.common.name.clone(),
+                relative_path: relative_path.clone(),
                 data: fcb.buffer.clone(),
                 ctime: fcb.meta.common.ctime as u64,
                 mtime: fcb.meta.common.mtime as u64,
@@ -180,35 +244,33 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
                 xattrs: fcb.meta.common.xattributes.clone(),
                 acl: fcb.meta.common.posix_access_acl.clone(),
             };
+            this.bytes_seen
+                .fetch_add(pending.data.len() as u64, Ordering::Relaxed);
+            let bucket = this.bucket_for_relative_path(&relative_path);
 
             let to_flush = {
                 let mut state = this.state.lock().unwrap();
-                let dir_state = state
-                    .entry(dir_key.clone())
-                    .or_insert_with(DirAggregationState::new);
-                dir_state.pending_size += pending.data.len() as u64;
-                dir_state.pending_files.push(pending);
-                dir_state.pending_size >= this.config.max_blob_size
+                let shard_state = state
+                    .entry(bucket.clone())
+                    .or_insert_with(BucketAggregationState::new);
+                shard_state.pending_size += pending.data.len() as u64;
+                shard_state.pending_files.push(pending);
+                shard_state.pending_size >= this.config.max_blob_size
             };
 
             if to_flush {
                 let files = {
                     let mut state = this.state.lock().unwrap();
-                    let dir_state = state.get_mut(&dir_key).expect("dir state missing");
-                    let files = std::mem::take(&mut dir_state.pending_files);
-                    dir_state.pending_size = 0;
+                    let shard_state = state.get_mut(&bucket).expect("bucket state missing");
+                    let files = std::mem::take(&mut shard_state.pending_files);
+                    shard_state.pending_size = 0;
                     files
                 };
-                match this.write_blob(&dir_key, files).await {
-                    Ok(blob) => {
-                        let mut state = this.state.lock().unwrap();
-                        let dir_state = state.get_mut(&dir_key).expect("dir state missing");
-                        dir_state.blobs.push(blob);
-                    }
+                match this.write_blob(&bucket, files).await {
+                    Ok(blob) => this.blobs.lock().unwrap().push(blob),
                     Err(e) => return Err((fcb, e)),
                 }
             }
-
             Ok(fcb)
         })
     }
@@ -216,63 +278,51 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
     fn finish(&self) -> futures_util::future::BoxFuture<'static, Result<(), String>> {
         let this = self.clone();
         Box::pin(async move {
-            let dir_keys: Vec<String> = {
+            let bucket_keys: Vec<String> = {
                 let state = this.state.lock().unwrap();
                 state.keys().cloned().collect()
             };
 
-            for dir_key in dir_keys {
+            for bucket in bucket_keys {
                 let pending = {
                     let mut state = this.state.lock().unwrap();
-                    let dir_state = state.get_mut(&dir_key).expect("dir state missing");
-                    if dir_state.pending_files.is_empty() {
+                    let shard_state = state.get_mut(&bucket).expect("bucket state missing");
+                    if shard_state.pending_files.is_empty() {
                         None
                     } else {
-                        let files = std::mem::take(&mut dir_state.pending_files);
-                        dir_state.pending_size = 0;
+                        let files = std::mem::take(&mut shard_state.pending_files);
+                        shard_state.pending_size = 0;
                         Some(files)
                     }
                 };
 
                 if let Some(files) = pending {
-                    let blob = this.write_blob(&dir_key, files).await?;
-                    let mut state = this.state.lock().unwrap();
-                    let dir_state = state.get_mut(&dir_key).expect("dir state missing");
-                    dir_state.blobs.push(blob);
+                    let blob = this.write_blob(&bucket, files).await?;
+                    this.blobs.lock().unwrap().push(blob);
                 }
             }
 
-            let snapshot: Vec<(String, Vec<AggregateBlobMeta>)> = {
-                let state = this.state.lock().unwrap();
-                state
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.blobs.clone()))
-                    .collect()
-            };
-            this.flush_indexes(snapshot).await?;
+            match this.config.layout {
+                AggregateLayout::DirLevel => this.flush_dir_level_indexes().await?,
+                AggregateLayout::Shard => this.flush_shard_index().await?,
+            }
             this.inner.finish().await
         })
     }
 }
 
 fn synthetic_fcb(dst_path: PathBuf, bytes: Vec<u8>, mode: u32) -> FileControlBlock {
-    let name = dst_path
+    let mut meta = FileMeta::default();
+    meta.common.mode = mode;
+    meta.common.name = dst_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let meta = FileMeta {
-        common: crate::scanner::metadata::MetaCommon {
-            name,
-            mode,
-            ..Default::default()
-        },
-        size: bytes.len() as u64,
-        ..Default::default()
-    };
+    meta.size = bytes.len() as u64;
     let mut fcb = FileControlBlock::from(meta);
+    fcb.dst_path = dst_path;
     fcb.buffer_len = bytes.len();
     fcb.buffer = bytes;
     fcb.src_state = SourceHandleState::Read;
-    fcb.dst_path = dst_path;
     fcb
 }

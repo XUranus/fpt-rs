@@ -213,7 +213,8 @@ pub fn run_restore_subtask(
         repo.meta_dir.clone(),
         repo.ctrl_dir.clone(),
         config.control_file.clone(),
-    );
+    )
+    .aggregate_config(config.aggregate_config);
 
     match &config.restore_target {
         DataLocation::Local(_) => LocalFileRestore::new(restore_cfg)

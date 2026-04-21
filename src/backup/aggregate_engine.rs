@@ -1,171 +1,125 @@
-//! # Aggregate Backup Engine
-//!
-//! This module implements the core aggregation logic for backup operations.
-//! It combines multiple small files into blob files and maintains per-directory
-//! SQLite indexes for later restoration.
-//!
-//! Design:
-//! - Each directory has its own SQLite index (0 or 1 per directory)
-//! - Aggregated files are stored in .AGGR_DIR/ subdirectory within each directory
-//! - This provides better scalability for large file sets
+//! Aggregate backup engine supporting both dir-level and shard layouts.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
-use log::{debug, error, info};
+use log::{debug, info};
 
 use crate::backup::aggregate::{
-    should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateStats,
-    DirAggregateBuffer, PendingFile, ThreadSafeSnowflake,
+    should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateLayout,
+    AggregateStats, PendingAggregateBuffer, PendingFile, ThreadSafeSnowflake, AGGREGATE_DIR_NAME,
+    AGGREGATE_ROOT_DIR,
 };
-use crate::backup::aggregate_index::AggregateIndex;
-use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState};
-use crate::backup::stats::BackupStats;
-use crate::backup::SharedState;
+use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
+use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
+use crate::backup::fcb::FileControlBlock;
 
-/// Per-directory aggregate information
-#[allow(dead_code)]
-struct DirAggregateInfo {
-    /// Path to the directory in target
-    target_dir: PathBuf,
-    /// Path to the .AGGR_DIR subdirectory
-    aggr_dir: PathBuf,
-    /// The index (opened on first use)
-    index: Option<AggregateIndex>,
-}
-
-impl DirAggregateInfo {
-    fn new(target_dir: PathBuf) -> Result<Self, AggregateEngineError> {
-        let aggr_dir = target_dir.join(".AGGR_DIR");
-
-        // Create .AGGR_DIR directory
-        std::fs::create_dir_all(&aggr_dir)?;
-
-        Ok(Self {
-            target_dir,
-            aggr_dir,
-            index: None,
-        })
-    }
-
-    fn get_or_open_index(&mut self) -> Result<&AggregateIndex, AggregateEngineError> {
-        if self.index.is_none() {
-            let index_path = self.aggr_dir.join("AGGREGATE_IDX.sqlite");
-            self.index = Some(AggregateIndex::open(&index_path)?);
-        }
-        Ok(self.index.as_ref().unwrap())
-    }
-}
-
-/// Engine for performing aggregate backups.
 pub struct AggregateBackupEngine {
-    /// Configuration for aggregation
     pub config: AggregateConfig,
-    /// Base source directory
-    source_base: PathBuf,
-    /// Base target directory
+    pub(crate) source_base: PathBuf,
     target_base: PathBuf,
-    /// Source to target directory mapping
-    dir_info: Mutex<HashMap<String, Arc<Mutex<DirAggregateInfo>>>>,
-    /// Global stats
+    shard_index: Option<Arc<AggregateIndex>>,
+    dir_indexes: Mutex<HashMap<String, Vec<AggregateBlobMeta>>>,
     stats: Arc<Mutex<AggregateStats>>,
-    /// Snowflake ID generator for unique blob filenames
     id_generator: ThreadSafeSnowflake,
 }
 
 impl AggregateBackupEngine {
-    /// Creates a new aggregate backup engine.
     pub fn new(
         config: AggregateConfig,
         source_base: PathBuf,
         target_base: PathBuf,
     ) -> Result<Self, AggregateEngineError> {
+        let shard_index = if config.layout == AggregateLayout::Shard {
+            Some(Arc::new(AggregateIndex::open(
+                &target_base
+                    .join(AGGREGATE_ROOT_DIR)
+                    .join(BINARY_INDEX_FILE_NAME),
+            )?))
+        } else {
+            None
+        };
         Ok(Self {
             config,
             source_base,
             target_base,
-            dir_info: Mutex::new(HashMap::new()),
+            shard_index,
+            dir_indexes: Mutex::new(HashMap::new()),
             stats: Arc::new(Mutex::new(AggregateStats::default())),
             id_generator: ThreadSafeSnowflake::default(),
         })
     }
 
-    /// Creates a new aggregate backup engine with a specific process ID.
-    /// process_id should be unique per process (0-1023).
-    pub fn with_process_id(
-        config: AggregateConfig,
-        source_base: PathBuf,
-        target_base: PathBuf,
-        process_id: u16,
-    ) -> Result<Self, AggregateEngineError> {
-        Ok(Self {
-            config,
-            source_base,
-            target_base,
-            dir_info: Mutex::new(HashMap::new()),
-            stats: Arc::new(Mutex::new(AggregateStats::default())),
-            id_generator: ThreadSafeSnowflake::new(process_id),
-        })
-    }
-
-    /// Checks if a file should be aggregated based on its size.
     pub fn should_aggregate(&self, file_size: u64) -> bool {
         should_aggregate(file_size, &self.config)
     }
 
-    /// Creates a blob file from a directory buffer.
+    pub fn relative_path_for_source(&self, source_path: &Path) -> String {
+        source_path
+            .strip_prefix(&self.source_base)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| source_path.to_string_lossy().replace('\\', "/"))
+    }
+
+    pub fn bucket_key_for_relative_path(&self, relative_path: &str, extra_bytes: u64) -> String {
+        match self.config.layout {
+            AggregateLayout::DirLevel => parent_dir_of(relative_path),
+            AggregateLayout::Shard => format!(
+                "shard-{:03}",
+                self.shard_for_relative_path_with_hint(relative_path, extra_bytes)
+            ),
+        }
+    }
+
     pub fn create_blob(
         &self,
-        source_dir: &str,
+        bucket_key: &str,
         files: Vec<PendingFile>,
     ) -> Result<AggregateBlobMeta, AggregateEngineError> {
-        // Hold only a per-directory lock while writing a blob and updating that
-        // directory's index. Different directories can aggregate in parallel.
-        let dir_info = {
-            let mut dir_info_map = self.dir_info.lock().unwrap();
-            dir_info_map
-                .entry(source_dir.to_string())
-                .or_insert_with(|| {
-                    let target_dir = self.source_dir_to_target(source_dir);
-                    Arc::new(Mutex::new(
-                        DirAggregateInfo::new(target_dir).expect("Failed to create dir info"),
-                    ))
-                })
-                .clone()
-        };
-        let mut dir_info = dir_info.lock().unwrap();
-
-        // Generate unique blob name using Snowflake algorithm
         let blob_name = self.id_generator.generate_blob_name();
-        let blob_path = dir_info.aggr_dir.join(&blob_name);
+        let (blob_rel_path, blob_path, shard_id) = match self.config.layout {
+            AggregateLayout::Shard => {
+                let shard_dir = PathBuf::from(AGGREGATE_ROOT_DIR).join(bucket_key);
+                std::fs::create_dir_all(self.target_base.join(&shard_dir))?;
+                let rel = shard_dir
+                    .join(&blob_name)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let shard_id = bucket_key
+                    .strip_prefix("shard-")
+                    .and_then(|n| n.parse::<u16>().ok())
+                    .unwrap_or(0);
+                (rel.clone(), self.target_base.join(&rel), shard_id)
+            }
+            AggregateLayout::DirLevel => {
+                let aggr_dir = aggregate_dir_for(bucket_key);
+                std::fs::create_dir_all(self.target_base.join(&aggr_dir))?;
+                let rel = aggr_dir
+                    .join(&blob_name)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (rel.clone(), self.target_base.join(&rel), 0)
+            }
+        };
 
         debug!(
-            "Writing aggregated blob: {:?} ({} bytes from {} files)",
+            "Writing aggregate blob {:?} ({} files)",
             blob_path,
-            files.iter().map(|f| f.data.len() as u64).sum::<u64>(),
             files.len()
         );
         let mut blob_file = File::create(&blob_path)?;
-        let mut entries = Vec::new();
-        let mut current_offset: u64 = 0;
-        let mut total_size: u64 = 0;
+        let mut entries = Vec::with_capacity(files.len());
+        let mut current_offset = 0_u64;
+        let mut total_size = 0_u64;
 
-        // Write each file's data to the blob
         for file in files {
             let file_size = file.data.len() as u64;
-
-            // Write file data
             blob_file.write_all(&file.data)?;
-
-            // Create entry
-            let entry = AggregateFileEntry {
-                file_name: file.file_name.clone(),
+            entries.push(AggregateFileEntry {
+                relative_path: file.relative_path,
                 offset: current_offset,
                 size: file_size,
                 ctime: file.ctime,
@@ -173,9 +127,7 @@ impl AggregateBackupEngine {
                 mode: file.mode,
                 xattrs: file.xattrs,
                 acl: file.acl,
-            };
-            entries.push(entry);
-
+            });
             current_offset += file_size;
             total_size += file_size;
         }
@@ -184,77 +136,109 @@ impl AggregateBackupEngine {
         drop(blob_file);
 
         let blob_meta = AggregateBlobMeta {
-            blob_name: blob_name.clone(),
+            blob_path: blob_rel_path.clone(),
             blob_size: total_size,
             file_count: entries.len() as u32,
             files: entries,
-            dir_path: source_dir.to_string(),
+            shard_id,
         };
 
-        // Update per-directory index
-        let index = dir_info.get_or_open_index()?;
-        index.add_blob(&blob_meta)?;
+        match self.config.layout {
+            AggregateLayout::Shard => {
+                self.shard_index
+                    .as_ref()
+                    .expect("missing shard index")
+                    .add_blob(&blob_meta)?;
+            }
+            AggregateLayout::DirLevel => {
+                self.dir_indexes
+                    .lock()
+                    .unwrap()
+                    .entry(bucket_key.to_string())
+                    .or_default()
+                    .push(blob_meta.clone());
+            }
+        }
 
-        // Update stats
+        let active_buckets = match self.config.layout {
+            AggregateLayout::Shard => {
+                let blob_size = self.config.max_blob_size.max(1);
+                let written_so_far = {
+                    let stats = self.stats.lock().unwrap();
+                    stats.original_bytes.saturating_add(total_size)
+                };
+                ((written_so_far / blob_size).saturating_add(1) as u16)
+                    .clamp(1, self.config.shard_count.max(1)) as u64
+            }
+            AggregateLayout::DirLevel => self.dir_indexes.lock().unwrap().len() as u64,
+        };
         let mut stats = self.stats.lock().unwrap();
         stats.blobs_created += 1;
         stats.files_aggregated += blob_meta.file_count as u64;
         stats.blob_bytes += total_size;
         stats.original_bytes += total_size;
+        stats.active_shards = active_buckets;
 
         info!(
-            "Created blob {} in {} with {} files ({} bytes)",
-            blob_name, source_dir, blob_meta.file_count, total_size
+            "Created {} aggregate blob {} with {} files ({} bytes)",
+            self.config.layout.as_str(),
+            blob_rel_path,
+            blob_meta.file_count,
+            total_size
         );
-
         Ok(blob_meta)
     }
 
-    /// Maps a source directory path to target directory path
-    /// Preserves the directory structure: source_base/... -> target_base/...
-    fn source_dir_to_target(&self, source_dir: &str) -> PathBuf {
-        let source_path = Path::new(source_dir);
-
-        // Get the relative path from source_base
-        let relative_path = if source_path.starts_with(&self.source_base) {
-            source_path
-                .strip_prefix(&self.source_base)
-                .unwrap_or(source_path)
-        } else {
-            // If source_dir is not under source_base, use the full path
-            // after stripping any leading "/"
-            source_path.strip_prefix("/").unwrap_or(source_path)
-        };
-
-        // Join with target_base
-        self.target_base.join(relative_path)
-    }
-
-    /// Gets current statistics.
-    pub fn stats(&self) -> AggregateStats {
-        self.stats.lock().unwrap().clone()
-    }
-
-    /// Flushes all directory indexes
     pub fn flush_all_indexes(&self) -> Result<(), AggregateEngineError> {
-        let dir_info_map = self.dir_info.lock().unwrap();
-        for (dir_path, dir_info) in dir_info_map.iter() {
-            let dir_info = dir_info.lock().unwrap();
-            if let Some(ref _index) = dir_info.index {
-                info!("Flushed index for directory: {}", dir_path);
+        match self.config.layout {
+            AggregateLayout::Shard => {
+                self.shard_index
+                    .as_ref()
+                    .expect("missing shard index")
+                    .flush()?;
+                info!("Aggregate shard index flushed");
+            }
+            AggregateLayout::DirLevel => {
+                let dir_indexes = self.dir_indexes.lock().unwrap();
+                for (dir_rel, blobs) in dir_indexes.iter() {
+                    let path = self
+                        .target_base
+                        .join(aggregate_dir_for(dir_rel))
+                        .join(SQLITE_INDEX_FILE_NAME);
+                    write_dir_index(&path, blobs).map_err(AggregateEngineError::Other)?;
+                }
+                info!("Aggregate dir-level indexes flushed");
             }
         }
         Ok(())
     }
+
+    pub fn stats(&self) -> AggregateStats {
+        self.stats.lock().unwrap().clone()
+    }
+
+    fn shard_for_relative_path_with_hint(&self, relative_path: &str, extra_bytes: u64) -> u16 {
+        let mut hash: u64 = 1469598103934665603;
+        for b in relative_path.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(1099511628211);
+        }
+        (hash % self.preferred_shard_count(extra_bytes) as u64) as u16
+    }
+
+    fn preferred_shard_count(&self, extra_bytes: u64) -> u16 {
+        let max_shards = self.config.shard_count.max(1);
+        let written_bytes = self.stats.lock().unwrap().original_bytes;
+        let bytes_seen = written_bytes.saturating_add(extra_bytes);
+        let blob_size = self.config.max_blob_size.max(1);
+        let desired = ((bytes_seen / blob_size).saturating_add(1)) as u16;
+        desired.clamp(1, max_shards)
+    }
 }
 
-/// Shared state for aggregate backup processing.
 pub struct AggregateBackupState {
-    /// Directory path -> buffer for pending files
-    pub buffers: Mutex<HashMap<String, DirAggregateBuffer>>,
-    /// Engine reference
+    pub buffers: Mutex<HashMap<String, PendingAggregateBuffer>>,
     pub engine: Arc<AggregateBackupEngine>,
-    /// Files that are being backed up normally (not aggregated)
     pub normal_files: Mutex<Vec<FileControlBlock>>,
 }
 
@@ -267,45 +251,37 @@ impl AggregateBackupState {
         }
     }
 
-    /// Adds a file to the appropriate directory buffer.
-    /// Returns true if a blob should be created (buffer is full).
     pub fn add_file(
         &self,
-        dir_path: &str,
+        relative_path: &str,
         file: PendingFile,
     ) -> Option<(String, Vec<PendingFile>)> {
+        let bucket_key = self
+            .engine
+            .bucket_key_for_relative_path(relative_path, file.data.len() as u64);
         let mut buffers = self.buffers.lock().unwrap();
-        let buffer = buffers.entry(dir_path.to_string()).or_insert_with(|| {
-            DirAggregateBuffer::new(dir_path.to_string(), self.engine.config.max_blob_size)
+        let buffer = buffers.entry(bucket_key.clone()).or_insert_with(|| {
+            PendingAggregateBuffer::new(bucket_key.clone(), self.engine.config.max_blob_size)
         });
-
-        let should_flush = buffer.add_file(file);
-
-        if should_flush {
-            let files = buffer.flush();
-            Some((dir_path.to_string(), files))
+        if buffer.add_file(file) {
+            Some((bucket_key, buffer.flush()))
         } else {
             None
         }
     }
 
-    /// Flushes all pending buffers and creates remaining blobs.
     pub fn flush_all(&self) -> Vec<(String, Vec<PendingFile>)> {
         let mut buffers = self.buffers.lock().unwrap();
         let mut result = Vec::new();
-
-        for (dir_path, buffer) in buffers.iter_mut() {
+        for (key, buffer) in buffers.iter_mut() {
             if !buffer.is_empty() {
-                let files = buffer.flush();
-                result.push((dir_path.clone(), files));
+                result.push((key.clone(), buffer.flush()));
             }
         }
-
         result
     }
 }
 
-/// Errors that can occur in the aggregate engine.
 #[derive(Debug)]
 pub enum AggregateEngineError {
     Io(io::Error),
@@ -318,20 +294,12 @@ impl std::fmt::Display for AggregateEngineError {
         match self {
             AggregateEngineError::Io(e) => write!(f, "IO error: {}", e),
             AggregateEngineError::Index(e) => write!(f, "Index error: {}", e),
-            AggregateEngineError::Other(s) => write!(f, "{}", s),
+            AggregateEngineError::Other(s) => write!(f, "{s}"),
         }
     }
 }
 
-impl std::error::Error for AggregateEngineError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            AggregateEngineError::Io(e) => Some(e),
-            AggregateEngineError::Index(e) => Some(e),
-            AggregateEngineError::Other(_) => None,
-        }
-    }
-}
+impl std::error::Error for AggregateEngineError {}
 
 impl From<io::Error> for AggregateEngineError {
     fn from(e: io::Error) -> Self {
@@ -345,168 +313,29 @@ impl From<crate::backup::aggregate_index::AggregateIndexError> for AggregateEngi
     }
 }
 
-/// Converts a FileControlBlock to a PendingFile for aggregation.
+pub fn parent_dir_of(relative_path: &str) -> String {
+    Path::new(relative_path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+pub fn aggregate_dir_for(dir_rel: &str) -> PathBuf {
+    if dir_rel.is_empty() {
+        PathBuf::from(AGGREGATE_DIR_NAME)
+    } else {
+        PathBuf::from(dir_rel).join(AGGREGATE_DIR_NAME)
+    }
+}
+
 pub fn fcb_to_pending_file(fcb: &FileControlBlock) -> PendingFile {
     PendingFile {
-        file_name: fcb.meta.common.name.clone(),
-        data: fcb.buffer.clone(),
+        relative_path: fcb.dst_path.to_string_lossy().replace('\\', "/"),
+        data: fcb.buffer[..fcb.buffer_len].to_vec(),
         ctime: fcb.meta.common.ctime as u64,
         mtime: fcb.meta.common.mtime as u64,
         mode: fcb.meta.common.mode,
         xattrs: fcb.meta.common.xattributes.clone(),
         acl: fcb.meta.common.posix_access_acl.clone(),
     }
-}
-
-/// Spawns the aggregate backup coordinator thread.
-#[allow(dead_code)]
-pub(crate) fn spawn_aggregate_coordinator(
-    agg_state: Arc<AggregateBackupState>,
-    fcb_rx: mpsc::Receiver<ControlBlockVarient>,
-    writer_tx: mpsc::Sender<ControlBlockVarient>,
-    shared_state: Arc<SharedState>,
-    backup_stats: Arc<BackupStats>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        info!("Aggregate coordinator started");
-
-        loop {
-            match fcb_rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(item) => {
-                    match item {
-                        ControlBlockVarient::DirControlBlock(dcb) => {
-                            // Forward directories directly to writer
-                            let _ = writer_tx.send(ControlBlockVarient::DirControlBlock(dcb));
-                        }
-                        ControlBlockVarient::FileControlBlock(fcb) => {
-                            // Check if file should be aggregated
-                            if agg_state.engine.should_aggregate(fcb.meta.size) {
-                                // File has been read, convert to pending file
-                                if fcb.src_state == SourceHandleState::Read {
-                                    let pending = fcb_to_pending_file(&fcb);
-                                    let dir_path = fcb
-                                        .src_path
-                                        .parent()
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_default();
-
-                                    // Add to buffer
-                                    if let Some((dir, files)) =
-                                        agg_state.add_file(&dir_path, pending)
-                                    {
-                                        // Buffer is full, create blob
-                                        let file_count = files.len() as u64;
-                                        let bytes_in_blob: u64 =
-                                            files.iter().map(|f| f.data.len() as u64).sum();
-
-                                        match agg_state.engine.create_blob(&dir, files) {
-                                            Ok(blob_meta) => {
-                                                debug!(
-                                                    "Created blob {} for dir {}",
-                                                    blob_meta.blob_name, dir
-                                                );
-                                                // Update stats for aggregated files
-                                                backup_stats
-                                                    .files_copied
-                                                    .fetch_add(file_count, Ordering::Relaxed);
-                                                backup_stats
-                                                    .bytes_copied
-                                                    .fetch_add(bytes_in_blob, Ordering::Relaxed);
-                                            }
-                                            Err(e) => {
-                                                error!(
-                                                    "Failed to create blob for dir {}: {}",
-                                                    dir, e
-                                                );
-                                                backup_stats
-                                                    .files_failed
-                                                    .fetch_add(file_count, Ordering::Relaxed);
-                                            }
-                                        }
-                                    } else {
-                                        // File was added to buffer, update stats
-                                        backup_stats.files_copied.fetch_add(1, Ordering::Relaxed);
-                                        backup_stats
-                                            .bytes_copied
-                                            .fetch_add(fcb.meta.size, Ordering::Relaxed);
-                                    }
-                                } else {
-                                    // File not yet read, forward to reader
-                                    let _ =
-                                        writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
-                                }
-                            } else {
-                                // Large file, update stats before forwarding
-                                let file_size = fcb.meta.size;
-
-                                // Forward to normal backup pipeline
-                                let _ = writer_tx.send(ControlBlockVarient::FileControlBlock(fcb));
-
-                                // Update stats
-                                backup_stats.files_copied.fetch_add(1, Ordering::Relaxed);
-                                backup_stats
-                                    .bytes_copied
-                                    .fetch_add(file_size, Ordering::Relaxed);
-                            }
-                        }
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // Check if we should exit
-                    if shared_state.entry_produce_done.load(Ordering::Relaxed)
-                        && shared_state
-                            .active_reader_io_workers
-                            .load(Ordering::Relaxed)
-                            == 0
-                    {
-                        break;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break;
-                }
-            }
-        }
-
-        // Flush remaining buffers
-        info!("Flushing remaining aggregate buffers...");
-        let remaining = agg_state.flush_all();
-        for (dir, files) in remaining {
-            if !files.is_empty() {
-                let file_count = files.len() as u64;
-                let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
-
-                match agg_state.engine.create_blob(&dir, files) {
-                    Ok(blob_meta) => {
-                        debug!("Created final blob {} for dir {}", blob_meta.blob_name, dir);
-                        // Update stats for aggregated files
-                        backup_stats
-                            .files_copied
-                            .fetch_add(file_count, Ordering::Relaxed);
-                        backup_stats
-                            .bytes_copied
-                            .fetch_add(bytes_in_blob, Ordering::Relaxed);
-                    }
-                    Err(e) => {
-                        error!("Failed to create final blob for dir {}: {}", dir, e);
-                        backup_stats
-                            .files_failed
-                            .fetch_add(file_count, Ordering::Relaxed);
-                    }
-                }
-            }
-        }
-
-        // Flush all indexes
-        let _ = agg_state.engine.flush_all_indexes();
-
-        // Print final stats
-        let stats = agg_state.engine.stats();
-        info!(
-            "Aggregate backup complete: {} blobs created, {} files aggregated, {} files normal",
-            stats.blobs_created, stats.files_aggregated, stats.files_normal
-        );
-
-        info!("Aggregate coordinator ended");
-    })
 }

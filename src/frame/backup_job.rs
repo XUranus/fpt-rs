@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::frame::location::DataLocation;
-use crate::frame::postjob::{BackupManifest, BackupPostJob, SubtaskRecord};
+use crate::frame::postjob::{AggregationManifest, BackupManifest, BackupPostJob, SubtaskRecord};
 use crate::frame::prereq::BackupPrereqJob;
 use crate::frame::repo::{RepoLayout, TempRepoConfig};
 use crate::frame::scan::{ScanConfig, ScanJob};
@@ -333,6 +333,12 @@ impl BackupRestoreJob for FileBackupJob {
                 .incremental_base
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
+            aggregation: cfg.aggregate_config.enabled.then_some(AggregationManifest {
+                layout: cfg.aggregate_config.layout,
+                max_blob_size: cfg.aggregate_config.max_blob_size,
+                file_threshold: cfg.aggregate_config.file_threshold,
+                shard_count: cfg.aggregate_config.shard_count,
+            }),
             subtasks: subtask_records,
         };
 

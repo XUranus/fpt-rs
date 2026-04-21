@@ -6,12 +6,12 @@
 // This tool exercises the backup subtask phase in isolation (no scan, no
 // manifest, no post-job).  For the full integrated workflow, use `fptcli backup`.
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use log::info;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use bifrost::backup::aggregate::AggregateConfig;
+use bifrost::backup::aggregate::{AggregateConfig, AggregateLayout};
 #[cfg(feature = "nfs")]
 use bifrost::frame::backup_impls::{NfsSourceFileBackup, NfsSourceTargetFileBackup};
 #[cfg(all(feature = "nfs", feature = "smb"))]
@@ -73,6 +73,10 @@ struct Args {
     /// File size threshold for aggregation in KB [default: 1024]
     #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
     aggregate_threshold: u64,
+
+    /// Aggregate layout/version: `dir-level` or `shard`
+    #[arg(long, value_enum, default_value = "shard")]
+    aggregate_layout: AggregateLayoutArg,
     /// Number of parallel NFS connections [default: 32]
     #[arg(long, value_name = "N", default_value = "32")]
     nfs_connections: usize,
@@ -100,6 +104,21 @@ struct Args {
     /// Log file path (append mode; logs also go to stdout)
     #[arg(long, value_name = "FILE")]
     log_file: Option<PathBuf>,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy)]
+enum AggregateLayoutArg {
+    DirLevel,
+    Shard,
+}
+
+impl From<AggregateLayoutArg> for AggregateLayout {
+    fn from(value: AggregateLayoutArg) -> Self {
+        match value {
+            AggregateLayoutArg::DirLevel => AggregateLayout::DirLevel,
+            AggregateLayoutArg::Shard => AggregateLayout::Shard,
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -137,10 +156,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the shared BackupConfig.
     let aggregate_config = if args.aggregate {
         info!(
-            "Aggregate backup enabled: max_blob_size={}MB, threshold={}KB",
-            args.max_blob_size, args.aggregate_threshold
+            "Aggregate backup enabled: layout={}, max_blob_size={}MB, threshold={}KB",
+            AggregateLayout::from(args.aggregate_layout).as_str(),
+            args.max_blob_size,
+            args.aggregate_threshold
         );
         AggregateConfig::enabled()
+            .layout(args.aggregate_layout.into())
             .max_blob_size(args.max_blob_size * 1024 * 1024)
             .file_threshold(args.aggregate_threshold * 1024)
     } else {

@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use bifrost::backup::aggregate::AggregateConfig;
+use bifrost::backup::aggregate::{AggregateConfig, AggregateLayout};
 use bifrost::backup::RestorePolicy;
 use bifrost::frame::{
     scan::ScanConfig, traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation,
@@ -67,6 +67,10 @@ enum Commands {
         /// Aggregate file threshold in KB (only for aggregated format)
         #[arg(long, default_value = "1024", value_name = "KB")]
         threshold: u64,
+
+        /// Aggregate layout/version: `dir-level` or `shard`
+        #[arg(long, value_enum, default_value = "shard")]
+        aggregate_layout: AggregateLayoutArg,
 
         /// Enable hardlink phase
         #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -186,6 +190,21 @@ enum RestorePolicyArg {
     KeepNewer,
 }
 
+#[derive(ValueEnum, Debug, Clone, Copy)]
+enum AggregateLayoutArg {
+    DirLevel,
+    Shard,
+}
+
+impl From<AggregateLayoutArg> for AggregateLayout {
+    fn from(value: AggregateLayoutArg) -> Self {
+        match value {
+            AggregateLayoutArg::DirLevel => AggregateLayout::DirLevel,
+            AggregateLayoutArg::Shard => AggregateLayout::Shard,
+        }
+    }
+}
+
 impl From<RestorePolicyArg> for RestorePolicy {
     fn from(arg: RestorePolicyArg) -> Self {
         match arg {
@@ -268,6 +287,7 @@ fn cmd_backup(
     jobs: usize,
     blob_size: u64,
     threshold: u64,
+    aggregate_layout: AggregateLayoutArg,
     hardlink: bool,
     delete: bool,
     mtime: bool,
@@ -299,6 +319,7 @@ fn cmd_backup(
     // Build aggregate config
     let aggregate_config = if matches!(format, BackupFormat::Aggregated) {
         AggregateConfig::enabled()
+            .layout(aggregate_layout.into())
             .max_blob_size(blob_size * 1024 * 1024)
             .file_threshold(threshold * 1024)
     } else {
@@ -364,6 +385,10 @@ fn cmd_backup(
     println!("Format      : {}", summary_format_tag);
     if matches!(format, BackupFormat::Aggregated) {
         println!("Aggregation : enabled");
+        println!(
+            "Layout      : {}",
+            AggregateLayout::from(aggregate_layout).as_str()
+        );
         println!("Blob size   : {} MiB", blob_size);
         println!("Threshold   : {} KiB", threshold);
     } else {
@@ -567,6 +592,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             jobs,
             blob_size,
             threshold,
+            aggregate_layout,
             hardlink,
             delete,
             mtime,
@@ -588,6 +614,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             jobs,
             blob_size,
             threshold,
+            aggregate_layout,
             hardlink,
             delete,
             mtime,

@@ -1,405 +1,209 @@
-//! # Aggregate Index Module
-//!
-//! This module provides indexing for aggregate blob files.
-//! The index maps original filenames to their locations within blob files,
-//! enabling efficient restore operations.
-//!
-//! When the `sqlite` feature is enabled, uses SQLite for persistent storage.
-//! Otherwise, uses an in-memory HashMap.
+//! Aggregate index for shard-based aggregated backups.
 
-use log::{debug, info};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use log::debug;
+use serde::{Deserialize, Serialize};
+
 use crate::backup::aggregate::{AggregateBlobMeta, AggregateFileEntry, AggregateRestoreInfo};
 
-/// SQLite schema for the aggregate index.
-pub const INDEX_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS aggregate_index (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_name TEXT NOT NULL,
-    dir_path TEXT NOT NULL,
-    blob_name TEXT NOT NULL,
-    offset INTEGER NOT NULL,
-    size INTEGER NOT NULL,
-    ctime INTEGER,
-    mtime INTEGER,
-    mode INTEGER,
-    xattrs TEXT,
-    acl TEXT,
-    UNIQUE(file_name, dir_path)
-);
+pub const BINARY_INDEX_FILE_NAME: &str = "AGGREGATE_INDEX.bidx";
+const BINARY_INDEX_MAGIC: &[u8; 8] = b"BAGG0002";
 
-CREATE INDEX IF NOT EXISTS idx_file_name ON aggregate_index(file_name);
-CREATE INDEX IF NOT EXISTS idx_blob_name ON aggregate_index(blob_name);
-CREATE INDEX IF NOT EXISTS idx_dir_path ON aggregate_index(dir_path);
-"#;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BinaryIndexRecord {
+    relative_path: String,
+    blob_path: String,
+    offset: u64,
+    size: u64,
+    mtime: u64,
+    mode: u32,
+    xattrs: Option<String>,
+    acl: Option<String>,
+}
 
-/// Manages the index for aggregate backup/restore.
 pub struct AggregateIndex {
-    db_path: PathBuf,
-    /// In-memory storage for when SQLite is not available
-    memory_index: Mutex<HashMap<String, AggregateRestoreInfo>>,
+    index_path: PathBuf,
+    records: Mutex<HashMap<String, AggregateRestoreInfo>>,
 }
 
 impl AggregateIndex {
-    /// Creates or opens an aggregate index at the specified path.
-    pub fn open(db_path: &Path) -> Result<Self, AggregateIndexError> {
-        let db_path = db_path.to_path_buf();
-
-        // Ensure parent directory exists
-        if let Some(parent) = db_path.parent() {
+    pub fn open(index_path: &Path) -> Result<Self, AggregateIndexError> {
+        if let Some(parent) = index_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Initialize the database schema (opens and closes connection)
-        #[cfg(feature = "sqlite")]
-        {
-            let conn = rusqlite::Connection::open(&db_path)?;
-            conn.execute_batch(INDEX_SCHEMA)?;
-            conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
-            // Connection is dropped here, closing it
-        }
-
-        let index = Self {
-            db_path,
-            memory_index: Mutex::new(HashMap::new()),
+        let records = if index_path.exists() {
+            load_binary_index(index_path)?
+        } else {
+            HashMap::new()
         };
 
-        info!("Aggregate index opened at {:?}", index.db_path);
-        Ok(index)
-    }
-
-    /// Opens a connection to the SQLite database.
-    /// Note: We open/close connections per operation to avoid file descriptor exhaustion
-    /// when many directories are being processed concurrently.
-    #[cfg(feature = "sqlite")]
-    fn open_connection(&self) -> Result<rusqlite::Connection, AggregateIndexError> {
-        let conn = rusqlite::Connection::open(&self.db_path)?;
-        Ok(conn)
-    }
-
-    /// Adds a blob's metadata to the index.
-    pub fn add_blob(&self, blob_meta: &AggregateBlobMeta) -> Result<(), AggregateIndexError> {
-        #[cfg(feature = "sqlite")]
-        {
-            self.add_blob_sqlite(blob_meta)?;
-        }
-
-        #[cfg(not(feature = "sqlite"))]
-        {
-            let mut index = self.memory_index.lock().unwrap();
-            for entry in &blob_meta.files {
-                let key = format!("{}/{}", blob_meta.dir_path, entry.file_name);
-                let info = AggregateRestoreInfo {
-                    blob_name: blob_meta.blob_name.clone(),
-                    offset: entry.offset,
-                    size: entry.size,
-                    mtime: entry.mtime,
-                    mode: entry.mode,
-                    xattrs: entry.xattrs.clone(),
-                    acl: entry.acl.clone(),
-                };
-                index.insert(key, info);
-            }
-        }
-
         debug!(
-            "Added {} files to index for blob {}",
-            blob_meta.files.len(),
-            blob_meta.blob_name
+            "Aggregate index opened at {:?} with {} records",
+            index_path,
+            records.len()
         );
-        Ok(())
+        Ok(Self {
+            index_path: index_path.to_path_buf(),
+            records: Mutex::new(records),
+        })
     }
 
-    /// Adds a blob to the SQLite index.
-    #[cfg(feature = "sqlite")]
-    fn add_blob_sqlite(&self, blob_meta: &AggregateBlobMeta) -> Result<(), AggregateIndexError> {
-        use rusqlite::params;
-
-        let mut conn = self.open_connection()?;
-        let tx = conn.transaction()?;
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO aggregate_index 
-                 (file_name, dir_path, blob_name, offset, size, ctime, mtime, mode, xattrs, acl)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            )?;
-
-            for entry in &blob_meta.files {
-                stmt.execute(params![
-                    &entry.file_name,
-                    &blob_meta.dir_path,
-                    &blob_meta.blob_name,
-                    entry.offset as i64,
-                    entry.size as i64,
-                    entry.ctime as i64,
-                    entry.mtime as i64,
-                    entry.mode as i64,
-                    entry.xattrs.as_ref().map(|s| s.as_str()),
-                    entry.acl.as_ref().map(|s| s.as_str()),
-                ])?;
-            }
+    pub fn add_blob(&self, blob_meta: &AggregateBlobMeta) -> Result<(), AggregateIndexError> {
+        let mut records = self.records.lock().unwrap();
+        for entry in &blob_meta.files {
+            let info = AggregateRestoreInfo {
+                blob_path: blob_meta.blob_path.clone(),
+                offset: entry.offset,
+                size: entry.size,
+                mtime: entry.mtime,
+                mode: entry.mode,
+                xattrs: entry.xattrs.clone(),
+                acl: entry.acl.clone(),
+            };
+            records.insert(entry.relative_path.clone(), info);
         }
-        tx.commit()?;
-
         Ok(())
     }
 
-    /// Queries the index for a file's restore information.
+    pub fn flush(&self) -> Result<(), AggregateIndexError> {
+        let records = self.records.lock().unwrap();
+        persist_binary_index(&self.index_path, &records)
+    }
+
     pub fn query_file(
         &self,
-        file_name: &str,
-        dir_path: &str,
+        relative_path: &str,
     ) -> Result<Option<AggregateRestoreInfo>, AggregateIndexError> {
-        // First try in-memory index
-        let key = format!("{}/{}", dir_path, file_name);
-        let index = self.memory_index.lock().unwrap();
-        if let Some(info) = index.get(&key) {
-            return Ok(Some(info.clone()));
-        }
-        drop(index);
-
-        #[cfg(feature = "sqlite")]
-        {
-            self.query_file_sqlite(file_name, dir_path)
-        }
-
-        #[cfg(not(feature = "sqlite"))]
-        {
-            Ok(None)
-        }
+        Ok(self.records.lock().unwrap().get(relative_path).cloned())
     }
 
-    /// Queries the SQLite index for a file.
-    #[cfg(feature = "sqlite")]
-    fn query_file_sqlite(
-        &self,
-        file_name: &str,
-        dir_path: &str,
-    ) -> Result<Option<AggregateRestoreInfo>, AggregateIndexError> {
-        use rusqlite::params;
-
-        let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT blob_name, offset, size, mtime, mode, xattrs, acl 
-             FROM aggregate_index 
-             WHERE file_name = ?1 AND dir_path = ?2",
-        )?;
-
-        let result = stmt.query_row(params![file_name, dir_path], |row| {
-            Ok(AggregateRestoreInfo {
-                blob_name: row.get(0)?,
-                offset: row.get::<_, i64>(1)? as u64,
-                size: row.get::<_, i64>(2)? as u64,
-                mtime: row.get::<_, i64>(3)? as u64,
-                mode: row.get::<_, i64>(4)? as u32,
-                xattrs: row.get(5)?,
-                acl: row.get(6)?,
-            })
-        });
-
-        match result {
-            Ok(info) => Ok(Some(info)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+    pub fn is_aggregated(&self, relative_path: &str) -> Result<bool, AggregateIndexError> {
+        Ok(self.records.lock().unwrap().contains_key(relative_path))
     }
 
-    /// Gets all files in a specific blob.
     pub fn get_blob_files(
         &self,
-        blob_name: &str,
+        blob_path: &str,
     ) -> Result<Vec<AggregateFileEntry>, AggregateIndexError> {
-        #[cfg(feature = "sqlite")]
-        {
-            self.get_blob_files_sqlite(blob_name)
-        }
-
-        #[cfg(not(feature = "sqlite"))]
-        {
-            // Search in-memory index for files in this blob
-            let index = self.memory_index.lock().unwrap();
-            let entries: Vec<AggregateFileEntry> = index
-                .iter()
-                .filter(|(_, info)| info.blob_name == blob_name)
-                .map(|(key, info)| {
-                    // Extract filename from key (format: "dir_path/file_name")
-                    let file_name = key
-                        .rfind('/')
-                        .map(|i| &key[i + 1..])
-                        .unwrap_or(key.as_str())
-                        .to_string();
-                    AggregateFileEntry {
-                        file_name,
-                        offset: info.offset,
-                        size: info.size,
-                        ctime: 0, // Not stored in restore info
-                        mtime: info.mtime,
-                        mode: info.mode,
-                        xattrs: info.xattrs.clone(),
-                        acl: info.acl.clone(),
-                    }
-                })
-                .collect();
-            Ok(entries)
-        }
-    }
-
-    /// Gets all files in a specific blob from SQLite.
-    #[cfg(feature = "sqlite")]
-    fn get_blob_files_sqlite(
-        &self,
-        blob_name: &str,
-    ) -> Result<Vec<AggregateFileEntry>, AggregateIndexError> {
-        use rusqlite::params;
-
-        let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT file_name, offset, size, ctime, mtime, mode, xattrs, acl 
-             FROM aggregate_index 
-             WHERE blob_name = ?1",
-        )?;
-
-        let entries = stmt.query_map(params![blob_name], |row| {
-            Ok(AggregateFileEntry {
-                file_name: row.get(0)?,
-                offset: row.get::<_, i64>(1)? as u64,
-                size: row.get::<_, i64>(2)? as u64,
-                ctime: row.get::<_, i64>(3)? as u64,
-                mtime: row.get::<_, i64>(4)? as u64,
-                mode: row.get::<_, i64>(5)? as u32,
-                xattrs: row.get(6)?,
-                acl: row.get(7)?,
+        let records = self.records.lock().unwrap();
+        Ok(records
+            .iter()
+            .filter(|(_, info)| info.blob_path == blob_path)
+            .map(|(relative_path, info)| AggregateFileEntry {
+                relative_path: relative_path.clone(),
+                offset: info.offset,
+                size: info.size,
+                ctime: 0,
+                mtime: info.mtime,
+                mode: info.mode,
+                xattrs: info.xattrs.clone(),
+                acl: info.acl.clone(),
             })
-        })?;
-
-        let mut result = Vec::new();
-        for entry in entries {
-            result.push(entry?);
-        }
-
-        Ok(result)
+            .collect())
     }
 
-    /// Checks if a file is in the index (i.e., was aggregated).
-    pub fn is_aggregated(
-        &self,
-        file_name: &str,
-        dir_path: &str,
-    ) -> Result<bool, AggregateIndexError> {
-        // Check in-memory index first
-        let key = format!("{}/{}", dir_path, file_name);
-        let index = self.memory_index.lock().unwrap();
-        if index.contains_key(&key) {
-            return Ok(true);
-        }
-        drop(index);
-
-        #[cfg(feature = "sqlite")]
-        {
-            use rusqlite::params;
-
-            let conn = self.open_connection()?;
-            let mut stmt = conn.prepare(
-                "SELECT 1 FROM aggregate_index WHERE file_name = ?1 AND dir_path = ?2 LIMIT 1",
-            )?;
-
-            let result: Result<i64, _> =
-                stmt.query_row(params![file_name, dir_path], |row| row.get(0));
-
-            match result {
-                Ok(_) => Ok(true),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
-                Err(e) => Err(e.into()),
-            }
-        }
-
-        #[cfg(not(feature = "sqlite"))]
-        {
-            Ok(false)
-        }
+    pub fn delete_blob_entries(&self, blob_path: &str) -> Result<usize, AggregateIndexError> {
+        let mut records = self.records.lock().unwrap();
+        let before = records.len();
+        records.retain(|_, info| info.blob_path != blob_path);
+        Ok(before - records.len())
     }
 
-    /// Deletes index entries for a specific blob (used for cleanup).
-    #[cfg(feature = "sqlite")]
-    pub fn delete_blob_entries(&self, blob_name: &str) -> Result<usize, AggregateIndexError> {
-        use rusqlite::params;
-
-        let conn = self.open_connection()?;
-        let count = conn.execute(
-            "DELETE FROM aggregate_index WHERE blob_name = ?1",
-            params![blob_name],
-        )?;
-
-        info!("Deleted {} entries for blob {}", count, blob_name);
-        Ok(count)
-    }
-
-    #[cfg(not(feature = "sqlite"))]
-    pub fn delete_blob_entries(&self, _blob_name: &str) -> Result<usize, AggregateIndexError> {
-        Ok(0)
-    }
-
-    /// Gets statistics about the index.
     pub fn get_stats(&self) -> Result<IndexStats, AggregateIndexError> {
-        let memory_count = self.memory_index.lock().unwrap().len() as u64;
-
-        #[cfg(feature = "sqlite")]
-        {
-            let conn = self.open_connection()?;
-
-            let total_files: i64 =
-                conn.query_row("SELECT COUNT(*) FROM aggregate_index", [], |row| row.get(0))?;
-
-            let total_blobs: i64 = conn.query_row(
-                "SELECT COUNT(DISTINCT blob_name) FROM aggregate_index",
-                [],
-                |row| row.get(0),
-            )?;
-
-            let total_size: i64 = conn.query_row(
-                "SELECT COALESCE(SUM(size), 0) FROM aggregate_index",
-                [],
-                |row| row.get(0),
-            )?;
-
-            Ok(IndexStats {
-                total_files: total_files as u64,
-                total_blobs: total_blobs as u64,
-                total_size: total_size as u64,
-                memory_entries: memory_count,
-            })
-        }
-
-        #[cfg(not(feature = "sqlite"))]
-        {
-            Ok(IndexStats {
-                total_files: memory_count,
-                total_blobs: 0,
-                total_size: 0,
-                memory_entries: memory_count,
-            })
-        }
+        let records = self.records.lock().unwrap();
+        Ok(IndexStats {
+            total_files: records.len() as u64,
+            total_blobs: records
+                .values()
+                .map(|info| info.blob_path.as_str())
+                .collect::<HashSet<_>>()
+                .len() as u64,
+            total_size: records.values().map(|info| info.size).sum(),
+        })
     }
 }
 
-/// Statistics about the aggregate index.
+fn load_binary_index(
+    path: &Path,
+) -> Result<HashMap<String, AggregateRestoreInfo>, AggregateIndexError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut magic = [0_u8; BINARY_INDEX_MAGIC.len()];
+    file.read_exact(&mut magic)?;
+    if &magic != BINARY_INDEX_MAGIC {
+        return Err(AggregateIndexError::Other(format!(
+            "invalid aggregate index magic: {}",
+            path.display()
+        )));
+    }
+
+    let entries: Vec<BinaryIndexRecord> = bincode::deserialize_from(file)
+        .map_err(|e| AggregateIndexError::Other(format!("decode aggregate index: {e}")))?;
+    let mut records = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        records.insert(
+            entry.relative_path,
+            AggregateRestoreInfo {
+                blob_path: entry.blob_path,
+                offset: entry.offset,
+                size: entry.size,
+                mtime: entry.mtime,
+                mode: entry.mode,
+                xattrs: entry.xattrs,
+                acl: entry.acl,
+            },
+        );
+    }
+    Ok(records)
+}
+
+fn persist_binary_index(
+    path: &Path,
+    records: &HashMap<String, AggregateRestoreInfo>,
+) -> Result<(), AggregateIndexError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let temp_path = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&temp_path)?;
+    file.write_all(BINARY_INDEX_MAGIC)?;
+
+    let mut entries = Vec::with_capacity(records.len());
+    for (relative_path, info) in records {
+        entries.push(BinaryIndexRecord {
+            relative_path: relative_path.clone(),
+            blob_path: info.blob_path.clone(),
+            offset: info.offset,
+            size: info.size,
+            mtime: info.mtime,
+            mode: info.mode,
+            xattrs: info.xattrs.clone(),
+            acl: info.acl.clone(),
+        });
+    }
+    bincode::serialize_into(&mut file, &entries)
+        .map_err(|e| AggregateIndexError::Other(format!("encode aggregate index: {e}")))?;
+    file.flush()?;
+    drop(file);
+    std::fs::rename(temp_path, path)?;
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct IndexStats {
     pub total_files: u64,
     pub total_blobs: u64,
     pub total_size: u64,
-    pub memory_entries: u64,
 }
 
-/// Errors that can occur when working with the aggregate index.
 #[derive(Debug)]
 pub enum AggregateIndexError {
     Io(std::io::Error),
-    #[cfg(feature = "sqlite")]
-    Sqlite(rusqlite::Error),
     Other(String),
 }
 
@@ -407,23 +211,12 @@ impl std::fmt::Display for AggregateIndexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AggregateIndexError::Io(e) => write!(f, "IO error: {}", e),
-            #[cfg(feature = "sqlite")]
-            AggregateIndexError::Sqlite(e) => write!(f, "SQLite error: {}", e),
             AggregateIndexError::Other(s) => write!(f, "{}", s),
         }
     }
 }
 
-impl std::error::Error for AggregateIndexError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            AggregateIndexError::Io(e) => Some(e),
-            #[cfg(feature = "sqlite")]
-            AggregateIndexError::Sqlite(e) => Some(e),
-            AggregateIndexError::Other(_) => None,
-        }
-    }
-}
+impl std::error::Error for AggregateIndexError {}
 
 impl From<std::io::Error> for AggregateIndexError {
     fn from(e: std::io::Error) -> Self {
@@ -431,9 +224,42 @@ impl From<std::io::Error> for AggregateIndexError {
     }
 }
 
-#[cfg(feature = "sqlite")]
-impl From<rusqlite::Error> for AggregateIndexError {
-    fn from(e: rusqlite::Error) -> Self {
-        AggregateIndexError::Sqlite(e)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backup::aggregate::{AggregateBlobMeta, AggregateFileEntry};
+
+    #[test]
+    fn binary_index_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(BINARY_INDEX_FILE_NAME);
+        let index = AggregateIndex::open(&path).unwrap();
+        index
+            .add_blob(&AggregateBlobMeta {
+                blob_path: ".AGGR/shard-000/blob-1.blob".to_string(),
+                blob_size: 7,
+                file_count: 1,
+                shard_id: 0,
+                files: vec![AggregateFileEntry {
+                    relative_path: "a/b/f1".to_string(),
+                    offset: 3,
+                    size: 4,
+                    ctime: 1,
+                    mtime: 2,
+                    mode: 0o644,
+                    xattrs: None,
+                    acl: None,
+                }],
+            })
+            .unwrap();
+        index.flush().unwrap();
+        drop(index);
+
+        let reopened = AggregateIndex::open(&path).unwrap();
+        let info = reopened.query_file("a/b/f1").unwrap().unwrap();
+        assert_eq!(info.blob_path, ".AGGR/shard-000/blob-1.blob");
+        assert_eq!(info.offset, 3);
+        assert_eq!(info.size, 4);
+        assert!(reopened.is_aggregated("a/b/f1").unwrap());
     }
 }

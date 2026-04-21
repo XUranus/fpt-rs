@@ -3,7 +3,7 @@
 //! Restore is the inverse of backup copy:
 //! - control-file entries are mapped back to paths relative to the original source
 //! - file data is read from local `D_REPO`
-//! - small aggregated files are extracted from `.AGGR_DIR` blobs on demand
+//! - small aggregated files are extracted from shared `.AGGR/shard-*` blobs on demand
 //! - the selected target transport writes the restored bytes
 
 use std::path::{Path, PathBuf};
@@ -13,7 +13,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use log::{debug, error, info, warn};
 use tokio::sync::{mpsc, Semaphore};
 
-use crate::backup::aggregate_index::AggregateIndex;
+use crate::backup::aggregate::{AggregateLayout, AGGREGATE_DIR_NAME, AGGREGATE_ROOT_DIR};
+use crate::backup::aggregate_dir_index::{read_dir_index, SQLITE_INDEX_FILE_NAME};
+use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::backup::aggregate_restore::AggregateRestoreEngine;
 use crate::backup::aio::entry::{produce_entries, EntryMapping};
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
@@ -24,19 +26,38 @@ use crate::backup::RestoreStats;
 #[derive(Clone)]
 pub struct LocalRepoRestoreSource {
     pub d_repo_base: PathBuf,
-    pub original_source_base: PathBuf,
+    layout: AggregateLayout,
     aggregate: Arc<AggregateRestoreEngine>,
+    index_cache: Arc<Mutex<std::collections::HashMap<PathBuf, Arc<AggregateIndex>>>>,
 }
 
 impl LocalRepoRestoreSource {
-    pub fn new(d_repo_base: PathBuf, original_source_base: PathBuf) -> Result<Self, String> {
+    pub fn new(
+        d_repo_base: PathBuf,
+        _original_source_base: PathBuf,
+        layout: AggregateLayout,
+    ) -> Result<Self, String> {
         let aggregate = AggregateRestoreEngine::new(d_repo_base.clone())
             .map_err(|e| format!("init aggregate restore engine: {e}"))?;
         Ok(Self {
             d_repo_base,
-            original_source_base,
+            layout,
             aggregate: Arc::new(aggregate),
+            index_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
+    }
+
+    fn get_or_open_index(&self, index_path: &Path) -> Result<Arc<AggregateIndex>, String> {
+        let mut cache = self.index_cache.lock().unwrap();
+        if let Some(index) = cache.get(index_path) {
+            return Ok(Arc::clone(index));
+        }
+        let index = Arc::new(
+            AggregateIndex::open(index_path)
+                .map_err(|e| format!("open aggregate index {}: {e}", index_path.display()))?,
+        );
+        cache.insert(index_path.to_path_buf(), Arc::clone(&index));
+        Ok(index)
     }
 }
 
@@ -51,41 +72,53 @@ impl SourceReader for LocalRepoRestoreSource {
         let this = self.clone();
         Box::pin(async move {
             let rel_path = fcb.src_path.clone();
-            let file_name = match rel_path.file_name() {
-                Some(name) => name.to_string_lossy().into_owned(),
-                None => return Err((fcb, format!("invalid restore path {:?}", rel_path))),
-            };
-            let rel_dir = rel_path.parent().unwrap_or_else(|| Path::new(""));
-            let repo_dir = this.d_repo_base.join(rel_dir);
-            let repo_dir_str = repo_dir.to_string_lossy().into_owned();
-            let dir_key = rel_dir.to_string_lossy().to_string();
-            let source_dir_key = this
-                .original_source_base
-                .join(rel_dir)
-                .to_string_lossy()
-                .to_string();
-
-            let restore_info = repo_dir.join(".AGGR_DIR").join("AGGREGATE_IDX.sqlite");
-            let aggregate_info = if restore_info.exists() {
-                let index = AggregateIndex::open(&restore_info)
-                    .map_err(|e| format!("open aggregate index {}: {e}", restore_info.display()));
-                match index {
-                    Ok(index) => index
-                        .query_file(&file_name, &source_dir_key)
-                        .or_else(|_| index.query_file(&file_name, &dir_key))
-                        .map_err(|e| {
-                            format!("query aggregate index {}: {e}", restore_info.display())
-                        }),
-                    Err(e) => Err(e),
+            let rel_path_string = rel_path.to_string_lossy().replace('\\', "/");
+            let aggregate_info = match this.layout {
+                AggregateLayout::Shard => {
+                    let index_path = this
+                        .d_repo_base
+                        .join(AGGREGATE_ROOT_DIR)
+                        .join(BINARY_INDEX_FILE_NAME);
+                    this.get_or_open_index(&index_path).and_then(|index| {
+                        index.query_file(&rel_path_string).map_err(|e| {
+                            format!("query aggregate index {}: {e}", index_path.display())
+                        })
+                    })
                 }
-            } else {
-                Ok(None)
+                AggregateLayout::DirLevel => {
+                    let rel_path_obj = PathBuf::from(&rel_path_string);
+                    let file_name = rel_path_obj
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or_else(|| format!("invalid restore path {}", rel_path_string));
+                    let parent = rel_path_obj.parent().unwrap_or_else(|| Path::new(""));
+                    let blob_dir = if parent.as_os_str().is_empty() {
+                        PathBuf::from(AGGREGATE_DIR_NAME)
+                    } else {
+                        parent.join(AGGREGATE_DIR_NAME)
+                    };
+                    let index_path = this
+                        .d_repo_base
+                        .join(&blob_dir)
+                        .join(SQLITE_INDEX_FILE_NAME);
+                    match file_name {
+                        Ok(name) => read_dir_index(
+                            &index_path,
+                            name,
+                            &blob_dir.to_string_lossy().replace('\\', "/"),
+                        )
+                        .map_err(|e| {
+                            format!("query dir aggregate index {}: {e}", index_path.display())
+                        }),
+                        Err(e) => Err(e),
+                    }
+                }
             };
 
             let data = match aggregate_info {
                 Ok(Some(info)) => this
                     .aggregate
-                    .read_from_blob(&repo_dir_str, &info.blob_name, info.offset, info.size)
+                    .read_from_blob(&info.blob_path, info.offset, info.size)
                     .map_err(|e| format!("read aggregated {:?}: {e}", rel_path)),
                 Ok(None) => {
                     let full_path = this.d_repo_base.join(&rel_path);

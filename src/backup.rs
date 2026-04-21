@@ -22,6 +22,7 @@ mod stats;
 
 // Aggregate backup/restore modules
 pub mod aggregate;
+pub mod aggregate_dir_index;
 pub mod aggregate_engine;
 pub mod aggregate_index;
 pub mod aggregate_restore;
@@ -732,6 +733,8 @@ pub struct RestoreOption {
     pub control_file: PathBuf,
     /// Restore policy for handling existing files
     pub policy: RestorePolicy,
+    /// Aggregation settings recorded by the source copy manifest.
+    pub aggregate_config: AggregateConfig,
     /// Number of worker threads
     pub worker_count: usize,
     /// Whether to restore hardlinks
@@ -766,6 +769,7 @@ impl RestoreOption {
             ctrl_dir,
             control_file,
             policy: RestorePolicy::default(),
+            aggregate_config: AggregateConfig::default(),
             worker_count: 8,
             restore_hardlinks: false,
             restore_mtime: true,
@@ -779,6 +783,11 @@ impl RestoreOption {
     /// Sets the restore policy.
     pub fn policy(mut self, policy: RestorePolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    pub fn aggregate_config(mut self, config: AggregateConfig) -> Self {
+        self.aggregate_config = config;
         self
     }
 
@@ -973,6 +982,7 @@ fn run_restore_copy_phase(
     let source = restore_pipeline::LocalRepoRestoreSource::new(
         option.source_dir_base.clone(),
         option.original_source_base.clone(),
+        option.aggregate_config.layout,
     )
     .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 

@@ -7,32 +7,57 @@
 //! ## Key Concepts
 //!
 //! - **Blob File**: A large file containing multiple small files concatenated together.
-//! - **Aggregate Index**: SQLite database mapping original filenames to their locations
-//!   within blob files (blob filename, offset, size).
+//! - **Aggregate Index**: binary index mapping original relative paths to blob
+//!   offsets within shared shard blob files.
 //! - **Threshold**: Files smaller than `aggregate_file_threshold` are candidates for aggregation.
 //! - **Blob Size**: Maximum size of a blob file (default 64MB).
 //!
 //! ## Backup Process
 //!
 //! 1. Small files are collected and buffered in memory
-//! 2. When buffer reaches `blob_size` or directory is complete, create blob file
-//! 3. Write SQLite index mapping filenames to blob locations
+//! 2. When a shard buffer reaches `blob_size`, create/rotate blob file
+//! 3. Write a compact binary index mapping relative paths to blob locations
 //! 4. Large files are backed up normally (non-aggregated)
 //!
 //! ## Restore Process
 //!
-//! 1. Query SQLite index to find blob file, offset, and size for each file
+//! 1. Query binary index to find blob file, offset, and size for each file
 //! 2. Read blob file and extract specific byte ranges
 //! 3. Write extracted files to destination
+
+pub const AGGREGATE_ROOT_DIR: &str = ".AGGR";
+pub const AGGREGATE_DIR_NAME: &str = ".AGGR_DIR";
+pub const DEFAULT_AGGREGATE_SHARDS: u16 = 16;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Aggregation repository layout strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AggregateLayout {
+    /// Legacy per-directory aggregation layout with one `.AGGR_DIR` per data
+    /// directory and one SQLite index per populated directory.
+    DirLevel,
+    /// Shared shard-based aggregation layout with `D_REPO/.AGGR/`.
+    #[default]
+    Shard,
+}
+
+impl AggregateLayout {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirLevel => "DIR_LEVEL",
+            Self::Shard => "SHARD",
+        }
+    }
+}
+
 /// Metadata for a single file within an aggregate blob.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateFileEntry {
-    /// Original filename (relative to backup root)
-    pub file_name: String,
+    /// Original file path relative to the repo root
+    pub relative_path: String,
     /// Offset within the blob file where this file's data starts
     pub offset: u64,
     /// Size of the file in bytes
@@ -52,16 +77,16 @@ pub struct AggregateFileEntry {
 /// Metadata for an aggregate blob file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregateBlobMeta {
-    /// Unique blob filename (e.g., "1234567890123456789.bifrost.blob")
-    pub blob_name: String,
+    /// Blob path relative to the repo root (e.g. ".AGGR/shard-000/....blob")
+    pub blob_path: String,
     /// Total size of the blob file
     pub blob_size: u64,
     /// Number of files in this blob
     pub file_count: u32,
     /// List of files contained in this blob
     pub files: Vec<AggregateFileEntry>,
-    /// Directory path (all files in blob are from same directory)
-    pub dir_path: String,
+    /// Shard identifier that owns the blob
+    pub shard_id: u16,
 }
 
 /// Configuration for aggregation behavior.
@@ -69,18 +94,24 @@ pub struct AggregateBlobMeta {
 pub struct AggregateConfig {
     /// Whether aggregation is enabled
     pub enabled: bool,
+    /// Aggregation layout/version.
+    pub layout: AggregateLayout,
     /// Maximum size of a blob file in bytes (default: 64MB)
     pub max_blob_size: u64,
     /// Files smaller than this threshold are aggregated (default: 1MB)
     pub file_threshold: u64,
+    /// Number of shard writers / index partitions for aggregated files.
+    pub shard_count: u16,
 }
 
 impl Default for AggregateConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            layout: AggregateLayout::Shard,
             max_blob_size: 64 * 1024 * 1024, // 64MB
             file_threshold: 1024 * 1024,     // 1MB
+            shard_count: DEFAULT_AGGREGATE_SHARDS,
         }
     }
 }
@@ -100,26 +131,38 @@ impl AggregateConfig {
         self
     }
 
+    /// Selects the aggregation layout.
+    pub fn layout(mut self, layout: AggregateLayout) -> Self {
+        self.layout = layout;
+        self
+    }
+
     /// Sets the file threshold for aggregation.
     pub fn file_threshold(mut self, threshold: u64) -> Self {
         self.file_threshold = threshold;
         self
     }
+
+    /// Sets shard count for global aggregation layout.
+    pub fn shard_count(mut self, count: u16) -> Self {
+        self.shard_count = count.max(1);
+        self
+    }
 }
 
 /// In-memory index for aggregate files during backup.
-/// Maps directory paths to their pending aggregation buffers.
+/// Maps strategy keys (directory path or shard key) to their pending buffers.
 #[derive(Debug, Default)]
 pub struct AggregateBuffer {
-    /// Directory path -> pending files for aggregation
-    pub dir_buffers: HashMap<String, DirAggregateBuffer>,
+    /// Buffer key -> pending files for aggregation
+    pub buffers: HashMap<String, PendingAggregateBuffer>,
 }
 
-/// Buffer for aggregating files within a single directory.
+/// Buffer for aggregating files within one logical aggregation bucket.
 #[derive(Debug)]
-pub struct DirAggregateBuffer {
-    /// Directory path
-    pub dir_path: String,
+pub struct PendingAggregateBuffer {
+    /// Buffer key (`shard-000`, `a/b`, `""`, ...)
+    pub key: String,
     /// Files pending aggregation
     pub pending_files: Vec<PendingFile>,
     /// Current buffer size in bytes
@@ -131,8 +174,8 @@ pub struct DirAggregateBuffer {
 /// A file waiting to be aggregated.
 #[derive(Debug)]
 pub struct PendingFile {
-    /// File metadata
-    pub file_name: String,
+    /// Original file path relative to the repo root
+    pub relative_path: String,
     /// File content
     pub data: Vec<u8>,
     /// File metadata
@@ -143,11 +186,11 @@ pub struct PendingFile {
     pub acl: Option<String>,
 }
 
-impl DirAggregateBuffer {
-    /// Creates a new directory buffer with the specified max size.
-    pub fn new(dir_path: String, max_size: u64) -> Self {
+impl PendingAggregateBuffer {
+    /// Creates a new aggregation buffer with the specified max size.
+    pub fn new(key: String, max_size: u64) -> Self {
         Self {
-            dir_path,
+            key,
             pending_files: Vec::new(),
             current_size: 0,
             max_size,
@@ -177,8 +220,8 @@ impl DirAggregateBuffer {
 /// Information for restoring a file from an aggregate blob.
 #[derive(Debug, Clone)]
 pub struct AggregateRestoreInfo {
-    /// Blob filename
-    pub blob_name: String,
+    /// Blob path relative to repo root
+    pub blob_path: String,
     /// Offset within the blob
     pub offset: u64,
     /// Size of the file
@@ -203,6 +246,8 @@ pub struct AggregateStats {
     pub blob_bytes: u64,
     /// Total bytes of original files
     pub original_bytes: u64,
+    /// Number of shards that emitted at least one blob
+    pub active_shards: u64,
 }
 
 /// Generate a unique blob filename using timestamp and counter.
@@ -350,6 +395,7 @@ mod tests {
     fn test_aggregate_config_default() {
         let config = AggregateConfig::default();
         assert!(!config.enabled);
+        assert_eq!(config.layout, AggregateLayout::Shard);
         assert_eq!(config.max_blob_size, 64 * 1024 * 1024);
         assert_eq!(config.file_threshold, 1024 * 1024);
     }
@@ -365,11 +411,11 @@ mod tests {
 
     #[test]
     fn test_dir_buffer() {
-        let mut buffer = DirAggregateBuffer::new("/test".to_string(), 100);
+        let mut buffer = PendingAggregateBuffer::new("dir".to_string(), 100);
         assert!(buffer.is_empty());
 
         let file = PendingFile {
-            file_name: "test.txt".to_string(),
+            relative_path: "test.txt".to_string(),
             data: vec![0u8; 50],
             ctime: 0,
             mtime: 0,
@@ -383,7 +429,7 @@ mod tests {
         assert!(!buffer.is_empty());
 
         let file2 = PendingFile {
-            file_name: "test2.txt".to_string(),
+            relative_path: "test2.txt".to_string(),
             data: vec![0u8; 60],
             ctime: 0,
             mtime: 0,

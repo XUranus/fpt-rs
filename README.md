@@ -89,8 +89,19 @@ Aggregated backup:
   --data /opt/dataset/source \
   --target /backup/root \
   --format aggregated \
+  --aggregate-layout shard \
   --blob-size 64 \
   --threshold 1024
+```
+
+Alternative directory-level aggregate layout:
+
+```bash
+./target/release/fptcli backup \
+  --data /opt/dataset/source \
+  --target /backup/root \
+  --format aggregated \
+  --aggregate-layout dir-level
 ```
 
 Restore:

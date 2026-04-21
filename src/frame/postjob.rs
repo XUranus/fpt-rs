@@ -25,6 +25,7 @@
 use std::io;
 use std::path::Path;
 
+use crate::backup::aggregate::AggregateLayout;
 use crate::frame::location::DataLocation;
 use crate::frame::repo::RepoLayout;
 
@@ -99,7 +100,16 @@ pub struct BackupManifest {
     pub target: String,    // DataLocation::display_string()
     pub created_at: String,
     pub base_copy: Option<String>,
+    pub aggregation: Option<AggregationManifest>,
     pub subtasks: Vec<SubtaskRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AggregationManifest {
+    pub layout: AggregateLayout,
+    pub max_blob_size: u64,
+    pub file_threshold: u64,
+    pub shard_count: u16,
 }
 
 /// One entry in the manifest's subtask list.

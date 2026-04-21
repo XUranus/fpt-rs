@@ -12,6 +12,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::backup::aggregate::AggregateConfig;
 use crate::backup::{RestoreOption, RestorePolicy, RestoreTask};
 use crate::frame::traits::{FileRestore, TransferStats};
 
@@ -36,6 +37,8 @@ pub struct RestoreConfig {
     pub control_file: PathBuf,
     /// Conflict resolution policy.
     pub policy: RestorePolicy,
+    /// Aggregation layout/settings from the backup manifest.
+    pub aggregate_config: AggregateConfig,
 }
 
 impl RestoreConfig {
@@ -55,11 +58,17 @@ impl RestoreConfig {
             ctrl_dir: ctrl_dir.into(),
             control_file: control_file.into(),
             policy: RestorePolicy::Replace,
+            aggregate_config: AggregateConfig::default(),
         }
     }
 
     pub fn policy(mut self, p: RestorePolicy) -> Self {
         self.policy = p;
+        self
+    }
+
+    pub fn aggregate_config(mut self, cfg: AggregateConfig) -> Self {
+        self.aggregate_config = cfg;
         self
     }
 }
@@ -115,7 +124,8 @@ impl FileRestore for LocalFileRestore {
             cfg.ctrl_dir.clone(),
             cfg.control_file.clone(),
         )
-        .policy(cfg.policy);
+        .policy(cfg.policy)
+        .aggregate_config(cfg.aggregate_config);
 
         run_restore_task(option)
     }
@@ -162,6 +172,7 @@ mod nfs_impl {
                 cfg.control_file.clone(),
             )
             .policy(cfg.policy)
+            .aggregate_config(cfg.aggregate_config)
             .nfs_target(self.nfs_target.clone());
 
             run_restore_task(option)
@@ -202,6 +213,7 @@ mod smb_impl {
                 cfg.control_file.clone(),
             )
             .policy(cfg.policy)
+            .aggregate_config(cfg.aggregate_config)
             .smb_target(self.smb_target.clone());
 
             run_restore_task(option)

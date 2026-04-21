@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::thread;
 use uuid::Uuid;
 
+use crate::backup::aggregate::AggregateConfig;
 use crate::backup::RestorePolicy;
 use crate::frame::location::DataLocation;
 use crate::frame::postjob::BackupManifest;
@@ -169,6 +170,17 @@ impl BackupRestoreJob for FileRestoreJob {
             RestoreJobError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
         })?;
         let restore_source_base = parse_manifest_source_base(&manifest.source);
+        let aggregate_config = manifest
+            .aggregation
+            .as_ref()
+            .map(|agg| {
+                AggregateConfig::enabled()
+                    .layout(agg.layout)
+                    .max_blob_size(agg.max_blob_size)
+                    .file_threshold(agg.file_threshold)
+                    .shard_count(agg.shard_count)
+            })
+            .unwrap_or_default();
 
         let ctrl_files = find_restore_control_files(&repo.ctrl_dir);
         log::info!("{} restore control file(s) found", ctrl_files.len());
@@ -208,7 +220,7 @@ impl BackupRestoreJob for FileRestoreJob {
                     subtask_uuid: subtask_uuid.clone(),
                     control_file: ctrl_file,
                     source_dir: repo.d_repo.clone(),
-                    aggregate_config: crate::backup::aggregate::AggregateConfig::default(),
+                    aggregate_config,
                     enable_hardlink: false,
                     enable_delete: false,
                     enable_mtime: false,

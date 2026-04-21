@@ -250,8 +250,9 @@ fn aggregate_one_local_file(
     src_path: &Path,
 ) -> io::Result<()> {
     let data = std::fs::read(src_path)?;
+    let relative_path = agg_state.engine.relative_path_for_source(src_path);
     let pending = PendingFile {
-        file_name: meta.common.name.clone(),
+        relative_path: relative_path.clone(),
         data,
         ctime: meta.common.ctime as u64,
         mtime: meta.common.mtime as u64,
@@ -259,36 +260,35 @@ fn aggregate_one_local_file(
         xattrs: meta.common.xattributes.clone(),
         acl: meta.common.posix_access_acl.clone(),
     };
-    let dir_path = src_path
-        .parent()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
 
-    if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
-        write_aggregate_blob(agg_state, stats, &dir, files);
+    if let Some((bucket_key, files)) = agg_state.add_file(&relative_path, pending) {
+        write_aggregate_blob(agg_state, stats, &bucket_key, files);
     }
     Ok(())
 }
 
 fn flush_aggregate_state(agg_state: &AggregateBackupState, stats: &BackupStats) {
-    for (dir, files) in agg_state.flush_all() {
-        write_aggregate_blob(agg_state, stats, &dir, files);
+    for (bucket_key, files) in agg_state.flush_all() {
+        write_aggregate_blob(agg_state, stats, &bucket_key, files);
+    }
+    if let Err(e) = agg_state.engine.flush_all_indexes() {
+        error!("Failed to flush aggregate indexes: {}", e);
     }
 }
 
 fn write_aggregate_blob(
     agg_state: &AggregateBackupState,
     stats: &BackupStats,
-    dir: &str,
+    bucket_key: &str,
     files: Vec<PendingFile>,
 ) {
     let file_count = files.len() as u64;
     let bytes_in_blob: u64 = files.iter().map(|f| f.data.len() as u64).sum();
-    match agg_state.engine.create_blob(dir, files) {
+    match agg_state.engine.create_blob(bucket_key, files) {
         Ok(blob_meta) => {
             info!(
-                "Created blob {} for dir {} with {} files",
-                blob_meta.blob_name, dir, blob_meta.file_count
+                "Created blob {} for bucket {} with {} files",
+                blob_meta.blob_path, bucket_key, blob_meta.file_count
             );
             stats.files_copied.fetch_add(file_count, Ordering::Relaxed);
             stats
@@ -296,7 +296,10 @@ fn write_aggregate_blob(
                 .fetch_add(bytes_in_blob, Ordering::Relaxed);
         }
         Err(e) => {
-            error!("Failed to create aggregate blob for dir {}: {}", dir, e);
+            error!(
+                "Failed to create aggregate blob for bucket {}: {}",
+                bucket_key, e
+            );
             stats
                 .files_failed
                 .fetch_add(file_count.max(1), Ordering::Relaxed);

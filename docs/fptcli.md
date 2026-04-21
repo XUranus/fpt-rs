@@ -12,10 +12,11 @@ It combines:
 
 ## Path Syntax
 
-`fptcli` now infers local vs NFS locations from the path string itself.
+`fptcli` now infers local vs remote locations from the path string itself.
 
 - Local path: `/opt/dataset/source`
 - NFS path: `nfs://127.0.0.1/opt/dataset?sub=/source`
+- SMB path: `smb://127.0.0.1/share/root?username=u&password=p`
 
 The older split flags such as `--data-nfs` and `--target-nfs` are not used anymore.
 
@@ -42,6 +43,7 @@ Main options:
 | `--mtime` | Enable mtime phase for common-format backup |
 | `--blob-size` | Aggregated blob size in MB |
 | `--threshold` | Aggregation threshold in KB |
+| `--aggregate-layout` | Aggregated layout: `dir-level` or `shard` |
 | `--nfs-connections` | NFS connection count |
 | `--nfs-uid` | AUTH_UNIX uid override |
 | `--nfs-gid` | AUTH_UNIX gid override |
@@ -114,6 +116,7 @@ Full backup:
   --data /opt/dataset/source \
   --target /backup/root \
   --format aggregated \
+  --aggregate-layout shard \
   --blob-size 64 \
   --threshold 1024
 ```
@@ -125,6 +128,7 @@ Incremental backup:
   --data /opt/dataset/source \
   --target /backup/root \
   --format aggregated \
+  --aggregate-layout dir-level \
   --incremental-base /backup/root/COPY_AGGR_FULL_xxx
 ```
 
