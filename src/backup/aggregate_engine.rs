@@ -72,7 +72,7 @@ pub struct AggregateBackupEngine {
     /// Base target directory
     target_base: PathBuf,
     /// Source to target directory mapping
-    dir_info: Mutex<HashMap<String, DirAggregateInfo>>,
+    dir_info: Mutex<HashMap<String, Arc<Mutex<DirAggregateInfo>>>>,
     /// Global stats
     stats: Arc<Mutex<AggregateStats>>,
     /// Snowflake ID generator for unique blob filenames
@@ -125,16 +125,21 @@ impl AggregateBackupEngine {
         source_dir: &str,
         files: Vec<PendingFile>,
     ) -> Result<AggregateBlobMeta, AggregateEngineError> {
-        // Get or create directory info
-        let mut dir_info_map = self.dir_info.lock().unwrap();
-
-        let dir_info = dir_info_map
-            .entry(source_dir.to_string())
-            .or_insert_with(|| {
-                // Create new dir info
-                let target_dir = self.source_dir_to_target(source_dir);
-                DirAggregateInfo::new(target_dir).expect("Failed to create dir info")
-            });
+        // Hold only a per-directory lock while writing a blob and updating that
+        // directory's index. Different directories can aggregate in parallel.
+        let dir_info = {
+            let mut dir_info_map = self.dir_info.lock().unwrap();
+            dir_info_map
+                .entry(source_dir.to_string())
+                .or_insert_with(|| {
+                    let target_dir = self.source_dir_to_target(source_dir);
+                    Arc::new(Mutex::new(
+                        DirAggregateInfo::new(target_dir).expect("Failed to create dir info"),
+                    ))
+                })
+                .clone()
+        };
+        let mut dir_info = dir_info.lock().unwrap();
 
         // Generate unique blob name using Snowflake algorithm
         let blob_name = self.id_generator.generate_blob_name();
@@ -234,6 +239,7 @@ impl AggregateBackupEngine {
     pub fn flush_all_indexes(&self) -> Result<(), AggregateEngineError> {
         let dir_info_map = self.dir_info.lock().unwrap();
         for (dir_path, dir_info) in dir_info_map.iter() {
+            let dir_info = dir_info.lock().unwrap();
             if let Some(ref _index) = dir_info.index {
                 info!("Flushed index for directory: {}", dir_path);
             }

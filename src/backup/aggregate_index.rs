@@ -87,20 +87,22 @@ impl AggregateIndex {
             self.add_blob_sqlite(blob_meta)?;
         }
 
-        // Also add to in-memory index as fallback
-        let mut index = self.memory_index.lock().unwrap();
-        for entry in &blob_meta.files {
-            let key = format!("{}/{}", blob_meta.dir_path, entry.file_name);
-            let info = AggregateRestoreInfo {
-                blob_name: blob_meta.blob_name.clone(),
-                offset: entry.offset,
-                size: entry.size,
-                mtime: entry.mtime,
-                mode: entry.mode,
-                xattrs: entry.xattrs.clone(),
-                acl: entry.acl.clone(),
-            };
-            index.insert(key, info);
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let mut index = self.memory_index.lock().unwrap();
+            for entry in &blob_meta.files {
+                let key = format!("{}/{}", blob_meta.dir_path, entry.file_name);
+                let info = AggregateRestoreInfo {
+                    blob_name: blob_meta.blob_name.clone(),
+                    offset: entry.offset,
+                    size: entry.size,
+                    mtime: entry.mtime,
+                    mode: entry.mode,
+                    xattrs: entry.xattrs.clone(),
+                    acl: entry.acl.clone(),
+                };
+                index.insert(key, info);
+            }
         }
 
         debug!(
