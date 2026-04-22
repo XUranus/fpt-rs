@@ -17,11 +17,13 @@ use crate::backup::aggregate::{AggregateLayout, AGGREGATE_DIR_NAME, AGGREGATE_RO
 use crate::backup::aggregate_dir_index::{read_dir_index, SQLITE_INDEX_FILE_NAME};
 use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::backup::aggregate_restore::AggregateRestoreEngine;
-use crate::backup::aio::entry::{produce_entries, EntryMapping};
+use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
-use crate::backup::fcb::{ControlBlockVarient, FileControlBlock, SourceHandleState};
+use crate::backup::copy_block::CopyBlock;
+use crate::backup::copy_plan::{produce_copy_plan, CopyPlanEntry, FileCopyPlan};
 use crate::backup::RestorePolicy;
 use crate::backup::RestoreStats;
+use crate::scanner::metadata::FileMeta;
 
 #[derive(Clone)]
 pub struct LocalRepoRestoreSource {
@@ -62,16 +64,13 @@ impl LocalRepoRestoreSource {
 }
 
 impl SourceReader for LocalRepoRestoreSource {
-    fn read_file(
+    fn read_block(
         &self,
-        mut fcb: FileControlBlock,
-    ) -> futures_util::future::BoxFuture<
-        'static,
-        Result<FileControlBlock, (FileControlBlock, String)>,
-    > {
+        mut block: CopyBlock,
+    ) -> futures_util::future::BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
         let this = self.clone();
         Box::pin(async move {
-            let rel_path = fcb.src_path.clone();
+            let rel_path = block.src_path.clone();
             let rel_path_string = rel_path.to_string_lossy().replace('\\', "/");
             let aggregate_info = match this.layout {
                 AggregateLayout::Shard => {
@@ -122,9 +121,15 @@ impl SourceReader for LocalRepoRestoreSource {
                     .map_err(|e| format!("read aggregated {:?}: {e}", rel_path)),
                 Ok(None) => {
                     let full_path = this.d_repo_base.join(&rel_path);
-                    let expected_size = fcb.meta.size;
+                    let expected_size = block.file_size;
+                    let offset = block.src_offset;
                     tokio::task::spawn_blocking(move || {
-                        crate::backup::aio::local_fs::read_local_file(&full_path, expected_size)
+                        crate::backup::aio::local_fs::read_local_file_chunk(
+                            &full_path,
+                            offset,
+                            expected_size,
+                            crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
+                        )
                     })
                     .await
                     .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")))
@@ -134,12 +139,12 @@ impl SourceReader for LocalRepoRestoreSource {
 
             match data {
                 Ok(buf) => {
-                    fcb.buffer_len = buf.len();
-                    fcb.buffer = buf;
-                    fcb.src_state = SourceHandleState::Read;
-                    Ok(fcb)
+                    block.src_offset = block.src_offset.saturating_add(buf.len() as u64);
+                    block.is_last = block.src_offset >= block.file_size;
+                    block.data = buf;
+                    Ok(block)
                 }
-                Err(msg) => Err((fcb, msg)),
+                Err(msg) => Err((block, msg)),
             }
         })
     }
@@ -164,14 +169,21 @@ pub async fn run_restore_copy_pipeline<T>(
     }
 
     let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
-    let (entry_tx, mut entry_rx) = mpsc::channel::<ControlBlockVarient>(256);
+    let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
 
     let producer_handle = {
         let entry_tx = entry_tx.clone();
         let _ = original_source_base;
         let mapping = EntryMapping::remote_to_local();
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, mapping, entry_tx, log_prefix);
+            produce_copy_plan(
+                control_file,
+                meta_dir,
+                mapping,
+                log_prefix,
+                |_| false,
+                |entry| entry_tx.blocking_send(entry).is_ok(),
+            );
         })
     };
     drop(entry_tx);
@@ -180,11 +192,11 @@ pub async fn run_restore_copy_pipeline<T>(
 
     while let Some(item) = entry_rx.recv().await {
         match item {
-            ControlBlockVarient::DirControlBlock(dcb) => {
+            CopyPlanEntry::Directory { dst_path, .. } => {
                 let target2 = target.clone();
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
-                let path = dcb.dst_path.clone();
+                let path = dst_path;
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
                     match target2.create_dir(path.clone()).await {
@@ -198,9 +210,13 @@ pub async fn run_restore_copy_pipeline<T>(
                 });
                 task_handles.push(h);
             }
-            ControlBlockVarient::FileControlBlock(fcb) => {
-                if fcb.meta.common.symlink_target_path.is_some() {
-                    debug!("{log_prefix}: skipping symlink {:?}", fcb.src_path);
+            CopyPlanEntry::File(FileCopyPlan::Direct {
+                meta,
+                src_path,
+                dst_path,
+            }) => {
+                if meta.common.symlink_target_path.is_some() {
+                    debug!("{log_prefix}: skipping symlink {:?}", src_path);
                     continue;
                 }
 
@@ -213,37 +229,74 @@ pub async fn run_restore_copy_pipeline<T>(
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
 
-                    if should_skip_restore(&fcb, local_target_base2.as_ref(), policy).await {
+                    if should_skip_restore(&meta, &dst_path, local_target_base2.as_ref(), policy)
+                        .await
+                    {
                         let mut guard = stats2.lock().unwrap();
                         guard.files_skipped += 1;
-                        guard.bytes_skipped += fcb.meta.size;
+                        guard.bytes_skipped += meta.size;
                         return;
                     }
 
-                    let restore_rel = fcb.dst_path.clone();
-                    let fcb = match source2.read_file(fcb).await {
-                        Ok(fcb) => fcb,
-                        Err((failed_fcb, msg)) => {
-                            error!("{log_prefix}: read {:?}: {msg}", failed_fcb.src_path);
+                    let restore_rel = dst_path.clone();
+                    let file_size = meta.size;
+                    let mut block = CopyBlock {
+                        meta: Arc::new(meta),
+                        src_path,
+                        dst_path,
+                        src_offset: 0,
+                        dst_offset: 0,
+                        file_size,
+                        data: Vec::new(),
+                        is_last: file_size == 0,
+                    };
+                    loop {
+                        block = match source2.read_block(block).await {
+                            Ok(block) => block,
+                            Err((failed_block, msg)) => {
+                                error!("{log_prefix}: read {:?}: {msg}", failed_block.src_path);
+                                stats2.lock().unwrap().files_failed += 1;
+                                return;
+                            }
+                        };
+
+                        if block.data_len() == 0 && !block.read_complete() {
+                            error!(
+                                "{log_prefix}: read {:?}: zero-length chunk before EOF",
+                                block.src_path
+                            );
                             stats2.lock().unwrap().files_failed += 1;
                             return;
                         }
-                    };
 
-                    match target2.write_file(fcb).await {
-                        Ok(done_fcb) => {
+                        block = match target2.write_block(block).await {
+                            Ok(block) => block,
+                            Err((failed_block, msg)) => {
+                                error!("{log_prefix}: write {:?}: {msg}", failed_block.dst_path);
+                                stats2.lock().unwrap().files_failed += 1;
+                                return;
+                            }
+                        };
+
+                        if block.read_complete() && block.write_complete() {
                             debug!("{log_prefix}: restored {:?}", restore_rel);
                             let mut guard = stats2.lock().unwrap();
                             guard.files_restored += 1;
-                            guard.bytes_restored += done_fcb.meta.size;
+                            guard.bytes_restored += block.file_size;
+                            break;
                         }
-                        Err((failed_fcb, msg)) => {
-                            error!("{log_prefix}: write {:?}: {msg}", failed_fcb.dst_path);
-                            stats2.lock().unwrap().files_failed += 1;
-                        }
+
+                        block.clear_data();
                     }
                 });
                 task_handles.push(h);
+            }
+            CopyPlanEntry::File(FileCopyPlan::Aggregate { src_path, .. }) => {
+                error!(
+                    "{log_prefix}: unexpected aggregate restore plan for {:?}",
+                    src_path
+                );
+                stats.lock().unwrap().files_failed += 1;
             }
         }
     }
@@ -276,15 +329,16 @@ pub async fn run_restore_copy_pipeline<T>(
 }
 
 async fn should_skip_restore(
-    fcb: &FileControlBlock,
+    meta: &FileMeta,
+    dst_path: &Path,
     target_local_base: Option<&PathBuf>,
     policy: RestorePolicy,
 ) -> bool {
     let Some(base) = target_local_base else {
         return false;
     };
-    let target_path = base.join(&fcb.dst_path);
-    let source_mtime = Some(UNIX_EPOCH + Duration::from_secs(fcb.meta.common.mtime as u64));
+    let target_path = base.join(dst_path);
+    let source_mtime = Some(UNIX_EPOCH + Duration::from_secs(meta.common.mtime as u64));
     let target_path2 = target_path.clone();
     tokio::task::spawn_blocking(move || {
         let metadata = std::fs::metadata(&target_path2).ok();

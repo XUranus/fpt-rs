@@ -12,9 +12,10 @@ use std::sync::Arc;
 use log::{debug, error, info};
 use tokio::sync::{mpsc, Semaphore};
 
-use crate::backup::aio::entry::{produce_entries, EntryMapping};
+use crate::backup::aio::entry::EntryMapping;
+use crate::backup::aio::executor::execute_async_file_plan;
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
-use crate::backup::fcb::ControlBlockVarient;
+use crate::backup::copy_plan::{produce_copy_plan, CopyPlanEntry};
 use crate::backup::stats::BackupStats;
 
 pub async fn run_copy_pipeline<S, T>(
@@ -31,12 +32,19 @@ pub async fn run_copy_pipeline<S, T>(
     T: TargetWriter,
 {
     let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
-    let (entry_tx, mut entry_rx) = mpsc::channel::<ControlBlockVarient>(256);
+    let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
 
     let producer_handle = {
         let entry_tx = entry_tx.clone();
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, mapping, entry_tx, log_prefix);
+            produce_copy_plan(
+                control_file,
+                meta_dir,
+                mapping,
+                log_prefix,
+                |_| false,
+                |entry| entry_tx.blocking_send(entry).is_ok(),
+            );
         })
     };
     drop(entry_tx);
@@ -45,11 +53,11 @@ pub async fn run_copy_pipeline<S, T>(
 
     while let Some(item) = entry_rx.recv().await {
         match item {
-            ControlBlockVarient::DirControlBlock(dcb) => {
+            CopyPlanEntry::Directory { dst_path, .. } => {
                 let target2 = target.clone();
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
-                let path = dcb.dst_path.clone();
+                let path = dst_path;
                 debug!("{log_prefix}: mkdir {:?}", path);
 
                 let h = tokio::spawn(async move {
@@ -66,12 +74,7 @@ pub async fn run_copy_pipeline<S, T>(
                 });
                 task_handles.push(h);
             }
-            ControlBlockVarient::FileControlBlock(fcb) => {
-                if fcb.meta.common.symlink_target_path.is_some() {
-                    debug!("{log_prefix}: skipping symlink {:?}", fcb.src_path);
-                    continue;
-                }
-
+            CopyPlanEntry::File(plan) => {
                 let source2 = source.clone();
                 let target2 = target.clone();
                 let stats2 = Arc::clone(&stats);
@@ -79,51 +82,7 @@ pub async fn run_copy_pipeline<S, T>(
 
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
-
-                    let read_path = fcb.src_path.clone();
-                    let write_path = fcb.dst_path.clone();
-
-                    let mut fcb = fcb;
-                    loop {
-                        fcb = match source2.read_file(fcb).await {
-                            Ok(fcb) => fcb,
-                            Err((fcb, msg)) => {
-                                error!("{log_prefix}: read {:?}: {msg}", fcb.src_path);
-                                stats2.files_failed.fetch_add(1, Ordering::Relaxed);
-                                return;
-                            }
-                        };
-
-                        if fcb.buffer_len == 0 && fcb.src_offset < fcb.meta.size {
-                            error!(
-                                "{log_prefix}: read {:?}: zero-length chunk before EOF",
-                                fcb.src_path
-                            );
-                            stats2.files_failed.fetch_add(1, Ordering::Relaxed);
-                            return;
-                        }
-
-                        fcb = match target2.write_file(fcb).await {
-                            Ok(done_fcb) => done_fcb,
-                            Err((fcb, msg)) => {
-                                error!("{log_prefix}: write {:?}: {msg}", fcb.dst_path);
-                                stats2.files_failed.fetch_add(1, Ordering::Relaxed);
-                                return;
-                            }
-                        };
-
-                        if fcb.src_offset >= fcb.meta.size {
-                            debug!("{log_prefix}: copied {:?} -> {:?}", read_path, write_path);
-                            stats2.files_copied.fetch_add(1, Ordering::Relaxed);
-                            stats2
-                                .bytes_copied
-                                .fetch_add(fcb.meta.size, Ordering::Relaxed);
-                            break;
-                        }
-
-                        fcb.buffer.clear();
-                        fcb.buffer_len = 0;
-                    }
+                    execute_async_file_plan(plan, source2, target2, stats2, log_prefix).await;
                 });
                 task_handles.push(h);
             }

@@ -11,11 +11,9 @@
 
 use std::path::PathBuf;
 
-use log::{error, info};
-use tokio::sync::mpsc;
-
 use crate::backup::fcb::{ControlBlockVarient, DirControlBlock, FileControlBlock};
 use crate::scanner::metadata::{ControlEntry, ControlFileReader, MetaRepoReader};
+use log::{error, info};
 
 #[derive(Debug, Clone)]
 pub enum PathLayout {
@@ -72,18 +70,21 @@ impl EntryMapping {
     }
 }
 
-pub fn produce_entries(
+pub(crate) fn produce_entries_for_each<F>(
     control_file: PathBuf,
     meta_dir: PathBuf,
     mapping: EntryMapping,
-    tx: mpsc::Sender<ControlBlockVarient>,
     log_prefix: &str,
-) {
+    mut on_entry: F,
+) -> usize
+where
+    F: FnMut(ControlBlockVarient) -> bool,
+{
     let meta_repo = match MetaRepoReader::new(meta_dir) {
         Ok(r) => r,
         Err(e) => {
             error!("{log_prefix}: cannot open meta repo: {e}");
-            return;
+            return 0;
         }
     };
 
@@ -91,7 +92,7 @@ pub fn produce_entries(
         Ok(r) => r,
         Err(e) => {
             error!("{log_prefix}: cannot open control file: {e}");
-            return;
+            return 0;
         }
     };
     let logical_source_root = PathBuf::from(reader.header().source_root.clone());
@@ -152,13 +153,14 @@ pub fn produce_entries(
             }
         };
 
-        if tx.blocking_send(item).is_err() {
+        if !on_entry(item) {
             break;
         }
         entry_count += 1;
     }
 
     info!("{log_prefix}: done, {entry_count} entries produced");
+    entry_count
 }
 
 fn map_control_path(

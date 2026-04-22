@@ -26,16 +26,6 @@ pub fn read_local_file_chunk(
     Ok(buf)
 }
 
-/// Read the entire content of a local file into memory.
-pub fn read_local_file(path: &PathBuf, expected_size: u64) -> Result<Vec<u8>, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("open {path:?}: {e}"))?;
-    let cap = (expected_size as usize).min(64 * 1024 * 1024);
-    let mut buf = Vec::with_capacity(cap);
-    file.read_to_end(&mut buf)
-        .map_err(|e| format!("read {path:?}: {e}"))?;
-    Ok(buf)
-}
-
 /// Write a byte buffer to a local file at the given offset.
 pub fn write_local_file_chunk(path: &PathBuf, offset: u64, buf: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {

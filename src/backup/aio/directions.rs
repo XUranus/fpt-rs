@@ -10,13 +10,12 @@ use tokio::sync::{mpsc, Semaphore};
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::aio::aggregation::AggregatingTarget;
-use crate::backup::aio::entry::produce_entries;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
 use crate::backup::aio::transport::{
     clamp_copy_buffer_size, LocalSource, LocalTarget, TargetWriter,
 };
-use crate::backup::fcb::ControlBlockVarient;
+use crate::backup::copy_plan::{produce_copy_plan, CopyPlanEntry, FileCopyPlan};
 use crate::backup::stats::BackupStats;
 
 #[cfg(feature = "nfs")]
@@ -322,7 +321,7 @@ async fn run_smb_to_smb_streaming_pipeline(
         buffer_size: copy_buffer_size,
     };
     let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
-    let (entry_tx, mut entry_rx) = mpsc::channel::<ControlBlockVarient>(256);
+    let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
     let target_dir_cache = dir_target.dir_cache.clone();
     let copy_metrics = Arc::new(crate::smb::aio::SmbCopyMetrics::default());
     let mut dir_entries = 0u64;
@@ -334,7 +333,14 @@ async fn run_smb_to_smb_streaming_pipeline(
     let producer_handle = {
         let entry_tx = entry_tx.clone();
         tokio::task::spawn_blocking(move || {
-            produce_entries(control_file, meta_dir, mapping, entry_tx, "SMB->SMB");
+            produce_copy_plan(
+                control_file,
+                meta_dir,
+                mapping,
+                "SMB->SMB",
+                |_| false,
+                |entry| entry_tx.blocking_send(entry).is_ok(),
+            );
         })
     };
     drop(entry_tx);
@@ -343,23 +349,32 @@ async fn run_smb_to_smb_streaming_pipeline(
 
     while let Some(item) = entry_rx.recv().await {
         match item {
-            ControlBlockVarient::DirControlBlock(dcb) => {
+            CopyPlanEntry::Directory { dst_path, .. } => {
                 dir_entries += 1;
-                dir_paths.push(dcb.dst_path);
+                dir_paths.push(dst_path);
             }
-            ControlBlockVarient::FileControlBlock(fcb) => {
+            CopyPlanEntry::File(FileCopyPlan::Direct {
+                meta,
+                src_path,
+                dst_path,
+            }) => {
                 file_entries += 1;
-                if fcb.meta.common.symlink_target_path.is_some() {
-                    debug!("SMB->SMB: skipping symlink {:?}", fcb.src_path);
+                if meta.common.symlink_target_path.is_some() {
+                    debug!("SMB->SMB: skipping symlink {:?}", src_path);
                     continue;
                 }
 
-                let read_path = fcb.src_path.clone();
-                let write_path = fcb.dst_path.clone();
-                let src_rel = fcb.src_path.to_string_lossy().replace('\\', "/");
-                let dst_rel = fcb.dst_path.to_string_lossy().replace('\\', "/");
-                let file_size = fcb.meta.size;
+                let read_path = src_path.clone();
+                let write_path = dst_path.clone();
+                let src_rel = src_path.to_string_lossy().replace('\\', "/");
+                let dst_rel = dst_path.to_string_lossy().replace('\\', "/");
+                let file_size = meta.size;
                 file_jobs.push((read_path, write_path, src_rel, dst_rel, file_size));
+            }
+            CopyPlanEntry::File(FileCopyPlan::Aggregate { src_path, .. }) => {
+                file_entries += 1;
+                error!("SMB->SMB: unexpected aggregate plan for {:?}", src_path);
+                stats.files_failed.fetch_add(1, Ordering::Relaxed);
             }
         }
     }

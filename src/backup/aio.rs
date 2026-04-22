@@ -40,6 +40,7 @@ pub const DEFAULT_SMB_POOL_SIZE: usize = 2;
 mod aggregation;
 mod directions;
 pub(crate) mod entry;
+mod executor;
 pub(crate) mod local_fs;
 mod pipeline;
 pub(crate) mod transport;

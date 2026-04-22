@@ -53,7 +53,7 @@ This is the NFS-involved backup execution layer.
 - `nfs_to_local.rs`
 - `nfs_to_nfs.rs`
 
-`src/backup/aio/copy.rs` is no longer the direction module name. Local-to-NFS copy logic now lives in `local_to_nfs.rs`.
+NFS copy logic now uses the shared async transport pipeline. Direction wrappers live in `src/backup/aio/directions.rs`; the actual copy loop is in `src/backup/aio/pipeline.rs` and runs over `SourceReader` / `TargetWriter` adapters.
 
 ## Backup Direction Support
 
@@ -65,7 +65,7 @@ For common-format backup, the current implementation supports all four phases in
 | NFS -> local | yes | yes | yes | yes |
 | NFS -> NFS | yes | yes | yes | yes |
 
-Local-to-local continues to use the blocking BIO path.
+Local-to-local continues to use the blocking local entry point, but it now consumes the same `CopyPlanEntry` model and uses bounded block copy workers rather than the old whole-file FCB queue graph.
 
 Important exception:
 
@@ -77,8 +77,12 @@ The current split is:
 
 - `src/backup.rs`: top-level task dispatch
 - `src/backup/bio.rs`: local/BIO pipeline bootstrap
-- `src/backup/aio/mod.rs`: NFS runtime bootstrap, Tokio runtime creation, connection-pool creation, and direction dispatch
-- `src/backup/aio/*.rs`: direction-specific copy pipelines
+- `src/backup/copy_plan.rs`: shared control-file-to-copy-plan production
+- `src/backup/copy_block.rs`: bounded transfer unit used by async adapters and restore
+- `src/backup/aio.rs`: NFS runtime bootstrap, Tokio runtime creation, connection-pool creation, and direction dispatch
+- `src/backup/aio/directions.rs`: thin direction wrappers
+- `src/backup/aio/pipeline.rs`: generic async copy executor
+- `src/backup/aio/transport.rs`: local/NFS/SMB source and target adapters
 - `src/nfs/aio/*.rs`: NFS post-copy phase helpers
 
 This keeps NFS-specific runtime setup out of `backup.rs`.

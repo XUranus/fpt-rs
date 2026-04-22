@@ -16,6 +16,19 @@ use crate::backup::aggregate::{
 use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
 use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::backup::fcb::FileControlBlock;
+use crate::backup::local_block::copy_exact_file_to_writer;
+
+#[derive(Debug)]
+pub struct PendingLocalFile {
+    pub relative_path: String,
+    pub source_path: PathBuf,
+    pub size: u64,
+    pub ctime: u64,
+    pub mtime: u64,
+    pub mode: u32,
+    pub xattrs: Option<String>,
+    pub acl: Option<String>,
+}
 
 pub struct AggregateBackupEngine {
     pub config: AggregateConfig,
@@ -80,30 +93,8 @@ impl AggregateBackupEngine {
         files: Vec<PendingFile>,
     ) -> Result<AggregateBlobMeta, AggregateEngineError> {
         let blob_name = self.id_generator.generate_blob_name();
-        let (blob_rel_path, blob_path, shard_id) = match self.config.layout {
-            AggregateLayout::Shard => {
-                let shard_dir = PathBuf::from(AGGREGATE_ROOT_DIR).join(bucket_key);
-                std::fs::create_dir_all(self.target_base.join(&shard_dir))?;
-                let rel = shard_dir
-                    .join(&blob_name)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let shard_id = bucket_key
-                    .strip_prefix("shard-")
-                    .and_then(|n| n.parse::<u16>().ok())
-                    .unwrap_or(0);
-                (rel.clone(), self.target_base.join(&rel), shard_id)
-            }
-            AggregateLayout::DirLevel => {
-                let aggr_dir = aggregate_dir_for(bucket_key);
-                std::fs::create_dir_all(self.target_base.join(&aggr_dir))?;
-                let rel = aggr_dir
-                    .join(&blob_name)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                (rel.clone(), self.target_base.join(&rel), 0)
-            }
-        };
+        let (blob_rel_path, blob_path, shard_id) =
+            self.prepare_blob_path(bucket_key, &blob_name)?;
 
         debug!(
             "Writing aggregate blob {:?} ({} files)",
@@ -135,6 +126,137 @@ impl AggregateBackupEngine {
         blob_file.flush()?;
         drop(blob_file);
 
+        self.finish_blob(bucket_key, blob_rel_path, total_size, entries, shard_id)
+    }
+
+    pub fn create_blob_from_local_files(
+        &self,
+        bucket_key: &str,
+        files: Vec<PendingLocalFile>,
+        scratch: &mut [u8],
+    ) -> Result<AggregateBlobMeta, AggregateEngineError> {
+        let blob_name = self.id_generator.generate_blob_name();
+        let (blob_rel_path, blob_path, shard_id) =
+            self.prepare_blob_path(bucket_key, &blob_name)?;
+
+        debug!(
+            "Writing aggregate blob {:?} from {} local files",
+            blob_path,
+            files.len()
+        );
+        let mut blob_file = File::create(&blob_path)?;
+        let mut entries = Vec::with_capacity(files.len());
+        let mut current_offset = 0_u64;
+        let mut total_size = 0_u64;
+
+        for file in files {
+            copy_exact_file_to_writer(&file.source_path, file.size, &mut blob_file, scratch)?;
+
+            entries.push(AggregateFileEntry {
+                relative_path: file.relative_path,
+                offset: current_offset,
+                size: file.size,
+                ctime: file.ctime,
+                mtime: file.mtime,
+                mode: file.mode,
+                xattrs: file.xattrs,
+                acl: file.acl,
+            });
+            current_offset += file.size;
+            total_size += file.size;
+        }
+
+        blob_file.flush()?;
+        drop(blob_file);
+        self.finish_blob(bucket_key, blob_rel_path, total_size, entries, shard_id)
+    }
+
+    pub fn flush_all_indexes(&self) -> Result<(), AggregateEngineError> {
+        match self.config.layout {
+            AggregateLayout::Shard => {
+                self.shard_index
+                    .as_ref()
+                    .expect("missing shard index")
+                    .flush()?;
+                info!("Aggregate shard index flushed");
+            }
+            AggregateLayout::DirLevel => {
+                let dir_indexes = self.dir_indexes.lock().unwrap();
+                for (dir_rel, blobs) in dir_indexes.iter() {
+                    let path = self
+                        .target_base
+                        .join(aggregate_dir_for(dir_rel))
+                        .join(SQLITE_INDEX_FILE_NAME);
+                    write_dir_index(&path, blobs).map_err(AggregateEngineError::Other)?;
+                }
+                info!("Aggregate dir-level indexes flushed");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn stats(&self) -> AggregateStats {
+        self.stats.lock().unwrap().clone()
+    }
+
+    fn shard_for_relative_path_with_hint(&self, relative_path: &str, extra_bytes: u64) -> u16 {
+        let mut hash: u64 = 1469598103934665603;
+        for b in relative_path.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(1099511628211);
+        }
+        (hash % self.preferred_shard_count(extra_bytes) as u64) as u16
+    }
+
+    fn preferred_shard_count(&self, extra_bytes: u64) -> u16 {
+        let max_shards = self.config.shard_count.max(1);
+        let written_bytes = self.stats.lock().unwrap().original_bytes;
+        let bytes_seen = written_bytes.saturating_add(extra_bytes);
+        let blob_size = self.config.max_blob_size.max(1);
+        let desired = ((bytes_seen / blob_size).saturating_add(1)) as u16;
+        desired.clamp(1, max_shards)
+    }
+
+    fn prepare_blob_path(
+        &self,
+        bucket_key: &str,
+        blob_name: &str,
+    ) -> Result<(String, PathBuf, u16), AggregateEngineError> {
+        let prepared = match self.config.layout {
+            AggregateLayout::Shard => {
+                let shard_dir = PathBuf::from(AGGREGATE_ROOT_DIR).join(bucket_key);
+                std::fs::create_dir_all(self.target_base.join(&shard_dir))?;
+                let rel = shard_dir
+                    .join(blob_name)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let shard_id = bucket_key
+                    .strip_prefix("shard-")
+                    .and_then(|n| n.parse::<u16>().ok())
+                    .unwrap_or(0);
+                (rel.clone(), self.target_base.join(&rel), shard_id)
+            }
+            AggregateLayout::DirLevel => {
+                let aggr_dir = aggregate_dir_for(bucket_key);
+                std::fs::create_dir_all(self.target_base.join(&aggr_dir))?;
+                let rel = aggr_dir
+                    .join(blob_name)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                (rel.clone(), self.target_base.join(&rel), 0)
+            }
+        };
+        Ok(prepared)
+    }
+
+    fn finish_blob(
+        &self,
+        bucket_key: &str,
+        blob_rel_path: String,
+        total_size: u64,
+        entries: Vec<AggregateFileEntry>,
+        shard_id: u16,
+    ) -> Result<AggregateBlobMeta, AggregateEngineError> {
         let blob_meta = AggregateBlobMeta {
             blob_path: blob_rel_path.clone(),
             blob_size: total_size,
@@ -187,52 +309,6 @@ impl AggregateBackupEngine {
             total_size
         );
         Ok(blob_meta)
-    }
-
-    pub fn flush_all_indexes(&self) -> Result<(), AggregateEngineError> {
-        match self.config.layout {
-            AggregateLayout::Shard => {
-                self.shard_index
-                    .as_ref()
-                    .expect("missing shard index")
-                    .flush()?;
-                info!("Aggregate shard index flushed");
-            }
-            AggregateLayout::DirLevel => {
-                let dir_indexes = self.dir_indexes.lock().unwrap();
-                for (dir_rel, blobs) in dir_indexes.iter() {
-                    let path = self
-                        .target_base
-                        .join(aggregate_dir_for(dir_rel))
-                        .join(SQLITE_INDEX_FILE_NAME);
-                    write_dir_index(&path, blobs).map_err(AggregateEngineError::Other)?;
-                }
-                info!("Aggregate dir-level indexes flushed");
-            }
-        }
-        Ok(())
-    }
-
-    pub fn stats(&self) -> AggregateStats {
-        self.stats.lock().unwrap().clone()
-    }
-
-    fn shard_for_relative_path_with_hint(&self, relative_path: &str, extra_bytes: u64) -> u16 {
-        let mut hash: u64 = 1469598103934665603;
-        for b in relative_path.as_bytes() {
-            hash ^= *b as u64;
-            hash = hash.wrapping_mul(1099511628211);
-        }
-        (hash % self.preferred_shard_count(extra_bytes) as u64) as u16
-    }
-
-    fn preferred_shard_count(&self, extra_bytes: u64) -> u16 {
-        let max_shards = self.config.shard_count.max(1);
-        let written_bytes = self.stats.lock().unwrap().original_bytes;
-        let bytes_seen = written_bytes.saturating_add(extra_bytes);
-        let blob_size = self.config.max_blob_size.max(1);
-        let desired = ((bytes_seen / blob_size).saturating_add(1)) as u16;
-        desired.clamp(1, max_shards)
     }
 }
 

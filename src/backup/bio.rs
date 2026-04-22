@@ -7,8 +7,6 @@ use crate::backup::aggregate::AggregateConfig;
 use crate::backup::stats::BackupStats;
 use crate::backup::SharedState;
 
-#[allow(dead_code)]
-pub mod copy;
 pub mod delete;
 pub mod hardlink;
 pub mod local_copy;

@@ -58,8 +58,11 @@ Outputs:
 
 Responsible for executing backup subtasks.
 
-- `bio/`: blocking local-filesystem pipeline
-- `aio/`: NFS-involved backup pipelines
+- `copy_plan.rs`: turns control-file entries plus metadata into transport-neutral copy plans
+- `copy_block.rs`: bounded transfer block shared by local, NFS, SMB, and restore copy loops
+- `bio/`: blocking local-filesystem entry point and local post-copy phases
+- `aio/`: async transport adapters and remote-capable copy pipelines
+- `local_executor.rs`, `local_block.rs`, `local_metadata.rs`: local copy, block I/O, and metadata helpers
 - `aggregate*.rs`: aggregated-format backup and restore support
 - `backup.rs`: top-level backup task dispatch
 
@@ -71,6 +74,13 @@ For common-format backup, the phase order is:
 4. mtime
 
 For aggregated-format backup, only the copy phase is active.
+
+The copy phase is planned once and then executed by the selected transport path:
+
+- Local-to-local uses a bounded blocking worker pool over `FileCopyPlan`.
+- Local/NFS/SMB combinations use `SourceReader` and `TargetWriter` adapters over `CopyBlock`.
+- SMB-to-SMB common backup keeps its direct streaming fast path, but still consumes the shared copy plan.
+- Restore copy also consumes the shared copy plan, reading from the local `D_REPO` or aggregate blobs and writing through the selected target adapter.
 
 ### `src/frame/`
 
@@ -95,24 +105,25 @@ NFS support used by scanning and NFS-involved backup phases.
 - `aio/delete.rs`: NFS delete phase
 - `aio/mtime.rs`: NFS mtime phase
 
-## Local vs NFS Paths
+## Local, NFS, and SMB Paths
 
 At the orchestration layer, source and target are represented as `DataLocation`.
 
 - Local paths use ordinary filesystem paths.
 - NFS paths are represented by `NfsLocation`.
-- `fptcli` infers which one to build from the path string: plain path means local, `nfs://...` means NFS.
+- SMB paths are represented by `SmbLocation`.
+- `fptcli` infers which one to build from the path string: plain path means local, `nfs://...` means NFS, and `smb://...` means SMB.
 
 ## Backup Direction Matrix
 
-For common-format backup, all four directions are wired:
+For common-format backup, local/NFS/SMB source and target combinations are routed through the copy-plan layer:
 
 | Direction | Copy engine | Post-copy phases |
 |-----------|-------------|------------------|
-| local -> local | `backup::bio` | local hardlink/delete/mtime |
-| local -> NFS | `backup::aio::local_to_nfs` | NFS hardlink/delete/mtime |
-| NFS -> local | `backup::aio::nfs_to_local` | local hardlink/delete/mtime |
-| NFS -> NFS | `backup::aio::nfs_to_nfs` | NFS hardlink/delete/mtime |
+| local -> local | `backup::bio::local_copy` + `local_executor` | local hardlink/delete/mtime |
+| local -> NFS/SMB | `backup::aio::pipeline` with local source and remote target adapters | target hardlink/delete/mtime |
+| NFS/SMB -> local | `backup::aio::pipeline` with remote source and local target adapters | local hardlink/delete/mtime |
+| NFS/SMB -> NFS/SMB | `backup::aio::pipeline`; SMB -> SMB common uses optimized streaming | target hardlink/delete/mtime |
 
 For aggregated-format backup, only the copy phase runs.
 

@@ -16,6 +16,7 @@ use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME
 use crate::backup::aggregate_engine::parent_dir_of;
 use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::backup::aio::transport::TargetWriter;
+use crate::backup::copy_block::CopyBlock;
 use crate::backup::fcb::{FileControlBlock, SourceHandleState};
 use crate::scanner::metadata::FileMeta;
 
@@ -55,10 +56,11 @@ impl<T: TargetWriter> AggregatingTarget<T> {
         }
     }
 
-    fn should_aggregate_fcb(&self, fcb: &FileControlBlock) -> bool {
-        fcb.meta.common.symlink_target_path.is_none()
-            && should_aggregate(fcb.meta.size, &self.config)
-            && fcb.src_state == SourceHandleState::Read
+    fn should_aggregate_block(&self, block: &CopyBlock) -> bool {
+        block.meta.common.symlink_target_path.is_none()
+            && should_aggregate(block.file_size, &self.config)
+            && block.is_last
+            && block.data.len() as u64 == block.file_size
     }
 
     fn bucket_for_relative_path(&self, relative_path: &str) -> String {
@@ -107,31 +109,42 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             self.inner.create_dir(parent.to_path_buf()).await?;
         }
 
-        let mut blob_bytes = Vec::new();
         let mut entries = Vec::with_capacity(files.len());
         let mut offset = 0u64;
-        for file in files {
+        for file in &files {
             let size = file.data.len() as u64;
-            blob_bytes.extend_from_slice(&file.data);
             entries.push(AggregateFileEntry {
-                relative_path: file.relative_path,
+                relative_path: file.relative_path.clone(),
                 offset,
                 size,
                 ctime: file.ctime,
                 mtime: file.mtime,
                 mode: file.mode,
-                xattrs: file.xattrs,
-                acl: file.acl,
+                xattrs: file.xattrs.clone(),
+                acl: file.acl.clone(),
             });
             offset += size;
         }
 
         let blob_rel_path_str = blob_rel_path.to_string_lossy().replace('\\', "/");
-        let blob_fcb = synthetic_fcb(PathBuf::from(&blob_rel_path_str), blob_bytes, 0o644);
-        self.inner.write_file(blob_fcb).await.map_err(|(_, e)| e)?;
+        let blob_size = offset;
+        let mut write_offset = 0u64;
+        for file in files {
+            let data_len = file.data.len() as u64;
+            let block = synthetic_block(
+                PathBuf::from(&blob_rel_path_str),
+                file.data,
+                write_offset,
+                blob_size,
+                0o644,
+            );
+            self.inner.write_block(block).await.map_err(|(_, e)| e)?;
+            write_offset += data_len;
+        }
+
         Ok(AggregateBlobMeta {
             blob_path: blob_rel_path_str,
-            blob_size: offset,
+            blob_size,
             file_count: entries.len() as u32,
             files: entries,
             shard_id: 0,
@@ -221,28 +234,25 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
         Box::pin(async move { this.inner.create_dir(path).await })
     }
 
-    fn write_file(
+    fn write_block(
         &self,
-        fcb: FileControlBlock,
-    ) -> futures_util::future::BoxFuture<
-        'static,
-        Result<FileControlBlock, (FileControlBlock, String)>,
-    > {
+        block: CopyBlock,
+    ) -> futures_util::future::BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
         let this = self.clone();
         Box::pin(async move {
-            if !this.should_aggregate_fcb(&fcb) {
-                return this.inner.write_file(fcb).await;
+            if !this.should_aggregate_block(&block) {
+                return this.inner.write_block(block).await;
             }
 
-            let relative_path = fcb.dst_path.to_string_lossy().replace('\\', "/");
+            let relative_path = block.dst_path.to_string_lossy().replace('\\', "/");
             let pending = PendingFile {
                 relative_path: relative_path.clone(),
-                data: fcb.buffer.clone(),
-                ctime: fcb.meta.common.ctime as u64,
-                mtime: fcb.meta.common.mtime as u64,
-                mode: fcb.meta.common.mode,
-                xattrs: fcb.meta.common.xattributes.clone(),
-                acl: fcb.meta.common.posix_access_acl.clone(),
+                data: block.data.clone(),
+                ctime: block.meta.common.ctime as u64,
+                mtime: block.meta.common.mtime as u64,
+                mode: block.meta.common.mode,
+                xattrs: block.meta.common.xattributes.clone(),
+                acl: block.meta.common.posix_access_acl.clone(),
             };
             this.bytes_seen
                 .fetch_add(pending.data.len() as u64, Ordering::Relaxed);
@@ -268,10 +278,12 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
                 };
                 match this.write_blob(&bucket, files).await {
                     Ok(blob) => this.blobs.lock().unwrap().push(blob),
-                    Err(e) => return Err((fcb, e)),
+                    Err(e) => return Err((block, e)),
                 }
             }
-            Ok(fcb)
+            let mut block = block;
+            block.dst_offset = block.file_size;
+            Ok(block)
         })
     }
 
@@ -325,4 +337,31 @@ fn synthetic_fcb(dst_path: PathBuf, bytes: Vec<u8>, mode: u32) -> FileControlBlo
     fcb.buffer = bytes;
     fcb.src_state = SourceHandleState::Read;
     fcb
+}
+
+fn synthetic_block(
+    dst_path: PathBuf,
+    bytes: Vec<u8>,
+    dst_offset: u64,
+    file_size: u64,
+    mode: u32,
+) -> CopyBlock {
+    let mut meta = FileMeta::default();
+    meta.common.mode = mode;
+    meta.common.name = dst_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    meta.size = file_size;
+    let data_len = bytes.len() as u64;
+    CopyBlock {
+        meta: std::sync::Arc::new(meta),
+        src_path: PathBuf::new(),
+        dst_path,
+        src_offset: dst_offset + data_len,
+        dst_offset,
+        file_size,
+        data: bytes,
+        is_last: dst_offset + data_len >= file_size,
+    }
 }

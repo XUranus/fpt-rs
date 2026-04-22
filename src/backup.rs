@@ -16,7 +16,13 @@ use std::{
 };
 
 mod bio;
+pub(crate) mod copy_block;
+mod copy_plan;
 pub(crate) mod fcb;
+mod local_block;
+mod local_executor;
+mod local_metadata;
+mod phases;
 pub mod sharded_processor;
 mod stats;
 
@@ -25,6 +31,7 @@ pub mod aggregate;
 pub mod aggregate_dir_index;
 pub mod aggregate_engine;
 pub mod aggregate_index;
+mod aggregate_local;
 pub mod aggregate_restore;
 mod restore_pipeline;
 
@@ -36,6 +43,9 @@ pub mod aio;
 #[cfg(not(any(feature = "nfs", feature = "smb")))]
 #[allow(dead_code)]
 pub mod aio {
+    pub mod copy_block {
+        pub use crate::backup::copy_block::*;
+    }
     pub mod entry;
     pub mod local_fs;
     pub mod transport;

@@ -38,6 +38,11 @@ This removes whole-file payload circulation from the common local copy path and 
 
 ## Scope
 
-This fix applies to local source, local target, common-format backup.
+The original fix applied to local source, local target, common-format backup. The follow-up refactor generalized the same model:
 
-Aggregated local backup and remote transports have separate copy paths. Remote transports already perform chunked I/O through their adapters; `--buffer-size` is being extended as a cap for those paths separately.
+- Local common and local aggregate backup now share the `CopyPlanEntry` producer.
+- Local aggregate backup stores pending source path metadata and streams files into blobs with a bounded scratch buffer.
+- Remote-capable backup paths use `SourceReader` / `TargetWriter` adapters over `CopyBlock`.
+- Restore copy also uses the shared copy-plan producer and bounded block transfer loop.
+
+The old `src/backup/bio/copy.rs` whole-file FCB queue graph was removed. `--buffer-size` is now the intended cap for copy buffers across local and transport-backed copy paths where the adapter can honor it.
