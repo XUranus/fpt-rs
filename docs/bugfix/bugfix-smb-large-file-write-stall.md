@@ -66,9 +66,9 @@ That ruled out Bifrost-side task fan-out as the primary cause for this bug.
 
 ### 1. Stop Using Fixed `1 MiB` SMB Chunks
 
-The fixed constants were replaced with conservative defaults:
+The fixed constants were replaced with negotiated-and-clamped defaults:
 
-- default read chunk: `256 KiB`
+- default read chunk: `1 MiB`
 - default write chunk: `256 KiB`
 
 ### 2. Query Negotiated SMB Limits
@@ -86,10 +86,12 @@ Even after querying negotiated limits, Bifrost does **not** drive the write loop
 
 Instead it clamps to:
 
-- `256 KiB` max safe read chunk
+- `1 MiB` max safe read chunk
 - `256 KiB` max safe write chunk
 
-This keeps the code simple and avoids replaying the stalled large-write path.
+The larger read cap reduces source-side SMB read RPC count. The write cap stays
+at `256 KiB` because the original stall was observed on SMB write completion,
+not on SMB reads.
 
 ## Implementation Notes
 
@@ -139,7 +141,7 @@ cargo test --lib --features smb --features nfs
 
 ## Remaining Follow-Up
 
-If a future server still stalls even with `256 KiB` chunks, the next step should be inside `smb-rs` instrumentation:
+If a future server still stalls even with `256 KiB` write chunks, the next step should be inside `smb-rs` instrumentation:
 
 - log negotiated `max_read_size` / `max_write_size`
 - add write-completion timeout diagnostics around pending async writes

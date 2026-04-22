@@ -219,10 +219,71 @@ The Bifrost-side mitigation now used in `src/smb/aio.rs` is:
 
 - query negotiated SMB `max_read_size` / `max_write_size`
 - avoid fixed `1 MiB` transfer chunks
-- clamp active SMB read/write chunk sizes to a conservative `256 KiB`
+- clamp active SMB writes to a conservative `256 KiB`
+- allow active SMB reads up to `1 MiB`
 
 This was enough to make the previously stuck `local -> SMB` backup complete
 reliably on the local Samba test server.
+
+Reads and writes intentionally use different safety caps. The observed stall was
+on write completion, so writes remain conservative. SMB source reads are the
+dominant cost in `SMB -> SMB` backup and have not shown the same stall behavior,
+so the read cap is larger to reduce request count.
+
+### SMB Backup Performance Notes
+
+The `SMB -> SMB` copy path now emits detailed copy-operation timing for:
+
+- open latency
+- read/write byte counts
+- average read/write chunk size
+- max read/write latency
+- effective read/write throughput
+- max active copy/read/write concurrency
+
+On the local Samba smoke dataset used during development:
+
+```text
+56 files, 24 dirs, 156.89 MiB total
+```
+
+Before increasing the SMB read cap, the run took about `37s`:
+
+- read operations: `706`
+- average read size: about `233 KiB`
+- total read time: about `28s`
+- write time: about `2s`
+
+After increasing the SMB read cap from `256 KiB` to `1 MiB`, the run took about
+`18s`:
+
+- read operations: `241`
+- average read size: about `667 KiB`
+- total read time: about `9s`
+- write time: about `2s`
+
+The key finding is that source-side SMB reads were RPC-count dominated. Reducing
+the number of read requests gave about a `2x` end-to-end improvement without
+changing write chunk size.
+
+Current remaining bottlenecks from the same timing data:
+
+- source open: about `43ms` per file
+- target open: about `43ms` per file
+- SMB source read latency: about `38ms` per read
+- `active_max: copy=1 read=1 write=1` when running with one SMB connection
+
+Likely next improvement paths:
+
+- Add a configurable SMB read cap so test runs can compare `1 MiB`, `2 MiB`,
+  and `4 MiB` reads without rebuilding.
+- Pipeline reads and writes for a single large file so the next source read can
+  overlap target writes.
+- Batch or avoid target directory/file opens where possible, because open
+  latency is now material for many-small-file datasets.
+- Profile `smb-rs` with `perf` on a long `SMB -> SMB` run to check whether the
+  remaining read latency is server wait time, signing/encryption CPU cost, or
+  client-side request serialization.
 
 ### SMB Scanner Performance Notes
 

@@ -22,63 +22,143 @@ pub struct SmbClientPool {
 }
 
 const SMB_DEFAULT_WRITE_CHUNK: usize = 256 * 1024;
-const SMB_DEFAULT_READ_CHUNK: usize = 256 * 1024;
+const SMB_DEFAULT_READ_CHUNK: usize = 1024 * 1024;
 const SMB_MAX_SAFE_WRITE_CHUNK: usize = 256 * 1024;
-pub const SMB_MAX_SAFE_READ_CHUNK: usize = 256 * 1024;
+pub const SMB_MAX_SAFE_READ_CHUNK: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct SmbCopyMetrics {
     pub ensure_dir_count: AtomicU64,
     pub ensure_dir_ns: AtomicU64,
+    pub ensure_dir_max_ns: AtomicU64,
     pub source_open_count: AtomicU64,
     pub source_open_ns: AtomicU64,
+    pub source_open_max_ns: AtomicU64,
     pub target_open_count: AtomicU64,
     pub target_open_ns: AtomicU64,
+    pub target_open_max_ns: AtomicU64,
     pub read_count: AtomicU64,
     pub read_ns: AtomicU64,
+    pub read_max_ns: AtomicU64,
+    pub read_bytes: AtomicU64,
     pub write_count: AtomicU64,
     pub write_ns: AtomicU64,
+    pub write_max_ns: AtomicU64,
+    pub write_bytes: AtomicU64,
     pub source_close_count: AtomicU64,
     pub source_close_ns: AtomicU64,
+    pub source_close_max_ns: AtomicU64,
     pub source_close_deferred: AtomicU64,
     pub target_close_count: AtomicU64,
     pub target_close_ns: AtomicU64,
+    pub target_close_max_ns: AtomicU64,
     pub target_close_deferred: AtomicU64,
+    pub copy_active: AtomicU64,
+    pub copy_active_max: AtomicU64,
+    pub read_active: AtomicU64,
+    pub read_active_max: AtomicU64,
+    pub write_active: AtomicU64,
+    pub write_active_max: AtomicU64,
 }
 
 impl SmbCopyMetrics {
-    fn add(counter: &AtomicU64, nanos: &AtomicU64, started: Instant) {
+    fn add_with_max(counter: &AtomicU64, nanos: &AtomicU64, max_ns: &AtomicU64, started: Instant) {
+        let elapsed = duration_ns(started.elapsed());
         counter.fetch_add(1, Ordering::Relaxed);
-        nanos.fetch_add(duration_ns(started.elapsed()), Ordering::Relaxed);
+        nanos.fetch_add(elapsed, Ordering::Relaxed);
+        update_atomic_max(max_ns, elapsed);
+    }
+
+    fn add_io(
+        counter: &AtomicU64,
+        nanos: &AtomicU64,
+        max_ns: &AtomicU64,
+        bytes: &AtomicU64,
+        byte_count: u64,
+        started: Instant,
+    ) {
+        let elapsed = duration_ns(started.elapsed());
+        counter.fetch_add(1, Ordering::Relaxed);
+        nanos.fetch_add(elapsed, Ordering::Relaxed);
+        bytes.fetch_add(byte_count, Ordering::Relaxed);
+        update_atomic_max(max_ns, elapsed);
+    }
+
+    fn active_guard<'a>(active: &'a AtomicU64, active_max: &'a AtomicU64) -> ActiveMetricGuard<'a> {
+        let current = active.fetch_add(1, Ordering::Relaxed) + 1;
+        update_atomic_max(active_max, current);
+        ActiveMetricGuard { active }
     }
 
     pub fn timing_summary(&self) -> String {
+        let read_count = self.read_count.load(Ordering::Relaxed);
+        let read_ns = self.read_ns.load(Ordering::Relaxed);
+        let read_bytes = self.read_bytes.load(Ordering::Relaxed);
+        let write_count = self.write_count.load(Ordering::Relaxed);
+        let write_ns = self.write_ns.load(Ordering::Relaxed);
+        let write_bytes = self.write_bytes.load(Ordering::Relaxed);
         format!(
-            "ensure_dir={} total={} avg={}, source_open={} total={} avg={}, target_open={} total={} avg={}, read={} total={} avg={}, write={} total={} avg={}, source_close={} total={} avg={} deferred={}, target_close={} total={} avg={} deferred={}",
+            "ensure_dir={} total={} avg={} max={}, source_open={} total={} avg={} max={}, target_open={} total={} avg={} max={}, read={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, write={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, active_max: copy={} read={} write={}, source_close={} total={} avg={} max={} deferred={}, target_close={} total={} avg={} max={} deferred={}",
             self.ensure_dir_count.load(Ordering::Relaxed),
             format_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed), self.ensure_dir_count.load(Ordering::Relaxed)),
+            format_duration_ns(self.ensure_dir_max_ns.load(Ordering::Relaxed)),
             self.source_open_count.load(Ordering::Relaxed),
             format_duration_ns(self.source_open_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.source_open_ns.load(Ordering::Relaxed), self.source_open_count.load(Ordering::Relaxed)),
+            format_duration_ns(self.source_open_max_ns.load(Ordering::Relaxed)),
             self.target_open_count.load(Ordering::Relaxed),
             format_duration_ns(self.target_open_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.target_open_ns.load(Ordering::Relaxed), self.target_open_count.load(Ordering::Relaxed)),
-            self.read_count.load(Ordering::Relaxed),
-            format_duration_ns(self.read_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.read_ns.load(Ordering::Relaxed), self.read_count.load(Ordering::Relaxed)),
-            self.write_count.load(Ordering::Relaxed),
-            format_duration_ns(self.write_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.write_ns.load(Ordering::Relaxed), self.write_count.load(Ordering::Relaxed)),
+            format_duration_ns(self.target_open_max_ns.load(Ordering::Relaxed)),
+            read_count,
+            format_bytes(read_bytes),
+            format_bytes(avg_u64(read_bytes, read_count)),
+            format_duration_ns(read_ns),
+            avg_duration_ns(read_ns, read_count),
+            format_duration_ns(self.read_max_ns.load(Ordering::Relaxed)),
+            format_rate(read_bytes, read_ns),
+            write_count,
+            format_bytes(write_bytes),
+            format_bytes(avg_u64(write_bytes, write_count)),
+            format_duration_ns(write_ns),
+            avg_duration_ns(write_ns, write_count),
+            format_duration_ns(self.write_max_ns.load(Ordering::Relaxed)),
+            format_rate(write_bytes, write_ns),
+            self.copy_active_max.load(Ordering::Relaxed),
+            self.read_active_max.load(Ordering::Relaxed),
+            self.write_active_max.load(Ordering::Relaxed),
             self.source_close_count.load(Ordering::Relaxed),
             format_duration_ns(self.source_close_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.source_close_ns.load(Ordering::Relaxed), self.source_close_count.load(Ordering::Relaxed)),
+            format_duration_ns(self.source_close_max_ns.load(Ordering::Relaxed)),
             self.source_close_deferred.load(Ordering::Relaxed),
             self.target_close_count.load(Ordering::Relaxed),
             format_duration_ns(self.target_close_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.target_close_ns.load(Ordering::Relaxed), self.target_close_count.load(Ordering::Relaxed)),
+            format_duration_ns(self.target_close_max_ns.load(Ordering::Relaxed)),
             self.target_close_deferred.load(Ordering::Relaxed),
         )
+    }
+}
+
+struct ActiveMetricGuard<'a> {
+    active: &'a AtomicU64,
+}
+
+impl Drop for ActiveMetricGuard<'_> {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn update_atomic_max(max: &AtomicU64, value: u64) {
+    let mut current = max.load(Ordering::Relaxed);
+    while value > current {
+        match max.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
     }
 }
 
@@ -97,6 +177,38 @@ fn avg_duration_ns(total_ns: u64, count: u64) -> String {
     } else {
         format_duration_ns(total_ns / count)
     }
+}
+
+fn avg_u64(total: u64, count: u64) -> u64 {
+    if count == 0 {
+        0
+    } else {
+        total / count
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let bytes_f = bytes as f64;
+    if bytes_f >= GIB {
+        format!("{:.2}GiB", bytes_f / GIB)
+    } else if bytes_f >= MIB {
+        format!("{:.2}MiB", bytes_f / MIB)
+    } else if bytes_f >= KIB {
+        format!("{:.2}KiB", bytes_f / KIB)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+fn format_rate(bytes: u64, ns: u64) -> String {
+    if bytes == 0 || ns == 0 {
+        return "0.00B/s".to_string();
+    }
+    let seconds = ns as f64 / 1_000_000_000.0;
+    format!("{}/s", format_bytes((bytes as f64 / seconds) as u64))
 }
 
 pub fn new_dir_cache() -> DirCache {
@@ -378,6 +490,9 @@ pub async fn copy_relative_file_streaming(
     metrics: Option<Arc<SmbCopyMetrics>>,
     buffer_cap: usize,
 ) -> Result<(), String> {
+    let _copy_guard = metrics
+        .as_ref()
+        .map(|m| SmbCopyMetrics::active_guard(&m.copy_active, &m.copy_active_max));
     let buffer_cap = buffer_cap.max(1);
     let read_chunk = negotiated_read_chunk(&source_pool.client(), source_location)
         .await
@@ -394,7 +509,12 @@ pub async fn copy_relative_file_streaming(
             ensure_relative_directory(&target_pool.client(), target_location, dir_cache, parent)
                 .await?;
             if let Some(metrics) = &metrics {
-                SmbCopyMetrics::add(&metrics.ensure_dir_count, &metrics.ensure_dir_ns, started);
+                SmbCopyMetrics::add_with_max(
+                    &metrics.ensure_dir_count,
+                    &metrics.ensure_dir_ns,
+                    &metrics.ensure_dir_max_ns,
+                    started,
+                );
             }
         }
     }
@@ -419,7 +539,12 @@ pub async fn copy_relative_file_streaming(
         .await
         .map_err(|e| format!("open {}: {e}", source_unc))?;
     if let Some(metrics) = &metrics {
-        SmbCopyMetrics::add(&metrics.source_open_count, &metrics.source_open_ns, started);
+        SmbCopyMetrics::add_with_max(
+            &metrics.source_open_count,
+            &metrics.source_open_ns,
+            &metrics.source_open_max_ns,
+            started,
+        );
     }
     let source_file = match source_resource {
         smb_client::Resource::File(file) => file,
@@ -441,7 +566,12 @@ pub async fn copy_relative_file_streaming(
         }
     };
     if let Some(metrics) = &metrics {
-        SmbCopyMetrics::add(&metrics.target_open_count, &metrics.target_open_ns, started);
+        SmbCopyMetrics::add_with_max(
+            &metrics.target_open_count,
+            &metrics.target_open_ns,
+            &metrics.target_open_max_ns,
+            started,
+        );
     }
     let target_file = match target_resource {
         smb_client::Resource::File(file) => file,
@@ -458,12 +588,23 @@ pub async fn copy_relative_file_streaming(
 
     loop {
         let started = Instant::now();
+        let _read_guard = metrics
+            .as_ref()
+            .map(|m| SmbCopyMetrics::active_guard(&m.read_active, &m.read_active_max));
         let read_len = source_file
             .read_block(&mut chunk, src_offset, None, false)
             .await
             .map_err(|e| format!("read {} @{}: {e}", source_unc, src_offset))?;
+        drop(_read_guard);
         if let Some(metrics) = &metrics {
-            SmbCopyMetrics::add(&metrics.read_count, &metrics.read_ns, started);
+            SmbCopyMetrics::add_io(
+                &metrics.read_count,
+                &metrics.read_ns,
+                &metrics.read_max_ns,
+                &metrics.read_bytes,
+                read_len as u64,
+                started,
+            );
         }
         if read_len == 0 {
             break;
@@ -473,12 +614,23 @@ pub async fn copy_relative_file_streaming(
         while chunk_offset < read_len {
             let chunk_end = (chunk_offset + write_chunk).min(read_len);
             let started = Instant::now();
+            let _write_guard = metrics
+                .as_ref()
+                .map(|m| SmbCopyMetrics::active_guard(&m.write_active, &m.write_active_max));
             let written = target_file
                 .write_block(&chunk[chunk_offset..chunk_end], dst_offset, None)
                 .await
                 .map_err(|e| format!("write {} @{}: {e}", target_unc, dst_offset))?;
+            drop(_write_guard);
             if let Some(metrics) = &metrics {
-                SmbCopyMetrics::add(&metrics.write_count, &metrics.write_ns, started);
+                SmbCopyMetrics::add_io(
+                    &metrics.write_count,
+                    &metrics.write_ns,
+                    &metrics.write_max_ns,
+                    &metrics.write_bytes,
+                    written as u64,
+                    started,
+                );
             }
             if written == 0 {
                 let _ = source_file.close().await;
