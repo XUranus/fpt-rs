@@ -97,6 +97,10 @@ enum Commands {
         #[arg(long, default_value = "4", value_name = "COUNT")]
         smb_connections: usize,
 
+        /// Maximum concurrent SMB file copy tasks. 0 = auto (2 per SMB connection, capped at 16).
+        #[arg(long, default_value = "0", value_name = "COUNT")]
+        smb_copy_tasks: usize,
+
         /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096].
         /// SMB source reads are capped at 2048 KiB; SMB writes stay capped at 256 KiB.
         #[arg(long, default_value = "1024", value_name = "SIZE_KB")]
@@ -337,6 +341,7 @@ fn cmd_backup(
     workers: usize,
     nfs_connections: usize,
     smb_connections: usize,
+    smb_copy_tasks: usize,
     buffer_size: usize,
     failure_log_format: Option<FailureLogFormatArg>,
     operation_retries: u32,
@@ -412,6 +417,7 @@ fn cmd_backup(
         enable_mtime: mtime && !matches!(format, BackupFormat::Aggregated),
         max_concurrent_subtasks: jobs,
         smb_connection_count: smb_connections.max(1),
+        smb_copy_task_count: smb_copy_tasks,
         copy_buffer_size: (buffer_size * 1024).clamp(256 * 1024, 4 * 1024 * 1024),
         failure_log_format: failure_log_format.map(Into::into),
         retry_policy,
@@ -662,6 +668,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             nfs_connections,
             smb_connections,
+            smb_copy_tasks,
             buffer_size,
             failure_log_format,
             operation_retries,
@@ -690,6 +697,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             nfs_connections,
             smb_connections,
+            smb_copy_tasks,
             buffer_size,
             failure_log_format,
             operation_retries,

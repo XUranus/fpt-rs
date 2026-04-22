@@ -46,6 +46,8 @@ pub struct SubtaskConfig {
     pub enable_mtime: bool,
     /// SMB client connections per SMB endpoint for backup subtasks.
     pub smb_connection_count: usize,
+    /// Maximum concurrent SMB file copy tasks. 0 means auto.
+    pub smb_copy_task_count: usize,
     /// Maximum per-file copy buffer size in bytes.
     pub copy_buffer_size: usize,
     /// Optional failure log file for this subtask.
@@ -124,6 +126,7 @@ pub fn run_backup_subtask(
     .enable_delete(config.enable_delete)
     .enable_mtime(config.enable_mtime)
     .smb_connection_count(config.smb_connection_count)
+    .smb_copy_task_count(config.smb_copy_task_count)
     .copy_buffer_size(config.copy_buffer_size)
     .failure_log(config.failure_log.clone())
     .retry_policy(config.retry_policy);

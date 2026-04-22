@@ -58,6 +58,7 @@ pub struct BackupJobConfig {
     pub enable_mtime: bool,
     pub max_concurrent_subtasks: usize,
     pub smb_connection_count: usize,
+    pub smb_copy_task_count: usize,
     pub copy_buffer_size: usize,
     pub failure_log_format: Option<FailureLogFormat>,
     pub retry_policy: RetryPolicy,
@@ -85,6 +86,7 @@ impl Default for BackupJobConfig {
             enable_mtime: false,
             max_concurrent_subtasks: 4,
             smb_connection_count: 4,
+            smb_copy_task_count: 0,
             copy_buffer_size: 1024 * 1024,
             failure_log_format: None,
             retry_policy: RetryPolicy::default(),
@@ -274,6 +276,7 @@ impl BackupRestoreJob for FileBackupJob {
                 enable_delete: cfg.enable_delete,
                 enable_mtime: cfg.enable_mtime,
                 smb_connection_count: cfg.smb_connection_count,
+                smb_copy_task_count: cfg.smb_copy_task_count,
                 copy_buffer_size: cfg.copy_buffer_size,
                 failure_log: cfg.failure_log_format.map(|format| {
                     FailureLogConfig::new(

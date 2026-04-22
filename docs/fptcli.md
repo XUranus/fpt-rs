@@ -45,6 +45,9 @@ Main options:
 | `--threshold` | Aggregation threshold in KB |
 | `--aggregate-layout` | Aggregated layout: `dir-level` or `shard` |
 | `--nfs-connections` | NFS connection count |
+| `--smb-connections` | SMB client connections per SMB endpoint |
+| `--smb-copy-tasks` | SMB file copy task limit; `0` means auto |
+| `--buffer-size` | Copy buffer size in KB; also caps SMB source read size up to 2048 KiB |
 | `--nfs-uid` | AUTH_UNIX uid override |
 | `--nfs-gid` | AUTH_UNIX gid override |
 | `--temp-dir` | Local staging root, mainly for NFS-target jobs |

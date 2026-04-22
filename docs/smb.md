@@ -283,6 +283,15 @@ same `--buffer-size 2048` run improved again to about `7s`:
 This shows the SMB path benefits substantially from overlapping source reads
 with target writes, even with a single SMB client connection per endpoint.
 
+SMB copy task concurrency is now decoupled from connection count. By default,
+the scheduler allows two file copy tasks per SMB connection, capped at `16`
+total tasks. This keeps `--smb-connections 1` usable while still allowing one
+task to hide another task's open/read latency. The selected task limit is printed
+in the `SMB->SMB timing` line as `copy_task_limit`.
+
+Use `--smb-copy-tasks N` in `fptcli backup` or `fsbackup` to override the
+automatic task limit. `0` means auto. Non-zero values are clamped to `1..16`.
+
 Current remaining bottlenecks from the same timing data:
 
 - source open: roughly `35ms` per file in the current local test

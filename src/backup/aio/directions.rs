@@ -35,6 +35,8 @@ use crate::smb::SmbLocation;
 
 #[cfg(feature = "smb")]
 const SMB_MAX_CONCURRENT_TASKS: usize = 16;
+#[cfg(feature = "smb")]
+const SMB_TASKS_PER_CONNECTION: usize = 2;
 #[cfg(feature = "nfs")]
 const NFS_MAX_CONCURRENT_TASKS: usize = 16;
 
@@ -91,11 +93,12 @@ pub async fn run_local_to_smb_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    smb_copy_task_count: usize,
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
-    let max_concurrent_tasks = smb_copy_task_limit(pool.size());
+    let max_concurrent_tasks = smb_copy_task_limit(pool.size(), smb_copy_task_count);
     let target_prefix = PathBuf::from(target_prefix);
     let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, target_prefix.clone());
     let target = SmbTarget {
@@ -226,11 +229,12 @@ pub async fn run_smb_to_local_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    smb_copy_task_count: usize,
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
-    let max_concurrent_tasks = smb_copy_task_limit(pool.size());
+    let max_concurrent_tasks = smb_copy_task_limit(pool.size(), smb_copy_task_count);
     let _ = smb_source_base;
     let mapping = EntryMapping::remote_to_local();
     let target = LocalTarget {
@@ -269,11 +273,15 @@ pub async fn run_smb_to_smb_copy_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    smb_copy_task_count: usize,
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
-    let max_concurrent_tasks = smb_copy_task_limit(source_pool.size().min(target_pool.size()));
+    let max_concurrent_tasks = smb_copy_task_limit(
+        source_pool.size().min(target_pool.size()),
+        smb_copy_task_count,
+    );
     if !aggregate_config.enabled {
         run_smb_to_smb_streaming_pipeline(
             control_file,
@@ -521,7 +529,7 @@ async fn run_smb_to_smb_streaming_pipeline(
         stats.files_failed.load(Ordering::Relaxed),
     );
     info!(
-        "SMB->SMB timing: total={}, dispatch={} for {} file entries and {} dir entries, producer_wait={}, mkdir_wait={}, copy_wait={}, copy_ops: {}",
+        "SMB->SMB timing: total={}, dispatch={} for {} file entries and {} dir entries, producer_wait={}, mkdir_wait={}, copy_wait={}, copy_task_limit={}, copy_ops: {}",
         format_elapsed(pipeline_started.elapsed()),
         format_elapsed(dispatch_elapsed),
         file_entries,
@@ -529,6 +537,7 @@ async fn run_smb_to_smb_streaming_pipeline(
         format_elapsed(producer_wait_elapsed),
         format_elapsed(mkdir_elapsed),
         format_elapsed(copy_elapsed),
+        max_concurrent_tasks,
         copy_metrics.timing_summary(),
     );
 }
@@ -854,8 +863,14 @@ async fn run_smb_to_smb_aggregate_pipeline(
 }
 
 #[cfg(feature = "smb")]
-fn smb_copy_task_limit(pool_size: usize) -> usize {
-    pool_size.max(1).min(SMB_MAX_CONCURRENT_TASKS)
+fn smb_copy_task_limit(pool_size: usize, configured_tasks: usize) -> usize {
+    if configured_tasks > 0 {
+        return configured_tasks.clamp(1, SMB_MAX_CONCURRENT_TASKS);
+    }
+    pool_size
+        .max(1)
+        .saturating_mul(SMB_TASKS_PER_CONNECTION)
+        .min(SMB_MAX_CONCURRENT_TASKS)
 }
 
 #[cfg(feature = "smb")]
@@ -881,12 +896,13 @@ pub async fn run_nfs_to_smb_copy_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    smb_copy_task_count: usize,
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks =
-        smb_copy_task_limit(target_pool.size()).min(NFS_MAX_CONCURRENT_TASKS);
+        smb_copy_task_limit(target_pool.size(), smb_copy_task_count).min(NFS_MAX_CONCURRENT_TASKS);
     let _ = nfs_source_base;
     let target_prefix = PathBuf::from(target_prefix);
     let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
@@ -932,12 +948,13 @@ pub async fn run_smb_to_nfs_copy_pipeline(
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    smb_copy_task_count: usize,
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks =
-        smb_copy_task_limit(source_pool.size()).min(NFS_MAX_CONCURRENT_TASKS);
+        smb_copy_task_limit(source_pool.size(), smb_copy_task_count).min(NFS_MAX_CONCURRENT_TASKS);
     let _ = smb_source_base;
     let target_prefix = PathBuf::from(target_prefix);
     let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());

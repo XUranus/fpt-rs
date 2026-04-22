@@ -117,6 +117,10 @@ pub struct BackupOption {
     /// and target pools.
     #[cfg(feature = "smb")]
     pub smb_connection_count: usize,
+
+    /// Maximum concurrent SMB file copy tasks. 0 means auto.
+    #[cfg(feature = "smb")]
+    pub smb_copy_task_count: usize,
 }
 
 // each backup task do the data copy following the instruction of one control file
@@ -190,6 +194,8 @@ impl BackupOption {
             smb_target_d_repo_path: None,
             #[cfg(feature = "smb")]
             smb_connection_count: crate::backup::aio::DEFAULT_SMB_POOL_SIZE,
+            #[cfg(feature = "smb")]
+            smb_copy_task_count: 0,
         }
     }
 
@@ -312,6 +318,14 @@ impl BackupOption {
         self.smb_connection_count = count.max(1);
         self
     }
+
+    /// Set maximum concurrent SMB file copy tasks. 0 means auto.
+    /// Requires the `smb` Cargo feature.
+    #[cfg(feature = "smb")]
+    pub fn smb_copy_task_count(mut self, count: usize) -> Self {
+        self.smb_copy_task_count = count;
+        self
+    }
 }
 
 #[allow(dead_code)]
@@ -372,6 +386,8 @@ impl BackupTask {
         let smb_target_d_repo_path = self.option.smb_target_d_repo_path.clone();
         #[cfg(feature = "smb")]
         let smb_connection_count = self.option.smb_connection_count;
+        #[cfg(feature = "smb")]
+        let smb_copy_task_count = self.option.smb_copy_task_count;
 
         // When both NFS source AND NFS target are configured, run the
         // dual-pool NFS→NFS AIO pipeline.
@@ -421,6 +437,7 @@ impl BackupTask {
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
+                smb_copy_task_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -451,6 +468,7 @@ impl BackupTask {
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
+                smb_copy_task_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -541,6 +559,7 @@ impl BackupTask {
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
+                smb_copy_task_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -570,6 +589,7 @@ impl BackupTask {
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
+                smb_copy_task_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,
@@ -599,6 +619,7 @@ impl BackupTask {
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
+                smb_copy_task_count,
                 enable_hardlink_phase,
                 enable_delete_phase,
                 enable_mtime_phase,

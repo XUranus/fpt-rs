@@ -226,6 +226,7 @@ impl BackupRestoreJob for FileRestoreJob {
                     enable_delete: false,
                     enable_mtime: false,
                     smb_connection_count: 4,
+                    smb_copy_task_count: 0,
                     copy_buffer_size: 1024 * 1024,
                     failure_log: None,
                     retry_policy: RetryPolicy::default(),

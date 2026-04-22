@@ -43,6 +43,8 @@ pub struct BackupConfig {
     pub remote_target_prefix: Option<String>,
     /// SMB client connections per SMB endpoint for async backup paths.
     pub smb_connection_count: usize,
+    /// Maximum concurrent SMB file copy tasks. 0 means auto.
+    pub smb_copy_task_count: usize,
     /// Maximum per-file copy buffer size in bytes for local common backup paths.
     pub copy_buffer_size: usize,
     /// Whether to run the hardlink phase.
@@ -74,6 +76,7 @@ impl BackupConfig {
             aggregate_config: AggregateConfig::default(),
             remote_target_prefix: None,
             smb_connection_count: 4,
+            smb_copy_task_count: 0,
             copy_buffer_size: 1024 * 1024,
             enable_hardlink: false,
             enable_delete: false,
@@ -93,6 +96,10 @@ impl BackupConfig {
     }
     pub fn smb_connection_count(mut self, count: usize) -> Self {
         self.smb_connection_count = count.max(1);
+        self
+    }
+    pub fn smb_copy_task_count(mut self, count: usize) -> Self {
+        self.smb_copy_task_count = count;
         self
     }
     pub fn copy_buffer_size(mut self, size: usize) -> Self {
@@ -391,6 +398,7 @@ mod mixed_impl {
             .nfs_source(self.nfs_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
+            .smb_copy_task_count(cfg.smb_copy_task_count)
             .smb_target_d_repo_path(
                 cfg.remote_target_prefix
                     .clone()
@@ -438,6 +446,7 @@ mod mixed_impl {
             .retry_policy(cfg.retry_policy)
             .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count)
+            .smb_copy_task_count(cfg.smb_copy_task_count)
             .nfs_target(self.nfs_target.clone())
             .nfs_target_d_repo_path(
                 cfg.remote_target_prefix
@@ -491,6 +500,7 @@ mod smb_impl {
             .retry_policy(cfg.retry_policy)
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
+            .smb_copy_task_count(cfg.smb_copy_task_count)
             .smb_target_d_repo_path(
                 cfg.remote_target_prefix
                     .clone()
@@ -533,7 +543,8 @@ mod smb_impl {
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
             .smb_source(self.smb_source.clone())
-            .smb_connection_count(cfg.smb_connection_count);
+            .smb_connection_count(cfg.smb_connection_count)
+            .smb_copy_task_count(cfg.smb_copy_task_count);
 
             run_backup_task(option)
         }
@@ -578,6 +589,7 @@ mod smb_impl {
             .smb_source(self.smb_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
+            .smb_copy_task_count(cfg.smb_copy_task_count)
             .smb_target_d_repo_path(
                 cfg.remote_target_prefix
                     .clone()

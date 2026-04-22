@@ -86,6 +86,10 @@ struct Args {
     #[arg(long, value_name = "N", default_value = "4")]
     smb_connections: usize,
 
+    /// Maximum concurrent SMB file copy tasks. 0 = auto (2 per SMB connection, capped at 16).
+    #[arg(long, value_name = "N", default_value = "0")]
+    smb_copy_tasks: usize,
+
     /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096].
     /// SMB source reads are capped at 2048 KiB; SMB writes stay capped at 256 KiB.
     #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
@@ -261,6 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .aggregate_config(aggregate_config)
     .remote_target_prefix((!target.is_local()).then(|| String::new()))
     .smb_connection_count(args.smb_connections)
+    .smb_copy_task_count(args.smb_copy_tasks)
     .copy_buffer_size(args.buffer_size * 1024)
     .failure_log(failure_log)
     .retry_policy(retry_policy)
