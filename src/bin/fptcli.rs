@@ -94,7 +94,7 @@ enum Commands {
         nfs_connections: usize,
 
         /// Number of SMB client connections per SMB endpoint
-        #[arg(long, default_value = "1", value_name = "COUNT")]
+        #[arg(long, default_value = "4", value_name = "COUNT")]
         smb_connections: usize,
 
         /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096].

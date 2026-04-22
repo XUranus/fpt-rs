@@ -83,7 +83,7 @@ struct Args {
     nfs_connections: usize,
 
     /// Number of SMB client connections per SMB endpoint [default: 1]
-    #[arg(long, value_name = "N", default_value = "1")]
+    #[arg(long, value_name = "N", default_value = "4")]
     smb_connections: usize,
 
     /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096].
