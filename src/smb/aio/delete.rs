@@ -111,7 +111,7 @@ pub async fn run_smb_delete_phase(
     stats
 }
 
-async fn mark_delete_pending(
+pub(crate) async fn mark_delete_pending(
     client: &smb_client::Client,
     location: &SmbLocation,
     relative_path: &str,

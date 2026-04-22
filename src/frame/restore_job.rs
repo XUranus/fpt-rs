@@ -153,7 +153,7 @@ impl BackupRestoreJob for FileRestoreJob {
         crate::logging::add_route("bifrost::frame", &repo.frame_log());
 
         // ── Phase 1: Prerequisites ────────────────────────────────────────────
-        RestorePrereqJob::new(&cfg.copy_source, &repo)
+        RestorePrereqJob::new(&cfg.copy_source, &cfg.restore_target, &repo)
             .run_sync()
             .map_err(RestoreJobError::Prereq)?;
 
