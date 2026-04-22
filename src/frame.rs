@@ -59,6 +59,7 @@
 
 pub mod backup_impls;
 pub mod backup_job;
+pub mod lifecycle;
 pub mod location;
 pub mod postjob;
 pub mod prereq;
@@ -71,6 +72,10 @@ pub mod subtask;
 pub mod traits;
 
 // ── Core traits ──────────────────────────────────────────────────────────────
+pub use lifecycle::{
+    BackupLifecycleTask, FileScannerLifecycleTask, RestoreLifecycleTask, ScannerLifecycleTask,
+    TaskLifecycle, TaskLifecycleError,
+};
 pub use traits::{
     BackupRestoreJob, FileBackup, FileRestore, FileScanner, JobResult, ScanStats, TransferStats,
 };

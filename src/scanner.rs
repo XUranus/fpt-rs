@@ -34,7 +34,7 @@ use crate::scanner::metadata::HardlinkIndex;
 use crate::{
     scanner::{
         engine::bio,
-        models::{DirBatchScanResult, DirScanEntry, ScanStatistics, ScanStatsSnapshot},
+        models::{DirBatchScanResult, DirScanEntry, ScanStatistics},
         options::{ControlPathOption, ScanOption},
     },
     utility::{BlockingQueue, SpillQueue},
@@ -44,6 +44,8 @@ mod engine;
 pub mod metadata;
 pub(crate) mod models;
 pub mod options;
+
+pub use models::ScanStatsSnapshot;
 
 /// Main entry point for filesystem scanning.
 ///

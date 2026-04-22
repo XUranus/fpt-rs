@@ -1,9 +1,6 @@
 use crate::backup::{
-    aggregate::AggregateConfig,
-    bio::delete::DeleteStatsSnapshot,
-    bio::hardlink::HardlinkStatsSnapshot,
-    bio::mtime::MtimeStatsSnapshot,
-    stats::{BackupStats, BackupStatsSnapshot},
+    aggregate::AggregateConfig, bio::delete::DeleteStatsSnapshot,
+    bio::hardlink::HardlinkStatsSnapshot, bio::mtime::MtimeStatsSnapshot, stats::BackupStats,
 };
 use crate::failure::{FailureLogConfig, FailureRecorder, RetryPolicy};
 use log::info;
@@ -26,6 +23,7 @@ mod local_metadata;
 mod phases;
 pub mod sharded_processor;
 mod stats;
+pub use stats::BackupStatsSnapshot;
 
 // Aggregate backup/restore modules
 pub mod aggregate;
