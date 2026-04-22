@@ -86,7 +86,8 @@ struct Args {
     #[arg(long, value_name = "N", default_value = "1")]
     smb_connections: usize,
 
-    /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096]
+    /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096].
+    /// SMB source reads are capped at 2048 KiB; SMB writes stay capped at 256 KiB.
     #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
     buffer_size: usize,
 

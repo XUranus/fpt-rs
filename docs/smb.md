@@ -254,7 +254,7 @@ Before increasing the SMB read cap, the run took about `37s`:
 - total read time: about `28s`
 - write time: about `2s`
 
-After increasing the SMB read cap from `256 KiB` to `1 MiB`, the run took about
+After increasing the default SMB read cap from `256 KiB` to `1 MiB`, the run took about
 `18s`:
 
 - read operations: `241`
@@ -266,19 +266,36 @@ The key finding is that source-side SMB reads were RPC-count dominated. Reducing
 the number of read requests gave about a `2x` end-to-end improvement without
 changing write chunk size.
 
+With `--buffer-size 2048`, the same dataset improved further to about `15s` by
+reducing read operations to `171`. A `4096 KiB` read cap stalled on the local
+Samba server, so SMB reads are capped at `2048 KiB`.
+
+After adding double-buffer read-ahead in `copy_relative_file_streaming()`, the
+same `--buffer-size 2048` run improved again to about `7s`:
+
+- copy wait: about `5s`
+- read operations: `171`
+- total read time: about `5.5s`
+- total write time: about `1.4s`
+- effective end-to-end data rate: about `22 MiB/s`
+- active overlap: `copy=2 read=2 write=2`
+
+This shows the SMB path benefits substantially from overlapping source reads
+with target writes, even with a single SMB client connection per endpoint.
+
 Current remaining bottlenecks from the same timing data:
 
-- source open: about `43ms` per file
-- target open: about `43ms` per file
-- SMB source read latency: about `38ms` per read
-- `active_max: copy=1 read=1 write=1` when running with one SMB connection
+- source open: roughly `35ms` per file in the current local test
+- target open: roughly `16ms` per file in the current local test
+- SMB source read latency: roughly `32ms` per read at `2048 KiB`
+- SMB writes are no longer dominant for this workload
 
 Likely next improvement paths:
 
-- Add a configurable SMB read cap so test runs can compare `1 MiB`, `2 MiB`,
-  and `4 MiB` reads without rebuilding.
-- Pipeline reads and writes for a single large file so the next source read can
-  overlap target writes.
+- Use `--buffer-size` to compare `1 MiB` and `2 MiB` SMB source reads without
+  rebuilding. The default remains `1024 KiB`; SMB reads are capped at `2 MiB`;
+  SMB writes remain capped at `256 KiB`. A `4 MiB` SMB read cap stalled during
+  local Samba testing and is not currently considered safe.
 - Batch or avoid target directory/file opens where possible, because open
   latency is now material for many-small-file datasets.
 - Profile `smb-rs` with `perf` on a long `SMB -> SMB` run to check whether the

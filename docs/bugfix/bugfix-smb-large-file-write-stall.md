@@ -86,12 +86,15 @@ Even after querying negotiated limits, Bifrost does **not** drive the write loop
 
 Instead it clamps to:
 
-- `1 MiB` max safe read chunk
+- `2 MiB` max safe read chunk, further capped by the user-facing
+  `--buffer-size` value
 - `256 KiB` max safe write chunk
 
-The larger read cap reduces source-side SMB read RPC count. The write cap stays
-at `256 KiB` because the original stall was observed on SMB write completion,
-not on SMB reads.
+The larger read cap allows source-side SMB read RPC count experiments with
+`--buffer-size 1024` and `--buffer-size 2048`. A `4 MiB` read cap stalled on
+the local Samba test server, so it is not currently allowed for SMB reads. The
+write cap stays at `256 KiB` because the original stall was observed on SMB
+write completion, not on SMB reads.
 
 ## Implementation Notes
 

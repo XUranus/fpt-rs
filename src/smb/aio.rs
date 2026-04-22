@@ -24,7 +24,7 @@ pub struct SmbClientPool {
 const SMB_DEFAULT_WRITE_CHUNK: usize = 256 * 1024;
 const SMB_DEFAULT_READ_CHUNK: usize = 1024 * 1024;
 const SMB_MAX_SAFE_WRITE_CHUNK: usize = 256 * 1024;
-pub const SMB_MAX_SAFE_READ_CHUNK: usize = 1024 * 1024;
+pub const SMB_MAX_SAFE_READ_CHUNK: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct SmbCopyMetrics {
@@ -582,33 +582,43 @@ pub async fn copy_relative_file_streaming(
         }
     };
 
-    let mut chunk = vec![0u8; read_chunk];
-    let mut src_offset = 0u64;
+    let read_smb_chunk = |offset: u64| {
+        let mut read_buf = vec![0u8; read_chunk];
+        let metrics = metrics.clone();
+        let source_unc = source_unc.clone();
+        let source_file = &source_file;
+        async move {
+            let started = Instant::now();
+            let _read_guard = metrics
+                .as_ref()
+                .map(|m| SmbCopyMetrics::active_guard(&m.read_active, &m.read_active_max));
+            let read_len = source_file
+                .read_block(&mut read_buf, offset, None, false)
+                .await
+                .map_err(|e| format!("read {} @{}: {e}", source_unc, offset))?;
+            drop(_read_guard);
+            if let Some(metrics) = &metrics {
+                SmbCopyMetrics::add_io(
+                    &metrics.read_count,
+                    &metrics.read_ns,
+                    &metrics.read_max_ns,
+                    &metrics.read_bytes,
+                    read_len as u64,
+                    started,
+                );
+            }
+            read_buf.truncate(read_len);
+            Ok::<Vec<u8>, String>(read_buf)
+        }
+    };
+
+    let mut chunk = read_smb_chunk(0).await?;
+    let mut next_src_offset = chunk.len() as u64;
     let mut dst_offset = 0u64;
 
-    loop {
-        let started = Instant::now();
-        let _read_guard = metrics
-            .as_ref()
-            .map(|m| SmbCopyMetrics::active_guard(&m.read_active, &m.read_active_max));
-        let read_len = source_file
-            .read_block(&mut chunk, src_offset, None, false)
-            .await
-            .map_err(|e| format!("read {} @{}: {e}", source_unc, src_offset))?;
-        drop(_read_guard);
-        if let Some(metrics) = &metrics {
-            SmbCopyMetrics::add_io(
-                &metrics.read_count,
-                &metrics.read_ns,
-                &metrics.read_max_ns,
-                &metrics.read_bytes,
-                read_len as u64,
-                started,
-            );
-        }
-        if read_len == 0 {
-            break;
-        }
+    while !chunk.is_empty() {
+        let next_read = read_smb_chunk(next_src_offset);
+        let read_len = chunk.len();
 
         let mut chunk_offset = 0usize;
         while chunk_offset < read_len {
@@ -644,7 +654,8 @@ pub async fn copy_relative_file_streaming(
             dst_offset += written as u64;
         }
 
-        src_offset += read_len as u64;
+        chunk = next_read.await?;
+        next_src_offset = next_src_offset.saturating_add(chunk.len() as u64);
     }
 
     if let Some(metrics) = &metrics {
