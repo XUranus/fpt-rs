@@ -28,6 +28,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
+use crate::failure::{retry_sync, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
 use crate::scanner::metadata::{HardlinkControlFileReader, HardlinkEntry, MetaRepoReader};
 
 /// Statistics for the hardlink backup phase.
@@ -104,6 +105,8 @@ pub fn process_hardlinks(
     meta_dir: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<HardlinkStatsSnapshot> {
     let stats = Arc::new(HardlinkStats::default());
 
@@ -127,7 +130,7 @@ pub fn process_hardlinks(
 
     // Process each group
     for group in groups {
-        process_hardlink_group(group, &stats);
+        process_hardlink_group(group, &stats, retry_policy, failure_recorder);
     }
 
     let snapshot = stats.snapshot();
@@ -219,7 +222,12 @@ fn read_hardlink_groups(
 /// Processes a single hardlink group.
 /// The first file in the group is the target (already copied), and
 /// subsequent files are created as hardlinks to it.
-fn process_hardlink_group(group: HardlinkGroup, stats: &Arc<HardlinkStats>) {
+fn process_hardlink_group(
+    group: HardlinkGroup,
+    stats: &Arc<HardlinkStats>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
+) {
     if group.files.len() < 2 {
         // Need at least 2 files to create a hardlink
         stats.files_skipped.fetch_add(1, Ordering::Relaxed);
@@ -246,7 +254,13 @@ fn process_hardlink_group(group: HardlinkGroup, stats: &Arc<HardlinkStats>) {
                     "Using existing file as hardlink target: {:?}",
                     existing_file.dst_path
                 );
-                create_hardlinks_for_group(existing_file, &group.files, stats);
+                create_hardlinks_for_group(
+                    existing_file,
+                    &group.files,
+                    stats,
+                    retry_policy,
+                    failure_recorder,
+                );
             }
             None => {
                 error!(
@@ -261,7 +275,13 @@ fn process_hardlink_group(group: HardlinkGroup, stats: &Arc<HardlinkStats>) {
         return;
     }
 
-    create_hardlinks_for_group(target_info, &group.files[1..], stats);
+    create_hardlinks_for_group(
+        target_info,
+        &group.files[1..],
+        stats,
+        retry_policy,
+        failure_recorder,
+    );
 }
 
 /// Creates hardlinks for all files in a group pointing to the target.
@@ -269,6 +289,8 @@ fn create_hardlinks_for_group(
     target_info: &HardlinkFileInfo,
     link_files: &[HardlinkFileInfo],
     stats: &Arc<HardlinkStats>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) {
     let target_path = &target_info.dst_path;
 
@@ -306,27 +328,47 @@ fn create_hardlinks_for_group(
                 "Removing existing file to create hardlink: {:?}",
                 link_info.dst_path
             );
-            if let Err(e) = fs::remove_file(&link_info.dst_path) {
+            if let Err((e, attempts)) =
+                retry_sync(retry_policy, || fs::remove_file(&link_info.dst_path))
+            {
                 error!(
                     "Failed to remove existing file {:?}: {}",
                     link_info.dst_path, e
                 );
                 stats.hardlinks_failed.fetch_add(1, Ordering::Relaxed);
+                record_hardlink_failure(
+                    failure_recorder,
+                    "remove_existing",
+                    FailureItemType::File,
+                    &link_info.dst_path,
+                    &e,
+                    attempts,
+                );
                 continue;
             }
         }
 
         // Create parent directory if needed
         if let Some(parent) = link_info.dst_path.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            if let Err((e, attempts)) = retry_sync(retry_policy, || fs::create_dir_all(parent)) {
                 error!("Failed to create directory {:?}: {}", parent, e);
                 stats.hardlinks_failed.fetch_add(1, Ordering::Relaxed);
+                record_hardlink_failure(
+                    failure_recorder,
+                    "create_dir",
+                    FailureItemType::Directory,
+                    parent,
+                    &e,
+                    attempts,
+                );
                 continue;
             }
         }
 
         // Create the hardlink
-        match create_hardlink(target_path, &link_info.dst_path) {
+        match retry_sync(retry_policy, || {
+            create_hardlink(target_path, &link_info.dst_path)
+        }) {
             Ok(()) => {
                 debug!(
                     "Created hardlink: {:?} -> {:?}",
@@ -342,14 +384,42 @@ fn create_hardlinks_for_group(
                     );
                 }
             }
-            Err(e) => {
+            Err((e, attempts)) => {
                 error!(
                     "Failed to create hardlink {:?} -> {:?}: {}",
                     link_info.dst_path, target_path, e
                 );
                 stats.hardlinks_failed.fetch_add(1, Ordering::Relaxed);
+                record_hardlink_failure(
+                    failure_recorder,
+                    "create_hardlink",
+                    FailureItemType::File,
+                    &link_info.dst_path,
+                    &e,
+                    attempts,
+                );
             }
         }
+    }
+}
+
+fn record_hardlink_failure(
+    recorder: Option<&FailureRecorder>,
+    operation: &str,
+    item_type: FailureItemType,
+    path: &Path,
+    err: &io::Error,
+    attempts: u32,
+) {
+    if let Some(recorder) = recorder {
+        recorder.record(FailureRecord::from_io_error(
+            "backup",
+            operation,
+            item_type,
+            path.to_string_lossy(),
+            err,
+            attempts,
+        ));
     }
 }
 
@@ -420,6 +490,8 @@ pub fn run_hardlink_phase(
     meta_dir: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<HardlinkStatsSnapshot> {
     let hardlink_ctrl_path = ctrl_dir.join("hardlink.txt");
     process_hardlinks(
@@ -427,6 +499,8 @@ pub fn run_hardlink_phase(
         meta_dir,
         source_dir_base,
         target_dir_base,
+        retry_policy,
+        failure_recorder,
     )
 }
 

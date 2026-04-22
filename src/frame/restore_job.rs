@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::RestorePolicy;
+use crate::failure::RetryPolicy;
 use crate::frame::location::DataLocation;
 use crate::frame::postjob::BackupManifest;
 use crate::frame::postjob::RestorePostJob;
@@ -226,6 +227,8 @@ impl BackupRestoreJob for FileRestoreJob {
                     enable_mtime: false,
                     smb_connection_count: 1,
                     copy_buffer_size: 1024 * 1024,
+                    failure_log: None,
+                    retry_policy: RetryPolicy::default(),
                     backup_source: DataLocation::Local(PathBuf::new()), // unused for restore
                     backup_target: DataLocation::Local(PathBuf::new()), // unused for restore
                     restore_target: cfg.restore_target.clone(),

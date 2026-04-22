@@ -14,6 +14,8 @@
 
 use std::path::PathBuf;
 
+use crate::failure::{FailureLogConfig, RetryPolicy};
+
 #[derive(Debug, Clone)]
 pub struct ControlPathOption {
     /// Physical base prefix stripped from metadata paths when emitting
@@ -70,6 +72,12 @@ pub struct ScanOption {
 
     /// When true, only collect scan statistics and skip on-disk outputs.
     pub stats_only: bool,
+
+    /// Optional per-scan failure log output.
+    pub failure_log: Option<FailureLogConfig>,
+
+    /// Retry policy for scan operations.
+    pub retry_policy: RetryPolicy,
 }
 
 /// Output directory configuration.
@@ -235,6 +243,8 @@ impl Default for ScanOption {
                 source_kind: "local".to_string(),
             },
             stats_only: false,
+            failure_log: None,
+            retry_policy: RetryPolicy::default(),
         }
     }
 }
@@ -410,6 +420,18 @@ impl ScanOption {
     /// Enables stats-only scanning.
     pub fn stats_only(mut self, enabled: bool) -> Self {
         self.stats_only = enabled;
+        self
+    }
+
+    /// Configures optional per-scan failure log output.
+    pub fn failure_log(mut self, config: Option<FailureLogConfig>) -> Self {
+        self.failure_log = config;
+        self
+    }
+
+    /// Configures retry policy for scan operations.
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
         self
     }
 }

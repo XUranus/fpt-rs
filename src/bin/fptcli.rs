@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use bifrost::backup::aggregate::{AggregateConfig, AggregateLayout};
 use bifrost::backup::RestorePolicy;
+use bifrost::failure::{FailureLogFormat, RetryPolicy};
 use bifrost::frame::{
     scan::ScanConfig, traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation,
     RestoreJob, RestoreJobConfig,
@@ -99,6 +100,30 @@ enum Commands {
         /// Maximum per-file copy buffer size in KB [default: 1024, recommended: 256..4096]
         #[arg(long, default_value = "1024", value_name = "SIZE_KB")]
         buffer_size: usize,
+
+        /// Structured failure log format written under C_REPO/logs.
+        #[arg(long, value_enum, value_name = "FMT")]
+        failure_log_format: Option<FailureLogFormatArg>,
+
+        /// Number of retries for scan/copy operations before recording failure.
+        #[arg(long, default_value = "3", value_name = "COUNT")]
+        operation_retries: u32,
+
+        /// Delay in milliseconds between retries.
+        #[arg(long, default_value = "1000", value_name = "MS")]
+        retry_delay_ms: u64,
+
+        /// Exponential retry backoff multiplier. 1.0 keeps fixed delay.
+        #[arg(long, default_value = "1.0", value_name = "N")]
+        retry_backoff: f64,
+
+        /// Maximum retry delay in milliseconds when backoff is enabled.
+        #[arg(long, default_value = "1000", value_name = "MS")]
+        retry_max_delay_ms: u64,
+
+        /// Deterministic jitter ratio for retry delays, range 0.0..1.0.
+        #[arg(long, default_value = "0.0", value_name = "RATIO")]
+        retry_jitter: f64,
 
         /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
         #[arg(long, value_name = "UID")]
@@ -196,6 +221,13 @@ enum AggregateLayoutArg {
     Shard,
 }
 
+#[derive(ValueEnum, Debug, Clone, Copy)]
+enum FailureLogFormatArg {
+    Csv,
+    Json,
+    Xml,
+}
+
 impl From<AggregateLayoutArg> for AggregateLayout {
     fn from(value: AggregateLayoutArg) -> Self {
         match value {
@@ -211,6 +243,16 @@ impl From<RestorePolicyArg> for RestorePolicy {
             RestorePolicyArg::Replace => RestorePolicy::Replace,
             RestorePolicyArg::Skip => RestorePolicy::Skip,
             RestorePolicyArg::KeepNewer => RestorePolicy::KeepNewer,
+        }
+    }
+}
+
+impl From<FailureLogFormatArg> for FailureLogFormat {
+    fn from(value: FailureLogFormatArg) -> Self {
+        match value {
+            FailureLogFormatArg::Csv => FailureLogFormat::Csv,
+            FailureLogFormatArg::Json => FailureLogFormat::Json,
+            FailureLogFormatArg::Xml => FailureLogFormat::Xml,
         }
     }
 }
@@ -295,6 +337,12 @@ fn cmd_backup(
     nfs_connections: usize,
     smb_connections: usize,
     buffer_size: usize,
+    failure_log_format: Option<FailureLogFormatArg>,
+    operation_retries: u32,
+    retry_delay_ms: u64,
+    retry_backoff: f64,
+    retry_max_delay_ms: u64,
+    retry_jitter: f64,
     nfs_uid: Option<u32>,
     nfs_gid: Option<u32>,
     temp_dir: Option<PathBuf>,
@@ -326,6 +374,16 @@ fn cmd_backup(
         AggregateConfig::default()
     };
 
+    let retry_policy = RetryPolicy::new(
+        operation_retries,
+        std::time::Duration::from_millis(retry_delay_ms),
+    )
+    .with_backoff(
+        retry_backoff,
+        std::time::Duration::from_millis(retry_max_delay_ms),
+    )
+    .with_jitter(retry_jitter);
+
     let scan_config = ScanConfig {
         worker_count: workers,
         writer_count: 1,
@@ -333,6 +391,8 @@ fn cmd_backup(
         enable_aggregation: matches!(format, BackupFormat::Aggregated),
         max_aggregate_blob_size: blob_size * 1024 * 1024,
         aggregate_file_threshold: threshold * 1024,
+        failure_log: None,
+        retry_policy,
     };
 
     let config = BackupJobConfig {
@@ -352,6 +412,8 @@ fn cmd_backup(
         max_concurrent_subtasks: jobs,
         smb_connection_count: smb_connections.max(1),
         copy_buffer_size: (buffer_size * 1024).clamp(256 * 1024, 4 * 1024 * 1024),
+        failure_log_format: failure_log_format.map(Into::into),
+        retry_policy,
         incremental_base,
         verbose,
     };
@@ -600,6 +662,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             nfs_connections,
             smb_connections,
             buffer_size,
+            failure_log_format,
+            operation_retries,
+            retry_delay_ms,
+            retry_backoff,
+            retry_max_delay_ms,
+            retry_jitter,
             nfs_uid,
             nfs_gid,
             temp_dir,
@@ -622,6 +690,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             nfs_connections,
             smb_connections,
             buffer_size,
+            failure_log_format,
+            operation_retries,
+            retry_delay_ms,
+            retry_backoff,
+            retry_max_delay_ms,
+            retry_jitter,
             nfs_uid,
             nfs_gid,
             temp_dir,

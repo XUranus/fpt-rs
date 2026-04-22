@@ -18,6 +18,7 @@
 
 use std::path::PathBuf;
 
+use crate::failure::{FailureLogConfig, RetryPolicy};
 use crate::frame::location::DataLocation;
 use crate::frame::repo::RepoLayout;
 use crate::frame::scanner_impls::{LocalFileScanner, ScannerConfig};
@@ -105,6 +106,10 @@ pub struct ScanConfig {
     pub max_aggregate_blob_size: u64,
     /// Files smaller than this threshold are aggregate candidates.
     pub aggregate_file_threshold: u64,
+    /// Optional scan failure log file.
+    pub failure_log: Option<FailureLogConfig>,
+    /// Retry policy for scan operations.
+    pub retry_policy: RetryPolicy,
 }
 
 impl Default for ScanConfig {
@@ -116,6 +121,8 @@ impl Default for ScanConfig {
             enable_aggregation: false,
             max_aggregate_blob_size: 64 * 1024 * 1024,
             aggregate_file_threshold: 1024 * 1024,
+            failure_log: None,
+            retry_policy: RetryPolicy::default(),
         }
     }
 }
@@ -150,6 +157,8 @@ impl<'a> ScanJob<'a> {
             .enable_aggregation(self.config.enable_aggregation)
             .max_aggregate_blob_size(self.config.max_aggregate_blob_size)
             .aggregate_file_threshold(self.config.aggregate_file_threshold)
+            .failure_log(self.config.failure_log.clone())
+            .retry_policy(self.config.retry_policy)
     }
 
     /// Run the scan via a [`LocalFileScanner`] (blocking).

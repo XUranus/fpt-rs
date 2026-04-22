@@ -131,6 +131,23 @@ Path handling:
 - NFS locations are inferred from `nfs://...` URLs such as `nfs://127.0.0.1/opt/backup?sub=/copies`.
 - The old split flags like `--data-nfs` and `--target-nfs` are no longer used.
 
+Retry and failure logs:
+
+```bash
+./target/release/fptcli backup \
+  --data /opt/dataset/source \
+  --target /backup/root \
+  --format common \
+  --failure-log-format csv \
+  --operation-retries 5 \
+  --retry-delay-ms 500 \
+  --retry-backoff 2.0 \
+  --retry-max-delay-ms 8000 \
+  --retry-jitter 0.2
+```
+
+This writes structured scan/subtask failure logs under `C_REPO/logs`. See [docs/retry_failure.md](docs/retry_failure.md).
+
 ## Legacy Tools
 
 Scan:
@@ -175,3 +192,4 @@ Important docs:
 - [docs/smoke_matrix.md](docs/smoke_matrix.md): full local/NFS/SMB smoke matrix
 - [docs/ctrlfile.md](docs/ctrlfile.md): control-file formats
 - [docs/logging.md](docs/logging.md): routed logging behavior
+- [docs/retry_failure.md](docs/retry_failure.md): retry policy and structured failure logs

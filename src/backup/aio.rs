@@ -23,6 +23,7 @@ use crate::backup::aggregate::AggregateConfig;
 #[cfg(feature = "nfs")]
 use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::stats::BackupStats;
+use crate::failure::{FailureRecorder, RetryPolicy};
 #[cfg(feature = "nfs")]
 use crate::nfs::aio::reader::new_file_handle_cache;
 #[cfg(feature = "nfs")]
@@ -55,6 +56,8 @@ pub fn spawn_local_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -97,6 +100,8 @@ pub fn spawn_local_to_nfs_backup(
                 target_prefix,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 pool,
                 stats,
                 enable_hardlink_phase,
@@ -120,6 +125,8 @@ pub fn spawn_local_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -165,6 +172,8 @@ pub fn spawn_local_to_smb_backup(
                 target_prefix,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 smb_target,
                 pool,
                 stats,
@@ -189,6 +198,8 @@ pub fn spawn_smb_to_local_backup(
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -234,6 +245,8 @@ pub fn spawn_smb_to_local_backup(
                 target_dir_base,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 smb_source,
                 pool,
                 stats,
@@ -259,6 +272,8 @@ pub fn spawn_smb_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -315,6 +330,8 @@ pub fn spawn_smb_to_smb_backup(
                 target_prefix,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 smb_source,
                 smb_target,
                 source_pool,
@@ -342,6 +359,8 @@ pub fn spawn_nfs_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -394,6 +413,8 @@ pub fn spawn_nfs_to_smb_backup(
                 target_prefix,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 source_pool,
                 smb_target,
                 target_pool,
@@ -420,6 +441,8 @@ pub fn spawn_smb_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
@@ -473,6 +496,8 @@ pub fn spawn_smb_to_nfs_backup(
                 target_prefix,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 smb_source,
                 source_pool,
                 target_pool,
@@ -498,6 +523,8 @@ pub fn spawn_nfs_to_local_backup(
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -540,6 +567,8 @@ pub fn spawn_nfs_to_local_backup(
                 target_dir_base,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 pool,
                 stats,
                 enable_hardlink_phase,
@@ -564,6 +593,8 @@ pub fn spawn_nfs_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
     enable_hardlink_phase: bool,
@@ -614,6 +645,8 @@ pub fn spawn_nfs_to_nfs_backup(
                 target_prefix,
                 aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder,
                 src_pool,
                 tgt_pool,
                 stats,
@@ -638,6 +671,8 @@ pub async fn run_local_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -653,6 +688,8 @@ pub async fn run_local_to_nfs_backup(
         Arc::clone(&pool),
         Arc::clone(&stats),
         copy_buffer_size,
+        retry_policy,
+        failure_recorder.clone(),
     )
     .await;
 
@@ -683,6 +720,8 @@ pub async fn run_local_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
@@ -700,6 +739,8 @@ pub async fn run_local_to_smb_backup(
         pool,
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder.clone(),
     )
     .await;
 
@@ -725,6 +766,8 @@ pub async fn run_nfs_to_local_backup(
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     enable_hardlink_phase: bool,
@@ -740,6 +783,8 @@ pub async fn run_nfs_to_local_backup(
         pool,
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder.clone(),
     )
     .await;
 
@@ -751,6 +796,8 @@ pub async fn run_nfs_to_local_backup(
         enable_hardlink_phase,
         enable_delete_phase,
         enable_mtime_phase,
+        retry_policy,
+        failure_recorder.as_ref(),
     );
 }
 
@@ -764,6 +811,8 @@ pub async fn run_nfs_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     source_pool: Arc<NfsConnectionPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
@@ -781,6 +830,8 @@ pub async fn run_nfs_to_nfs_backup(
         Arc::clone(&target_pool),
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder.clone(),
     )
     .await;
 
@@ -811,6 +862,8 @@ pub async fn run_smb_to_local_backup(
     target_dir_base: PathBuf,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
@@ -828,6 +881,8 @@ pub async fn run_smb_to_local_backup(
         pool,
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder.clone(),
     )
     .await;
 
@@ -839,6 +894,8 @@ pub async fn run_smb_to_local_backup(
         enable_hardlink_phase,
         enable_delete_phase,
         enable_mtime_phase,
+        retry_policy,
+        failure_recorder.as_ref(),
     );
 }
 
@@ -852,6 +909,8 @@ pub async fn run_smb_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     source_location: SmbLocation,
     target_location: SmbLocation,
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
@@ -873,6 +932,8 @@ pub async fn run_smb_to_smb_backup(
         target_pool,
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 
@@ -897,6 +958,8 @@ pub async fn run_nfs_to_smb_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     source_pool: Arc<NfsConnectionPool>,
     target_location: SmbLocation,
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
@@ -916,6 +979,8 @@ pub async fn run_nfs_to_smb_backup(
         target_pool,
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 
@@ -940,6 +1005,8 @@ pub async fn run_smb_to_nfs_backup(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     source_location: SmbLocation,
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<NfsConnectionPool>,
@@ -959,6 +1026,8 @@ pub async fn run_smb_to_nfs_backup(
         Arc::clone(&target_pool),
         stats,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 
@@ -988,10 +1057,19 @@ fn run_local_target_phases(
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
     enable_mtime_phase: bool,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) {
     if enable_hardlink_phase {
         info!("Starting hardlink phase...");
-        match hardlink::run_hardlink_phase(ctrl_dir, meta_dir, source_dir_base, target_dir_base) {
+        match hardlink::run_hardlink_phase(
+            ctrl_dir,
+            meta_dir,
+            source_dir_base,
+            target_dir_base,
+            retry_policy,
+            failure_recorder,
+        ) {
             Ok(hl_stats) => {
                 info!(
                     "Hardlink phase completed: {} created, {} failed",
@@ -1006,7 +1084,13 @@ fn run_local_target_phases(
 
     if enable_delete_phase {
         info!("Starting delete phase...");
-        match delete::run_delete_phase(ctrl_dir, source_dir_base, target_dir_base) {
+        match delete::run_delete_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_dir_base,
+            retry_policy,
+            failure_recorder,
+        ) {
             Ok(del_stats) => {
                 info!(
                     "Delete phase completed: {} files deleted, {} dirs deleted",
@@ -1021,7 +1105,13 @@ fn run_local_target_phases(
 
     if enable_mtime_phase {
         info!("Starting mtime phase...");
-        match mtime::run_mtime_phase(ctrl_dir, source_dir_base, target_dir_base) {
+        match mtime::run_mtime_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_dir_base,
+            retry_policy,
+            failure_recorder,
+        ) {
             Ok(mt_stats) => {
                 info!(
                     "Mtime phase completed: {} restored, {} failed",

@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
+use crate::failure::{retry_sync, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
 use crate::scanner::metadata::MtimeControlFileReader;
 
 /// Statistics for the mtime backup phase.
@@ -79,6 +80,8 @@ pub fn process_mtime(
     mtime_ctrl_path: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<MtimeStatsSnapshot> {
     let stats = Arc::new(MtimeStats::default());
 
@@ -122,7 +125,9 @@ pub fn process_mtime(
         }
 
         // Set directory timestamps
-        match set_dir_times(&target_path, entry.atime, entry.mtime) {
+        match retry_sync(retry_policy, || {
+            set_dir_times(&target_path, entry.atime, entry.mtime)
+        }) {
             Ok(()) => {
                 debug!(
                     "Restored mtime for {:?}: atime={}, mtime={}",
@@ -130,9 +135,10 @@ pub fn process_mtime(
                 );
                 stats.dirs_restored.fetch_add(1, Ordering::Relaxed);
             }
-            Err(e) => {
+            Err((e, attempts)) => {
                 error!("Failed to set times for {:?}: {}", target_path, e);
                 stats.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                record_mtime_failure(failure_recorder, &target_path, &e, attempts);
             }
         }
     }
@@ -248,9 +254,35 @@ pub fn run_mtime_phase(
     ctrl_dir: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<MtimeStatsSnapshot> {
     let mtime_ctrl_path = ctrl_dir.join("mtime.txt");
-    process_mtime(&mtime_ctrl_path, source_dir_base, target_dir_base)
+    process_mtime(
+        &mtime_ctrl_path,
+        source_dir_base,
+        target_dir_base,
+        retry_policy,
+        failure_recorder,
+    )
+}
+
+fn record_mtime_failure(
+    recorder: Option<&FailureRecorder>,
+    path: &Path,
+    err: &io::Error,
+    attempts: u32,
+) {
+    if let Some(recorder) = recorder {
+        recorder.record(FailureRecord::from_io_error(
+            "backup",
+            "set_mtime",
+            FailureItemType::Directory,
+            path.to_string_lossy(),
+            err,
+            attempts,
+        ));
+    }
 }
 
 #[cfg(test)]

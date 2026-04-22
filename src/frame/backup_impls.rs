@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::{BackupOption, BackupTask};
+use crate::failure::{FailureLogConfig, RetryPolicy};
 use crate::frame::traits::{FileBackup, TransferStats};
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,10 @@ pub struct BackupConfig {
     pub enable_delete: bool,
     /// Whether to run the mtime phase.
     pub enable_mtime: bool,
+    /// Optional failure log file for this subtask.
+    pub failure_log: Option<FailureLogConfig>,
+    /// Retry policy for copy operations.
+    pub retry_policy: RetryPolicy,
 }
 
 impl BackupConfig {
@@ -73,6 +78,8 @@ impl BackupConfig {
             enable_hardlink: false,
             enable_delete: false,
             enable_mtime: false,
+            failure_log: None,
+            retry_policy: RetryPolicy::default(),
         }
     }
 
@@ -102,6 +109,14 @@ impl BackupConfig {
     }
     pub fn enable_mtime(mut self, v: bool) -> Self {
         self.enable_mtime = v;
+        self
+    }
+    pub fn failure_log(mut self, config: Option<FailureLogConfig>) -> Self {
+        self.failure_log = config;
+        self
+    }
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
         self
     }
 }
@@ -162,7 +177,9 @@ impl FileBackup for LocalFileBackup {
         .enable_delete_phase(cfg.enable_delete)
         .enable_mtime_phase(cfg.enable_mtime)
         .aggregate_config(cfg.aggregate_config.clone())
-        .copy_buffer_size(cfg.copy_buffer_size);
+        .copy_buffer_size(cfg.copy_buffer_size)
+        .failure_log(cfg.failure_log.clone())
+        .retry_policy(cfg.retry_policy);
 
         run_backup_task(option)
     }
@@ -224,6 +241,8 @@ mod nfs_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .nfs_target(self.nfs_target.clone())
             .nfs_target_d_repo_path(
                 cfg.remote_target_prefix
@@ -267,6 +286,8 @@ mod nfs_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .nfs_source(self.nfs_source.clone());
 
             run_backup_task(option)
@@ -311,6 +332,8 @@ mod nfs_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .nfs_source(self.nfs_source.clone())
             .nfs_target(self.nfs_target.clone())
             .nfs_target_d_repo_path(
@@ -363,6 +386,8 @@ mod mixed_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .nfs_source(self.nfs_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
@@ -409,6 +434,8 @@ mod mixed_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .nfs_target(self.nfs_target.clone())
@@ -460,6 +487,8 @@ mod smb_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .smb_target_d_repo_path(
@@ -501,6 +530,8 @@ mod smb_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count);
 
@@ -542,6 +573,8 @@ mod smb_impl {
             .enable_mtime_phase(cfg.enable_mtime)
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
+            .failure_log(cfg.failure_log.clone())
+            .retry_policy(cfg.retry_policy)
             .smb_source(self.smb_source.clone())
             .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
@@ -606,9 +639,9 @@ fn run_backup_task(option: BackupOption) -> Result<TransferStats, BackupTaskErro
         .wait()
         .map_err(|e| BackupTaskError::Engine(e.to_string()))?;
 
-    if snap.files_failed > 0 {
+    if snap.files_failed + snap.dirs_failed > 0 {
         return Err(BackupTaskError::PartialFailure {
-            files_failed: snap.files_failed,
+            files_failed: snap.files_failed + snap.dirs_failed,
         });
     }
 
@@ -617,5 +650,6 @@ fn run_backup_task(option: BackupOption) -> Result<TransferStats, BackupTaskErro
         bytes_transferred: snap.bytes_copied,
         dirs_created: snap.dirs_created,
         files_failed: snap.files_failed,
+        dirs_failed: snap.dirs_failed,
     })
 }

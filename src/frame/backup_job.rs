@@ -19,6 +19,7 @@ use std::thread;
 use uuid::Uuid;
 
 use crate::backup::aggregate::AggregateConfig;
+use crate::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use crate::frame::location::DataLocation;
 use crate::frame::postjob::{AggregationManifest, BackupManifest, BackupPostJob, SubtaskRecord};
 use crate::frame::prereq::BackupPrereqJob;
@@ -58,6 +59,8 @@ pub struct BackupJobConfig {
     pub max_concurrent_subtasks: usize,
     pub smb_connection_count: usize,
     pub copy_buffer_size: usize,
+    pub failure_log_format: Option<FailureLogFormat>,
+    pub retry_policy: RetryPolicy,
 
     // ── Incremental ──────────────────────────────────────────────────────────
     pub incremental_base: Option<PathBuf>,
@@ -83,6 +86,8 @@ impl Default for BackupJobConfig {
             max_concurrent_subtasks: 4,
             smb_connection_count: 1,
             copy_buffer_size: 1024 * 1024,
+            failure_log_format: None,
+            retry_policy: RetryPolicy::default(),
             incremental_base: None,
             verbose: 0,
         }
@@ -201,6 +206,17 @@ impl BackupRestoreJob for FileBackupJob {
                 let base_repo = RepoLayout::from_existing(base.clone());
                 sc.prev_meta_dir = Some(base_repo.meta_dir.clone());
             }
+            sc.failure_log = cfg.failure_log_format.map(|format| {
+                FailureLogConfig::new(
+                    failure_file_path(
+                        &repo.logs_dir,
+                        &format!("{}_SCAN_FAILURE", repo.copy_uuid),
+                        format,
+                    ),
+                    format,
+                )
+            });
+            sc.retry_policy = cfg.retry_policy;
             sc
         };
 
@@ -259,6 +275,17 @@ impl BackupRestoreJob for FileBackupJob {
                 enable_mtime: cfg.enable_mtime,
                 smb_connection_count: cfg.smb_connection_count,
                 copy_buffer_size: cfg.copy_buffer_size,
+                failure_log: cfg.failure_log_format.map(|format| {
+                    FailureLogConfig::new(
+                        failure_file_path(
+                            &repo.logs_dir,
+                            &format!("SUBTASK_{}_FAILURE", subtask_uuid),
+                            format,
+                        ),
+                        format,
+                    )
+                }),
+                retry_policy: cfg.retry_policy,
                 backup_source: cfg.source.clone(),
                 backup_target: cfg.target.clone(),
                 restore_target: DataLocation::Local(PathBuf::new()), // unused for backup

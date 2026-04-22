@@ -49,7 +49,20 @@ Main options:
 | `--nfs-gid` | AUTH_UNIX gid override |
 | `--temp-dir` | Local staging root, mainly for NFS-target jobs |
 | `--log-file` | Catch-all extra log file |
+| `--failure-log-format` | Enable structured scan/subtask failure logs: `csv`, `json`, or `xml` |
+| `--operation-retries` | Retry count after the initial scan/copy operation attempt |
+| `--retry-delay-ms` | Base retry delay in milliseconds |
+| `--retry-backoff` | Exponential retry backoff multiplier; `1.0` keeps fixed delay |
+| `--retry-max-delay-ms` | Maximum retry delay after backoff |
+| `--retry-jitter` | Deterministic retry jitter ratio, `0.0..1.0` |
 | `-v` | Verbosity, repeat for more detail |
+
+When `--failure-log-format` is set, `fptcli backup` writes failure files under `C_REPO/logs`:
+
+- `{copy_uuid}_SCAN_FAILURE.<fmt>`
+- `SUBTASK_{subtask_uuid}_FAILURE.<fmt>`
+
+See [retry_failure.md](retry_failure.md) for record fields, retry policy details, and `fsscan`/`fsbackup` options.
 
 ### Common Format
 

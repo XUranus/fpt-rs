@@ -12,6 +12,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::failure::{FailureLogConfig, RetryPolicy};
 use crate::frame::traits::{FileScanner, ScanStats};
 use crate::scanner::options::ScanOption;
 
@@ -40,6 +41,10 @@ pub struct ScannerConfig {
     pub max_aggregate_blob_size: u64,
     /// Files smaller than this threshold are aggregate candidates.
     pub aggregate_file_threshold: u64,
+    /// Optional failure log file for the scan.
+    pub failure_log: Option<FailureLogConfig>,
+    /// Retry policy for scan operations.
+    pub retry_policy: RetryPolicy,
 }
 
 impl Default for ScannerConfig {
@@ -54,6 +59,8 @@ impl Default for ScannerConfig {
             enable_aggregation: false,
             max_aggregate_blob_size: 64 * 1024 * 1024,
             aggregate_file_threshold: 1024 * 1024,
+            failure_log: None,
+            retry_policy: RetryPolicy::default(),
         }
     }
 }
@@ -95,6 +102,14 @@ impl ScannerConfig {
         self.aggregate_file_threshold = threshold;
         self
     }
+    pub fn failure_log(mut self, config: Option<FailureLogConfig>) -> Self {
+        self.failure_log = config;
+        self
+    }
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
 
     /// Build a [`ScanOption`] from this config.
     pub(crate) fn to_scan_option(
@@ -110,7 +125,9 @@ impl ScannerConfig {
             .stats_only(self.stats_only)
             .enable_aggregation(self.enable_aggregation)
             .max_aggregate_blob_size(self.max_aggregate_blob_size)
-            .aggregate_file_threshold(self.aggregate_file_threshold);
+            .aggregate_file_threshold(self.aggregate_file_threshold)
+            .failure_log(self.failure_log.clone())
+            .retry_policy(self.retry_policy);
         if let Some(ref prev) = self.prev_meta_dir {
             opt = opt.prev_meta_dir(Some(prev.clone()));
         }
@@ -199,6 +216,8 @@ impl FileScanner for LocalFileScanner {
             total_files: snap.tot_files,
             total_dirs: snap.tot_dirs,
             total_size_bytes: snap.tot_size,
+            failed_files: snap.failed_files,
+            failed_dirs: snap.failed_dirs,
         })
     }
 }
@@ -280,7 +299,7 @@ mod nfs_impl {
                 .build()
                 .map_err(NfsScanError::Runtime)?;
 
-            let (tot_files, tot_dirs, tot_size) = rt
+            let (tot_files, tot_dirs, tot_size, failed_files, failed_dirs) = rt
                 .block_on(crate::scanner::run_nfs_scan(&self.source, scan_option))
                 .map_err(NfsScanError::Scan)?;
 
@@ -288,6 +307,8 @@ mod nfs_impl {
                 total_files: tot_files,
                 total_dirs: tot_dirs,
                 total_size_bytes: tot_size,
+                failed_files,
+                failed_dirs,
             })
         }
     }
@@ -356,7 +377,7 @@ mod smb_impl {
                 .map_err(SmbScanError::Runtime)?;
 
             let source = self.source.clone();
-            let (tot_files, tot_dirs, tot_size) = rt
+            let (tot_files, tot_dirs, tot_size, failed_files, failed_dirs) = rt
                 .block_on(crate::scanner::run_smb_scan(&source, scan_option))
                 .map_err(SmbScanError::Scan)?;
 
@@ -364,6 +385,8 @@ mod smb_impl {
                 total_files: tot_files,
                 total_dirs: tot_dirs,
                 total_size_bytes: tot_size,
+                failed_files,
+                failed_dirs,
             })
         }
     }

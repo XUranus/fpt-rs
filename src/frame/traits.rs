@@ -34,27 +34,35 @@ pub struct ScanStats {
     pub total_files: u64,
     pub total_dirs: u64,
     pub total_size_bytes: u64,
+    pub failed_files: u64,
+    pub failed_dirs: u64,
 }
 
 impl std::fmt::Display for ScanStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let size = self.total_size_bytes;
         if size == 0 {
-            write!(f, "{} files, {} dirs", self.total_files, self.total_dirs)
+            write!(
+                f,
+                "{} files, {} dirs, {} failed files, {} failed dirs",
+                self.total_files, self.total_dirs, self.failed_files, self.failed_dirs
+            )
         } else if size < 1024 {
             write!(
                 f,
-                "{} files, {} dirs, {} bytes",
-                self.total_files, self.total_dirs, size
+                "{} files, {} dirs, {} bytes, {} failed files, {} failed dirs",
+                self.total_files, self.total_dirs, size, self.failed_files, self.failed_dirs
             )
         } else {
             write!(
                 f,
-                "{} files, {} dirs, {:.2} MB ({} bytes)",
+                "{} files, {} dirs, {:.2} MB ({} bytes), {} failed files, {} failed dirs",
                 self.total_files,
                 self.total_dirs,
                 size as f64 / (1024.0 * 1024.0),
                 size,
+                self.failed_files,
+                self.failed_dirs,
             )
         }
     }
@@ -71,17 +79,19 @@ pub struct TransferStats {
     pub bytes_transferred: u64,
     pub dirs_created: u64,
     pub files_failed: u64,
+    pub dirs_failed: u64,
 }
 
 impl std::fmt::Display for TransferStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} files ({:.2} MB), {} dirs, {} failed",
+            "{} files ({:.2} MB), {} dirs, {} failed files, {} failed dirs",
             self.files_transferred,
             self.bytes_transferred as f64 / (1024.0 * 1024.0),
             self.dirs_created,
             self.files_failed,
+            self.dirs_failed,
         )
     }
 }

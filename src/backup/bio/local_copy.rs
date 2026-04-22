@@ -7,6 +7,7 @@ use crate::backup::local_executor::{
 };
 use crate::backup::phases::run_local_followup_phases;
 use crate::backup::stats::BackupStats;
+use crate::failure::{FailureRecorder, RetryPolicy};
 use log::{error, info};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ pub(crate) fn spawn_local_common_copy_pipeline(
     ctrl_dir: PathBuf,
     worker_count: usize,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     aggregate_config: AggregateConfig,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -55,6 +58,7 @@ pub(crate) fn spawn_local_common_copy_pipeline(
             let rx = Arc::clone(&worker_rx);
             let stats = Arc::clone(&stats);
             let aggregate_state = aggregate_state.clone();
+            let worker_failure_recorder = failure_recorder.clone();
             workers.push(thread::spawn(move || {
                 let mut buffer = vec![0_u8; copy_buffer_size.clamp(256 * 1024, 4 * 1024 * 1024)];
                 loop {
@@ -71,6 +75,8 @@ pub(crate) fn spawn_local_common_copy_pipeline(
                         aggregate_state.as_deref(),
                         &stats,
                         &mut buffer,
+                        retry_policy,
+                        worker_failure_recorder.as_ref(),
                     ) {
                         error!("Local copy worker {} failed: {}", i, e);
                         stats.inc_files_failed();
@@ -86,6 +92,8 @@ pub(crate) fn spawn_local_common_copy_pipeline(
             &target_dir_base,
             &job_tx,
             &stats,
+            retry_policy,
+            failure_recorder.as_ref(),
             aggregate_state.as_ref(),
         ) {
             error!("Local copy producer failed: {}", e);
@@ -99,7 +107,13 @@ pub(crate) fn spawn_local_common_copy_pipeline(
         }
 
         if let Some(agg_state) = aggregate_state {
-            flush_local_aggregate_state(&agg_state, &stats, copy_buffer_size);
+            flush_local_aggregate_state(
+                &agg_state,
+                &stats,
+                copy_buffer_size,
+                retry_policy,
+                failure_recorder.as_ref(),
+            );
             let agg_stats = agg_state.engine.stats();
             info!(
                 "Aggregate stats: {} blobs created, {} files aggregated",
@@ -115,6 +129,8 @@ pub(crate) fn spawn_local_common_copy_pipeline(
             &meta_dir,
             &source_dir_base,
             &target_dir_base,
+            retry_policy,
+            failure_recorder.as_ref(),
         );
 
         terminate_indicator.store(true, Ordering::Relaxed);
@@ -128,6 +144,8 @@ fn produce_local_copy_jobs(
     target_dir_base: &Path,
     job_tx: &mpsc::SyncSender<FileCopyPlan>,
     stats: &Arc<BackupStats>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
     aggregate_state: Option<&Arc<LocalAggregateState>>,
 ) -> io::Result<()> {
     let mut send_error = None;
@@ -145,7 +163,8 @@ fn produce_local_copy_jobs(
                 })
                 .unwrap_or(false)
         },
-        |entry| match execute_local_plan_entry(entry, stats, job_tx) {
+        |entry| match execute_local_plan_entry(entry, stats, job_tx, retry_policy, failure_recorder)
+        {
             Ok(keep_going) => keep_going,
             Err(e) => {
                 send_error = Some(e);

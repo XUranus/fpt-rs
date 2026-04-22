@@ -28,6 +28,7 @@ use std::{
     thread::JoinHandle,
 };
 
+use crate::failure::FailureRecorder;
 use crate::scanner::metadata::HardlinkIndex;
 
 use crate::{
@@ -59,6 +60,10 @@ impl From<ScanOption> for Scanner {
     /// Creates a new `Scanner` from scan configuration options.
     fn from(scan_option: ScanOption) -> Self {
         let queue_option = &scan_option.queue_option;
+        let failure_recorder = scan_option
+            .failure_log
+            .as_ref()
+            .and_then(|cfg| FailureRecorder::create(cfg).ok());
         let dirent_queue = SpillQueue::new(
             queue_option.temp_dir.clone(),
             queue_option.memory_upper_bound,
@@ -76,6 +81,7 @@ impl From<ScanOption> for Scanner {
                 dirent_queue: Arc::new(dirent_queue),
                 output_queue: Arc::new(output_queue),
                 stats: Arc::new(ScanStatistics::default()),
+                failure_recorder,
             },
         }
     }
@@ -95,6 +101,8 @@ pub struct ScanWorkerContext {
     pub output_queue: Arc<BlockingQueue<DirBatchScanResult>>,
     /// Real-time scan statistics (atomically updated).
     pub stats: Arc<ScanStatistics>,
+    /// Optional failure recorder shared by scan workers.
+    pub failure_recorder: Option<FailureRecorder>,
 }
 
 /// A running scan instance.
@@ -313,7 +321,7 @@ impl RunningScan {
 pub async fn run_nfs_scan(
     location: &crate::nfs::NfsLocation,
     scan_option: ScanOption,
-) -> Result<(u64, u64, u64), String> {
+) -> Result<(u64, u64, u64, u64, u64), String> {
     use crate::nfs::connection::NfsConnectionPool;
     use crate::nfs::NfsScanner;
     use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
@@ -341,6 +349,10 @@ pub async fn run_nfs_scan(
     // Create the shared output queue and statistics.
     let output_queue = Arc::new(BlockingQueue::<DirBatchScanResult>::new(1000));
     let stats = Arc::new(ScanStatistics::default());
+    let failure_recorder = scan_option
+        .failure_log
+        .as_ref()
+        .and_then(|cfg| FailureRecorder::create(cfg).ok());
 
     // Create a writer_count context.
     let writer_count = scan_option.writer_count;
@@ -360,6 +372,7 @@ pub async fn run_nfs_scan(
         ),
         output_queue: Arc::clone(&output_queue),
         stats: Arc::clone(&stats),
+        failure_recorder: failure_recorder.clone(),
     };
 
     // Start metadata writers (they drain output_queue synchronously).
@@ -371,9 +384,13 @@ pub async fn run_nfs_scan(
 
     // Create an NfsScanner and a tokio mpsc channel.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
-    let nfs_scanner = NfsScanner::new(location)
-        .await
-        .map_err(|e| format!("NFS scanner init failed: {e}"))?;
+    let nfs_scanner = NfsScanner::new(
+        location,
+        scan_opt_arc.retry_policy,
+        failure_recorder.clone(),
+    )
+    .await
+    .map_err(|e| format!("NFS scanner init failed: {e}"))?;
 
     // Spawn the NFS scan task.
     let scan_handle = tokio::spawn(async move { nfs_scanner.scan(root_fh, root_path, tx).await });
@@ -414,7 +431,13 @@ pub async fn run_nfs_scan(
     }
 
     let snap = stats.snapshot();
-    Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))
+    Ok((
+        snap.tot_files,
+        snap.tot_dirs,
+        snap.tot_size,
+        snap.failed_files,
+        snap.failed_dirs,
+    ))
 }
 
 /// Run a full SMB scan and write metadata/control files to disk.
@@ -424,12 +447,16 @@ pub async fn run_nfs_scan(
 pub async fn run_smb_scan(
     location: &crate::smb::SmbLocation,
     scan_option: ScanOption,
-) -> Result<(u64, u64, u64), String> {
+) -> Result<(u64, u64, u64, u64, u64), String> {
     use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
     use crate::smb::scanner::SmbScanner;
 
     let output_queue = Arc::new(BlockingQueue::<DirBatchScanResult>::new(1000));
     let stats = Arc::new(ScanStatistics::default());
+    let failure_recorder = scan_option
+        .failure_log
+        .as_ref()
+        .and_then(|cfg| FailureRecorder::create(cfg).ok());
 
     let writer_count = scan_option.writer_count;
     let scan_opt_arc = Arc::new(scan_option);
@@ -447,6 +474,7 @@ pub async fn run_smb_scan(
         ),
         output_queue: Arc::clone(&output_queue),
         stats: Arc::clone(&stats),
+        failure_recorder: failure_recorder.clone(),
     };
 
     let writer_handles = if scan_opt_arc.stats_only {
@@ -456,7 +484,7 @@ pub async fn run_smb_scan(
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
-    let scanner = SmbScanner::new(location).await?;
+    let scanner = SmbScanner::new(location, scan_opt_arc.retry_policy, failure_recorder).await?;
     let scan_opt_for_task = Arc::clone(&scan_opt_arc);
 
     let scan_handle = tokio::spawn(async move { scanner.scan(&scan_opt_for_task, tx).await });
@@ -494,7 +522,13 @@ pub async fn run_smb_scan(
     }
 
     let snap = stats.snapshot();
-    Ok((snap.tot_files, snap.tot_dirs, snap.tot_size))
+    Ok((
+        snap.tot_files,
+        snap.tot_dirs,
+        snap.tot_size,
+        snap.failed_files,
+        snap.failed_dirs,
+    ))
 }
 
 fn normalize_control_artifacts(scan_option: &ScanOption) -> Result<(), String> {

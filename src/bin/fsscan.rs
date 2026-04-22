@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use bifrost::frame::DataLocation;
 use bifrost::scanner::options::ScanOption;
 use bifrost::scanner::Scanner;
@@ -137,6 +138,52 @@ struct Args {
     /// Scan entries and print summary stats only; skip metadata/cache/control-file generation.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     stats_only: bool,
+
+    /// Structured failure log output path. If omitted and --failure-log-format is set,
+    /// defaults to <ctrl-dir>/SCAN_FAILURE.<ext>.
+    #[arg(long, value_name = "FILE")]
+    failure_log: Option<PathBuf>,
+
+    /// Structured failure log format.
+    #[arg(long, value_enum, value_name = "FMT")]
+    failure_log_format: Option<FailureLogFormatArg>,
+
+    /// Number of retries for scan operations before recording failure.
+    #[arg(long, default_value = "3", value_name = "COUNT")]
+    operation_retries: u32,
+
+    /// Delay in milliseconds between retries.
+    #[arg(long, default_value = "1000", value_name = "MS")]
+    retry_delay_ms: u64,
+
+    /// Exponential retry backoff multiplier. 1.0 keeps fixed delay.
+    #[arg(long, default_value = "1.0", value_name = "N")]
+    retry_backoff: f64,
+
+    /// Maximum retry delay in milliseconds when backoff is enabled.
+    #[arg(long, default_value = "1000", value_name = "MS")]
+    retry_max_delay_ms: u64,
+
+    /// Deterministic jitter ratio for retry delays, range 0.0..1.0.
+    #[arg(long, default_value = "0.0", value_name = "RATIO")]
+    retry_jitter: f64,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+enum FailureLogFormatArg {
+    Csv,
+    Json,
+    Xml,
+}
+
+impl From<FailureLogFormatArg> for FailureLogFormat {
+    fn from(value: FailureLogFormatArg) -> Self {
+        match value {
+            FailureLogFormatArg::Csv => FailureLogFormat::Csv,
+            FailureLogFormatArg::Json => FailureLogFormat::Json,
+            FailureLogFormatArg::Xml => FailureLogFormat::Xml,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -144,6 +191,8 @@ struct ScanSummary {
     total_files: u64,
     total_dirs: u64,
     total_size_bytes: u64,
+    failed_files: u64,
+    failed_dirs: u64,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -169,6 +218,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         totals.total_files += summary.total_files;
         totals.total_dirs += summary.total_dirs;
         totals.total_size_bytes += summary.total_size_bytes;
+        totals.failed_files += summary.failed_files;
+        totals.failed_dirs += summary.failed_dirs;
     }
 
     if args.sources.len() > 1 {
@@ -179,6 +230,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn build_scan_option(args: &Args, location: &DataLocation) -> ScanOption {
+    let retry_policy = RetryPolicy::new(
+        args.operation_retries,
+        Duration::from_millis(args.retry_delay_ms),
+    )
+    .with_backoff(
+        args.retry_backoff,
+        Duration::from_millis(args.retry_max_delay_ms),
+    )
+    .with_jitter(args.retry_jitter);
     let mut opt = ScanOption::new(args.ctrl_dir.clone(), args.meta_dir.clone())
         .worker_count(args.workers)
         .writer_count(args.writers)
@@ -200,7 +260,17 @@ fn build_scan_option(args: &Args, location: &DataLocation) -> ScanOption {
             location.logical_source_root(),
             location.kind_name(),
         )
-        .stats_only(args.stats_only);
+        .stats_only(args.stats_only)
+        .retry_policy(retry_policy);
+
+    if let Some(format) = args.failure_log_format {
+        let format: FailureLogFormat = format.into();
+        let path = args
+            .failure_log
+            .clone()
+            .unwrap_or_else(|| failure_file_path(&args.ctrl_dir, "SCAN_FAILURE", format));
+        opt = opt.failure_log(Some(FailureLogConfig::new(path, format)));
+    }
 
     if let Some(max) = args.shard_max_entries_copy {
         opt = opt.shard_max_entries_copy(max);
@@ -241,6 +311,8 @@ fn run_scan(
                 total_files: snap.tot_files,
                 total_dirs: snap.tot_dirs,
                 total_size_bytes: snap.tot_size,
+                failed_files: snap.failed_files,
+                failed_dirs: snap.failed_dirs,
             })
         }
         #[cfg(feature = "nfs")]
@@ -249,13 +321,15 @@ fn run_scan(
                 .enable_all()
                 .thread_name("bifrost-fsscan-nfs")
                 .build()?;
-            let (total_files, total_dirs, total_size_bytes) = rt
+            let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) = rt
                 .block_on(bifrost::scanner::run_nfs_scan(loc, scan_option))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
                 total_dirs,
                 total_size_bytes,
+                failed_files,
+                failed_dirs,
             })
         }
         #[cfg(feature = "smb")]
@@ -264,13 +338,15 @@ fn run_scan(
                 .enable_all()
                 .thread_name("bifrost-fsscan-smb")
                 .build()?;
-            let (total_files, total_dirs, total_size_bytes) = rt
+            let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) = rt
                 .block_on(bifrost::scanner::run_smb_scan(loc, scan_option))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
                 total_dirs,
                 total_size_bytes,
+                failed_files,
+                failed_dirs,
             })
         }
     }
@@ -341,20 +417,24 @@ fn parse_data_location(
 fn print_summary(location: &DataLocation, stats: ScanSummary, elapsed: Duration) {
     println!("Scanning: {}", location);
     println!(
-        "Scan complete: {} files, {} dirs, {:.2} MB, elapsed {}",
+        "Scan complete: {} files, {} dirs, {:.2} MB, {} failed files, {} failed dirs, elapsed {}",
         stats.total_files,
         stats.total_dirs,
         stats.total_size_bytes as f64 / (1024.0 * 1024.0),
+        stats.failed_files,
+        stats.failed_dirs,
         format_elapsed(elapsed),
     );
 }
 
 fn print_total_summary(stats: ScanSummary, elapsed: Duration) {
     println!(
-        "\nTotal: {} files, {} dirs, {:.2} MB, elapsed {}",
+        "\nTotal: {} files, {} dirs, {:.2} MB, {} failed files, {} failed dirs, elapsed {}",
         stats.total_files,
         stats.total_dirs,
         stats.total_size_bytes as f64 / (1024.0 * 1024.0),
+        stats.failed_files,
+        stats.failed_dirs,
         format_elapsed(elapsed),
     );
 }

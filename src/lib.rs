@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod failure;
 pub mod frame;
 pub mod logging;
 pub mod native;

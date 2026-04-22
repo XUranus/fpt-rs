@@ -138,6 +138,8 @@ Bifrost uses a shared routed logger.
 
 See [logging.md](logging.md) for details.
 
+Structured per-entry failure logs are optional and are written to `C_REPO/logs` when enabled with `--failure-log-format`. See [retry_failure.md](retry_failure.md) for scan/backup failure record formats and retry policy behavior.
+
 ## Main Binaries
 
 - `fptcli`: integrated backup and restore CLI
@@ -153,3 +155,4 @@ See [logging.md](logging.md) for details.
 - [aggregate.md](aggregate.md)
 - [incremental.md](incremental.md)
 - [ctrlfile.md](ctrlfile.md)
+- [retry_failure.md](retry_failure.md)

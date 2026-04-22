@@ -25,6 +25,7 @@ use nfs3_client::nfs3_types::nfs3::{
 };
 use tokio::sync::{mpsc, Semaphore};
 
+use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
 use crate::nfs::fstat::{nfs_fattr3_to_dir_meta, nfs_fattr3_to_file_meta};
@@ -44,23 +45,37 @@ const READDIRPLUS_MAXCOUNT: u32 = 128 * 1024;
 pub struct NfsScanner {
     pool: Arc<NfsConnectionPool>,
     sem: Arc<Semaphore>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 }
 
 impl NfsScanner {
     /// Create a new scanner backed by a fresh [`NfsConnectionPool`] for `location`.
-    pub async fn new(location: &NfsLocation) -> Result<Self, NfsError> {
+    pub async fn new(
+        location: &NfsLocation,
+        retry_policy: RetryPolicy,
+        failure_recorder: Option<FailureRecorder>,
+    ) -> Result<Self, NfsError> {
         let pool = NfsConnectionPool::new(location).await?;
         Ok(Self {
             pool,
             sem: Arc::new(Semaphore::new(MAX_CONCURRENT_SCAN_RPCS)),
+            retry_policy,
+            failure_recorder,
         })
     }
 
     /// Create a scanner that reuses an existing pool.
-    pub fn with_pool(pool: Arc<NfsConnectionPool>) -> Self {
+    pub fn with_pool(
+        pool: Arc<NfsConnectionPool>,
+        retry_policy: RetryPolicy,
+        failure_recorder: Option<FailureRecorder>,
+    ) -> Self {
         Self {
             pool,
             sem: Arc::new(Semaphore::new(MAX_CONCURRENT_SCAN_RPCS)),
+            retry_policy,
+            failure_recorder,
         }
     }
 
@@ -100,9 +115,21 @@ impl NfsScanner {
             let work_tx = work_tx.clone();
             let work_rx = work_rx.clone();
             let in_flight = Arc::clone(&in_flight);
+            let retry_policy = self.retry_policy;
+            let failure_recorder = self.failure_recorder.clone();
 
             handles.push(tokio::spawn(async move {
-                scan_worker(pool, sem, work_rx, work_tx, tx, in_flight).await
+                scan_worker(
+                    pool,
+                    sem,
+                    work_rx,
+                    work_tx,
+                    tx,
+                    in_flight,
+                    retry_policy,
+                    failure_recorder,
+                )
+                .await
             }));
         }
 
@@ -142,6 +169,8 @@ async fn scan_worker(
     work_tx: async_channel::Sender<(nfs_fh3, String)>,
     result_tx: mpsc::Sender<DirBatchScanResult>,
     in_flight: Arc<AtomicUsize>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) -> Result<(), NfsError> {
     loop {
         // Try to get a work item; exit cleanly when queue is empty and drained.
@@ -161,7 +190,17 @@ async fn scan_worker(
 
         in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let result = scan_one_dir(&pool, &sem, dir_fh, &dir_path, &work_tx, &result_tx).await;
+        let result = scan_one_dir(
+            &pool,
+            &sem,
+            dir_fh,
+            &dir_path,
+            &work_tx,
+            &result_tx,
+            retry_policy,
+            failure_recorder.clone(),
+        )
+        .await;
 
         in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -183,22 +222,35 @@ async fn scan_one_dir(
     dir_path: &str,
     work_tx: &async_channel::Sender<(nfs_fh3, String)>,
     result_tx: &mpsc::Sender<DirBatchScanResult>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) -> Result<(), NfsError> {
     // Get directory attributes via getattr.
     let dir_attrs = {
-        let _permit = sem
-            .acquire()
-            .await
-            .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
-        let mut conn = pool.acquire().await;
-        let res = conn
-            .getattr(&GETATTR3args {
+        let res = retry_nfs(retry_policy, || async {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
+            let mut conn = pool.acquire().await;
+            conn.getattr(&GETATTR3args {
                 object: dir_fh.clone(),
             })
-            .await?;
+            .await
+            .map_err(NfsError::from)
+        })
+        .await?;
         match res {
             Nfs3Result::Ok(ok) => ok.obj_attributes,
             Nfs3Result::Err((stat, _)) => {
+                record_nfs_failure(
+                    failure_recorder.as_ref(),
+                    "getattr_dir",
+                    FailureItemType::Directory,
+                    dir_path,
+                    format!("NFS error {stat:?}"),
+                    retry_policy.max_retries + 1,
+                );
                 return Err(NfsError::Nfs(stat, format!("getattr on {dir_path}")));
             }
         }
@@ -213,12 +265,12 @@ async fn scan_one_dir(
     let mut cookieverf = nfs3::cookieverf3::default();
 
     loop {
-        let _permit = sem
-            .acquire()
-            .await
-            .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
         log::debug!("NFS READDIRPLUS: dir={dir_path} cookie={cookie:?}");
-        let res = {
+        let res = retry_nfs(retry_policy, || async {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
             let mut conn = pool.acquire().await;
             conn.readdirplus(&READDIRPLUS3args {
                 dir: dir_fh.clone(),
@@ -227,13 +279,22 @@ async fn scan_one_dir(
                 dircount: READDIRPLUS_MAXCOUNT,
                 maxcount: READDIRPLUS_MAXCOUNT,
             })
-            .await?
-        };
-        drop(_permit);
+            .await
+            .map_err(NfsError::from)
+        })
+        .await?;
 
         let ok = match res {
             Nfs3Result::Ok(ok) => ok,
             Nfs3Result::Err((stat, _)) => {
+                record_nfs_failure(
+                    failure_recorder.as_ref(),
+                    "readdirplus",
+                    FailureItemType::Directory,
+                    dir_path,
+                    format!("NFS error {stat:?}"),
+                    retry_policy.max_retries + 1,
+                );
                 return Err(NfsError::Nfs(stat, format!("readdirplus on {dir_path}")));
             }
         };
@@ -257,17 +318,31 @@ async fn scan_one_dir(
                 Nfs3Option::Some(a) => a.clone(),
                 Nfs3Option::None => {
                     // Fallback: getattr on the file handle if available.
-                    match &entry.name_handle {
+                    match entry.name_handle.clone() {
                         Nfs3Option::Some(fh) => {
-                            let _permit = sem
-                                .acquire()
-                                .await
-                                .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
-                            let mut conn = pool.acquire().await;
-                            match conn.getattr(&GETATTR3args { object: fh.clone() }).await? {
+                            match retry_nfs(retry_policy, || async {
+                                let _permit = sem
+                                    .acquire()
+                                    .await
+                                    .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
+                                let mut conn = pool.acquire().await;
+                                conn.getattr(&GETATTR3args { object: fh.clone() })
+                                    .await
+                                    .map_err(NfsError::from)
+                            })
+                            .await?
+                            {
                                 Nfs3Result::Ok(ok) => ok.obj_attributes,
                                 Nfs3Result::Err((stat, _)) => {
                                     log::warn!("NFS getattr failed for {child_path}: {stat}");
+                                    record_nfs_failure(
+                                        failure_recorder.as_ref(),
+                                        "getattr_entry",
+                                        FailureItemType::Unknown,
+                                        &child_path,
+                                        format!("NFS error {stat:?}"),
+                                        retry_policy.max_retries + 1,
+                                    );
                                     continue;
                                 }
                             }
@@ -286,9 +361,9 @@ async fn scan_one_dir(
                 ftype3::NF3DIR => {
                     log::debug!("NFS scan: dir entry {child_path}");
                     // Recurse into subdirectory.
-                    if let Nfs3Option::Some(fh) = &entry.name_handle {
+                    if let Nfs3Option::Some(fh) = entry.name_handle.clone() {
                         work_tx
-                            .send((fh.clone(), child_path))
+                            .send((fh, child_path))
                             .await
                             .map_err(|_| NfsError::Path("work channel closed".to_string()))?;
                     } else {
@@ -317,11 +392,19 @@ async fn scan_one_dir(
                 ftype3::NF3LNK => {
                     log::debug!("NFS scan: symlink entry {child_path}");
                     // Resolve symlink target.
-                    let target = if let Nfs3Option::Some(fh) = &entry.name_handle {
-                        match readlink_target(pool, fh).await {
+                    let target = if let Nfs3Option::Some(fh) = entry.name_handle.clone() {
+                        match readlink_target(pool, &fh, retry_policy).await {
                             Ok(t) => Some(t),
                             Err(e) => {
                                 log::warn!("NFS readlink failed for {child_path}: {e}");
+                                record_nfs_failure(
+                                    failure_recorder.as_ref(),
+                                    "readlink",
+                                    FailureItemType::Symlink,
+                                    &child_path,
+                                    e.to_string(),
+                                    retry_policy.max_retries + 1,
+                                );
                                 None
                             }
                         }
@@ -387,13 +470,20 @@ async fn lookup_child(
 }
 
 /// Read the target of a symbolic link.
-async fn readlink_target(pool: &NfsConnectionPool, fh: &nfs_fh3) -> Result<String, NfsError> {
-    let mut conn = pool.acquire().await;
-    let res = conn
-        .readlink(&READLINK3args {
+async fn readlink_target(
+    pool: &NfsConnectionPool,
+    fh: &nfs_fh3,
+    retry_policy: RetryPolicy,
+) -> Result<String, NfsError> {
+    let res = retry_nfs(retry_policy, || async {
+        let mut conn = pool.acquire().await;
+        conn.readlink(&READLINK3args {
             symlink: fh.clone(),
         })
-        .await?;
+        .await
+        .map_err(NfsError::from)
+    })
+    .await?;
 
     match res {
         Nfs3Result::Ok(ok) => {
@@ -402,5 +492,44 @@ async fn readlink_target(pool: &NfsConnectionPool, fh: &nfs_fh3) -> Result<Strin
                 .map_err(|e| NfsError::Path(format!("readlink returned non-UTF-8 path: {e}")))
         }
         Nfs3Result::Err((stat, _)) => Err(NfsError::Nfs(stat, "readlink".to_string())),
+    }
+}
+
+async fn retry_nfs<F, Fut, T>(retry_policy: RetryPolicy, mut op: F) -> Result<T, NfsError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, NfsError>>,
+{
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) if retry_policy.should_retry(attempts) => {
+                tokio::time::sleep(retry_policy.delay_for_attempt(attempts)).await;
+                let _ = &err;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn record_nfs_failure(
+    recorder: Option<&FailureRecorder>,
+    operation: &str,
+    item_type: FailureItemType,
+    path: &str,
+    detail: String,
+    attempts: u32,
+) {
+    if let Some(recorder) = recorder {
+        recorder.record(FailureRecord::from_detail(
+            "scan",
+            operation,
+            item_type,
+            path.to_string(),
+            detail,
+            attempts,
+        ));
     }
 }

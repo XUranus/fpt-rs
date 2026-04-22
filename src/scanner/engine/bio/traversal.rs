@@ -13,6 +13,7 @@
 
 use log::{debug, error, warn};
 use std::fs;
+use std::io;
 use std::{
     sync::{
         atomic::{AtomicI32, Ordering},
@@ -22,12 +23,52 @@ use std::{
 };
 
 use crate::{
+    failure::{FailureItemType, FailureRecord},
     native::fstat,
     scanner::{
         models::{DirBatchScanResult, DirScanEntry},
         ScanWorkerContext,
     },
 };
+
+fn retry_scan_io<T, F>(context: &ScanWorkerContext, mut op: F) -> io::Result<(T, u32)>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let policy = context.scan_option.retry_policy;
+    let mut attempts = 0_u32;
+    loop {
+        attempts += 1;
+        match op() {
+            Ok(v) => return Ok((v, attempts)),
+            Err(e) if policy.should_retry(attempts) => {
+                thread::sleep(policy.delay_for_attempt(attempts));
+                let _ = &e;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn record_scan_failure(
+    context: &ScanWorkerContext,
+    operation: &str,
+    item_type: FailureItemType,
+    path: &std::path::Path,
+    detail: impl Into<String>,
+    attempts: u32,
+) {
+    if let Some(recorder) = &context.failure_recorder {
+        recorder.record(FailureRecord::from_detail(
+            "scan",
+            operation,
+            item_type,
+            path.to_string_lossy(),
+            detail.into(),
+            attempts,
+        ));
+    }
+}
 
 /// Processes a single directory entry: reads its contents, collects file metadata,
 /// and enqueues subdirectories for further scanning.
@@ -51,18 +92,26 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
     let depth = dir_entry.depth;
 
     // Stat the directory itself
-    match fstat::stat_dir(&dir_entry.path) {
-        Ok(dir_meta) => dir_result.dir = dir_meta,
+    match retry_scan_io(context, || fstat::stat_dir(&dir_entry.path)) {
+        Ok((dir_meta, _)) => dir_result.dir = dir_meta,
         Err(e) => {
             error!("Failed to stat directory {:?}: {}", dir_entry.path, e);
             stats.inc_failed_dirs();
+            record_scan_failure(
+                context,
+                "stat_dir",
+                FailureItemType::Directory,
+                &dir_entry.path,
+                e.to_string(),
+                context.scan_option.retry_policy.max_retries + 1,
+            );
             return; // Skip scanning contents if we can't even stat the dir
         }
     }
 
     // Read and process directory entries
-    match fs::read_dir(&dir_entry.path) {
-        Ok(entries) => {
+    match retry_scan_io(context, || fs::read_dir(&dir_entry.path)) {
+        Ok((entries, _)) => {
             for entry in entries {
                 let entry = match entry {
                     Ok(e) => e,
@@ -72,16 +121,32 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                             dir_entry.path, e
                         );
                         stats.inc_failed_files(); // Treat as file error (conservative)
+                        record_scan_failure(
+                            context,
+                            "read_dir_entry",
+                            FailureItemType::Unknown,
+                            &dir_entry.path,
+                            e.to_string(),
+                            1,
+                        );
                         continue;
                     }
                 };
 
                 let path = entry.path();
-                let file_type = match entry.file_type() {
-                    Ok(ft) => ft,
+                let file_type = match retry_scan_io(context, || entry.file_type()) {
+                    Ok((ft, _)) => ft,
                     Err(e) => {
                         error!("Failed to determine file type for {:?}: {}", path, e);
                         stats.inc_failed_files();
+                        record_scan_failure(
+                            context,
+                            "file_type",
+                            FailureItemType::Unknown,
+                            &path,
+                            e.to_string(),
+                            context.scan_option.retry_policy.max_retries + 1,
+                        );
                         continue;
                     }
                 };
@@ -115,8 +180,8 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                 if file_type.is_symlink() {
                     // Handle symlinks - always record them as files, but only follow if configured
                     debug!("Processing symlink: {:?}", path);
-                    match fstat::stat_file(&path) {
-                        Ok(file_meta) => {
+                    match retry_scan_io(context, || fstat::stat_file(&path)) {
+                        Ok((file_meta, _)) => {
                             let file_size = file_meta.size;
                             dir_result.files.push(file_meta);
                             stats.add_file_size(file_size);
@@ -152,6 +217,14 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                                     stats.inc_failed_files();
                                 }
                             }
+                            record_scan_failure(
+                                context,
+                                "stat_symlink",
+                                FailureItemType::Symlink,
+                                &path,
+                                e.to_string(),
+                                context.scan_option.retry_policy.max_retries + 1,
+                            );
                         }
                     }
                 } else if file_type.is_dir() {
@@ -160,14 +233,22 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     if let Err(e) = dirent_queue.push(DirScanEntry::new(path, depth + 1)) {
                         error!("Failed to push directory to queue: {:?}", e);
                         stats.inc_failed_dirs();
+                        record_scan_failure(
+                            context,
+                            "enqueue_dir",
+                            FailureItemType::Directory,
+                            &dir_entry.path,
+                            e.to_string(),
+                            1,
+                        );
                     } else {
                         stats.inc_dirs();
                     }
                 } else if file_type.is_file() {
                     // Process regular file
                     debug!("Processing file: {:?}", path);
-                    match fstat::stat_file(&path) {
-                        Ok(file_meta) => {
+                    match retry_scan_io(context, || fstat::stat_file(&path)) {
+                        Ok((file_meta, _)) => {
                             let file_size = file_meta.size;
                             dir_result.files.push(file_meta);
                             stats.add_file_size(file_size);
@@ -176,6 +257,14 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         Err(e) => {
                             error!("Failed to stat file {:?}: {}", path, e);
                             stats.inc_failed_files();
+                            record_scan_failure(
+                                context,
+                                "stat_file",
+                                FailureItemType::File,
+                                &path,
+                                e.to_string(),
+                                context.scan_option.retry_policy.max_retries + 1,
+                            );
                         }
                     }
                 } else {
@@ -196,8 +285,8 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         "Processing special file: {:?} (type: {:?})",
                         path, file_type
                     );
-                    match fstat::stat_file(&path) {
-                        Ok(file_meta) => {
+                    match retry_scan_io(context, || fstat::stat_file(&path)) {
+                        Ok((file_meta, _)) => {
                             let file_size = file_meta.size;
                             dir_result.files.push(file_meta);
                             stats.add_file_size(file_size);
@@ -206,6 +295,14 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         Err(e) => {
                             warn!("Failed to stat special file {:?}: {} (skipping)", path, e);
                             stats.inc_failed_files();
+                            record_scan_failure(
+                                context,
+                                "stat_special",
+                                FailureItemType::Special,
+                                &path,
+                                e.to_string(),
+                                context.scan_option.retry_policy.max_retries + 1,
+                            );
                         }
                     }
                 }
@@ -214,6 +311,14 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
         Err(e) => {
             error!("Failed to open directory {:?}: {}", dir_entry.path, e);
             stats.inc_failed_dirs();
+            record_scan_failure(
+                context,
+                "open_dir",
+                FailureItemType::Directory,
+                &dir_entry.path,
+                e.to_string(),
+                context.scan_option.retry_policy.max_retries + 1,
+            );
             // Still push an empty result to avoid losing the directory
         }
     }

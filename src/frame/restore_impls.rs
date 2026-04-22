@@ -255,5 +255,6 @@ fn run_restore_task(option: RestoreOption) -> Result<TransferStats, RestoreTaskE
         bytes_transferred: snap.bytes_restored,
         dirs_created: snap.dirs_created,
         files_failed: snap.files_failed,
+        dirs_failed: 0,
     })
 }

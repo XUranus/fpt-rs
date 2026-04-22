@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use log::{debug, error, info, warn};
 
+use crate::failure::{retry_sync, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
 use crate::scanner::metadata::{DeleteControlFileReader, DeleteEntryType};
 
 /// Statistics for the delete backup phase.
@@ -84,6 +85,8 @@ pub fn process_deletes(
     delete_ctrl_path: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<DeleteStatsSnapshot> {
     let stats = Arc::new(DeleteStats::default());
 
@@ -132,14 +135,22 @@ pub fn process_deletes(
                 }
 
                 if target_path.is_file() {
-                    match std::fs::remove_file(&target_path) {
+                    match retry_sync(retry_policy, || std::fs::remove_file(&target_path)) {
                         Ok(()) => {
                             debug!("Deleted file: {:?}", target_path);
                             stats.files_deleted.fetch_add(1, Ordering::Relaxed);
                         }
-                        Err(e) => {
+                        Err((e, attempts)) => {
                             error!("Failed to delete file {:?}: {}", target_path, e);
                             stats.entries_failed.fetch_add(1, Ordering::Relaxed);
+                            record_delete_failure(
+                                failure_recorder,
+                                "delete_file",
+                                FailureItemType::File,
+                                &target_path,
+                                &e,
+                                attempts,
+                            );
                         }
                     }
                 } else {
@@ -175,21 +186,31 @@ pub fn process_deletes(
 
         if target_path.is_dir() {
             // Only delete if directory is empty
-            match std::fs::remove_dir(&target_path) {
+            match retry_sync(retry_policy, || std::fs::remove_dir(&target_path)) {
                 Ok(()) => {
                     debug!("Deleted directory: {:?}", target_path);
                     stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(_e) => match std::fs::remove_dir_all(&target_path) {
-                    Ok(()) => {
-                        debug!("Recursively deleted directory: {:?}", target_path);
-                        stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
+                Err(_) => {
+                    match retry_sync(retry_policy, || std::fs::remove_dir_all(&target_path)) {
+                        Ok(()) => {
+                            debug!("Recursively deleted directory: {:?}", target_path);
+                            stats.dirs_deleted.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err((e, attempts)) => {
+                            error!("Failed to delete directory {:?}: {}", target_path, e);
+                            stats.entries_failed.fetch_add(1, Ordering::Relaxed);
+                            record_delete_failure(
+                                failure_recorder,
+                                "delete_dir",
+                                FailureItemType::Directory,
+                                &target_path,
+                                &e,
+                                attempts,
+                            );
+                        }
                     }
-                    Err(e) => {
-                        error!("Failed to delete directory {:?}: {}", target_path, e);
-                        stats.entries_failed.fetch_add(1, Ordering::Relaxed);
-                    }
-                },
+                }
             }
         } else {
             warn!("Target path is not a directory: {:?}", target_path);
@@ -260,9 +281,37 @@ pub fn run_delete_phase(
     ctrl_dir: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<DeleteStatsSnapshot> {
     let delete_ctrl_path = ctrl_dir.join("delete.txt");
-    process_deletes(&delete_ctrl_path, source_dir_base, target_dir_base)
+    process_deletes(
+        &delete_ctrl_path,
+        source_dir_base,
+        target_dir_base,
+        retry_policy,
+        failure_recorder,
+    )
+}
+
+fn record_delete_failure(
+    recorder: Option<&FailureRecorder>,
+    operation: &str,
+    item_type: FailureItemType,
+    path: &Path,
+    err: &io::Error,
+    attempts: u32,
+) {
+    if let Some(recorder) = recorder {
+        recorder.record(FailureRecord::from_io_error(
+            "backup",
+            operation,
+            item_type,
+            path.to_string_lossy(),
+            err,
+            attempts,
+        ));
+    }
 }
 
 #[cfg(test)]

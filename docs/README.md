@@ -13,13 +13,15 @@ Start here if you are new to the repository:
 5. [aggregate.md](aggregate.md), [incremental.md](incremental.md), and [ctrlfile.md](ctrlfile.md) for format and pipeline details.
 6. [pipeline_refactor.md](pipeline_refactor.md) for the shared copy-plan/block-transfer refactor.
 7. [smoke_matrix.md](smoke_matrix.md) for the local/NFS/SMB backup+restore smoke matrix.
-8. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
+8. [retry_failure.md](retry_failure.md) for structured failure logs and retry policy behavior.
+9. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
 
 Reference docs:
 
 - [metafile.md](metafile.md)
 - [hardlink.md](hardlink.md)
 - [mtime.md](mtime.md)
+- [retry_failure.md](retry_failure.md)
 - [bugfix/](bugfix/)
 
 ## Current Conventions

@@ -3,6 +3,7 @@ use std::path::Path;
 use log::{error, info};
 
 use crate::backup::bio::{delete, hardlink, mtime};
+use crate::failure::{FailureRecorder, RetryPolicy};
 
 pub(crate) fn run_local_followup_phases(
     enable_hardlink_phase: bool,
@@ -12,10 +13,19 @@ pub(crate) fn run_local_followup_phases(
     meta_dir: &Path,
     source_dir_base: &Path,
     target_dir_base: &Path,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<&FailureRecorder>,
 ) {
     if enable_hardlink_phase {
         info!("Starting hardlink phase...");
-        match hardlink::run_hardlink_phase(ctrl_dir, meta_dir, source_dir_base, target_dir_base) {
+        match hardlink::run_hardlink_phase(
+            ctrl_dir,
+            meta_dir,
+            source_dir_base,
+            target_dir_base,
+            retry_policy,
+            failure_recorder,
+        ) {
             Ok(hl_stats) => {
                 info!(
                     "Hardlink phase completed: {} created, {} failed",
@@ -30,7 +40,13 @@ pub(crate) fn run_local_followup_phases(
 
     if enable_delete_phase {
         info!("Starting delete phase...");
-        match delete::run_delete_phase(ctrl_dir, source_dir_base, target_dir_base) {
+        match delete::run_delete_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_dir_base,
+            retry_policy,
+            failure_recorder,
+        ) {
             Ok(del_stats) => {
                 info!(
                     "Delete phase completed: {} files deleted, {} dirs deleted",
@@ -45,7 +61,13 @@ pub(crate) fn run_local_followup_phases(
 
     if enable_mtime_phase {
         info!("Starting mtime phase...");
-        match mtime::run_mtime_phase(ctrl_dir, source_dir_base, target_dir_base) {
+        match mtime::run_mtime_phase(
+            ctrl_dir,
+            source_dir_base,
+            target_dir_base,
+            retry_policy,
+            failure_recorder,
+        ) {
             Ok(mt_stats) => {
                 info!(
                     "Mtime phase completed: {} restored, {} failed",

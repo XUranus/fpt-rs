@@ -15,6 +15,7 @@ use smb_client::{
 };
 use tokio::sync::mpsc;
 
+use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
 use crate::scanner::models::DirBatchScanResult;
 use crate::scanner::options::ScanOption;
 use crate::smb::fstat::{
@@ -29,6 +30,8 @@ pub struct SmbScanner {
     location: SmbLocation,
     devno: u64,
     metrics: Arc<SmbScanMetrics>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 }
 
 #[derive(Default)]
@@ -135,7 +138,11 @@ struct DirScanOutput {
 }
 
 impl SmbScanner {
-    pub async fn new(location: &SmbLocation) -> Result<Self, String> {
+    pub async fn new(
+        location: &SmbLocation,
+        retry_policy: RetryPolicy,
+        failure_recorder: Option<FailureRecorder>,
+    ) -> Result<Self, String> {
         let client = crate::smb::aio::connect_client(location).await?;
 
         Ok(Self {
@@ -143,6 +150,8 @@ impl SmbScanner {
             location: location.clone(),
             devno: share_devno(&location.host, &location.share),
             metrics: Arc::new(SmbScanMetrics::default()),
+            retry_policy,
+            failure_recorder,
         })
     }
 
@@ -208,11 +217,22 @@ impl SmbScanner {
         };
 
         let open_started = Instant::now();
-        let resource = match self.client.create_file(&task.unc, &open_args).await {
+        let resource = match retry_smb(self.retry_policy, || {
+            self.client.create_file(&task.unc, &open_args)
+        })
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 self.metrics.add_dir_open(open_started);
                 log::error!("SMB open dir {} failed: {}", task.path, e);
+                self.record_failure(
+                    "open_dir",
+                    FailureItemType::Directory,
+                    &task.path,
+                    e,
+                    self.retry_policy.max_retries + 1,
+                );
                 if let Some(seed) = task.seed {
                     return DirScanOutput {
                         batch: Some(DirBatchScanResult {
@@ -248,7 +268,7 @@ impl SmbScanner {
             smb_seed_to_dir_meta(seed, &task.path, self.devno)
         } else {
             let query_info_started = Instant::now();
-            match dir.query_info::<FileAllInformation>().await {
+            match retry_smb(self.retry_policy, || dir.query_info::<FileAllInformation>()).await {
                 Ok(info) => {
                     self.metrics.add_dir_query_info(query_info_started);
                     smb_all_info_to_dir_meta(&info, &task.path, self.devno)
@@ -256,6 +276,13 @@ impl SmbScanner {
                 Err(e) => {
                     self.metrics.add_dir_query_info(query_info_started);
                     log::error!("SMB query_info failed for {}: {}", task.path, e);
+                    self.record_failure(
+                        "query_dir_info",
+                        FailureItemType::Directory,
+                        &task.path,
+                        e,
+                        self.retry_policy.max_retries + 1,
+                    );
                     drop(dir);
                     return DirScanOutput {
                         batch: None,
@@ -275,17 +302,26 @@ impl SmbScanner {
         let dir = Arc::new(dir);
         {
             let query_started = Instant::now();
-            let query_result = Directory::query_with_options::<FileIdBothDirectoryInformation>(
-                &dir,
-                "*",
-                scan_option.smb_query_buffer_size,
-            )
+            let query_result = retry_smb(self.retry_policy, || {
+                Directory::query_with_options::<FileIdBothDirectoryInformation>(
+                    &dir,
+                    "*",
+                    scan_option.smb_query_buffer_size,
+                )
+            })
             .await;
             self.metrics.add_dir_query(query_started);
             let mut stream = match query_result {
                 Ok(stream) => stream,
                 Err(e) => {
                     log::error!("SMB query dir failed for {}: {}", task.path, e);
+                    self.record_failure(
+                        "query_directory",
+                        FailureItemType::Directory,
+                        &task.path,
+                        e,
+                        self.retry_policy.max_retries + 1,
+                    );
                     return DirScanOutput {
                         batch: Some(batch),
                         children: Vec::new(),
@@ -298,6 +334,13 @@ impl SmbScanner {
                     Ok(entry) => entry,
                     Err(e) => {
                         log::warn!("SMB dir entry read failed in {}: {}", task.path, e);
+                        self.record_failure(
+                            "read_dir_entry",
+                            FailureItemType::Unknown,
+                            &task.path,
+                            e.to_string(),
+                            1,
+                        );
                         continue;
                     }
                 };
@@ -350,24 +393,23 @@ impl SmbScanner {
         let started = Instant::now();
         let open_args =
             FileCreateArgs::make_open_existing(FileAccessMask::new().with_generic_read(true));
-        let resource = self
-            .client
-            .create_file(path, &open_args)
-            .await
-            .map_err(|e| e.to_string())?;
+        let resource = retry_smb(self.retry_policy, || {
+            self.client.create_file(path, &open_args)
+        })
+        .await?;
         let links = match &resource {
             Resource::File(file) => {
-                let standard = file
-                    .query_info::<FileStandardInformation>()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let standard = retry_smb(self.retry_policy, || {
+                    file.query_info::<FileStandardInformation>()
+                })
+                .await?;
                 u64::from(standard.number_of_links)
             }
             Resource::Directory(dir) => {
-                let standard = dir
-                    .query_info::<FileStandardInformation>()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let standard = retry_smb(self.retry_policy, || {
+                    dir.query_info::<FileStandardInformation>()
+                })
+                .await?;
                 u64::from(standard.number_of_links)
             }
             Resource::Pipe(_) => 1,
@@ -375,6 +417,26 @@ impl SmbScanner {
         close_resource(resource).await?;
         self.metrics.add_link_count(started);
         Ok(links)
+    }
+
+    fn record_failure(
+        &self,
+        operation: &str,
+        item_type: FailureItemType,
+        path: &str,
+        detail: impl Into<String>,
+        attempts: u32,
+    ) {
+        if let Some(recorder) = &self.failure_recorder {
+            recorder.record(FailureRecord::from_detail(
+                "scan",
+                operation,
+                item_type,
+                path.to_string(),
+                detail.into(),
+                attempts,
+            ));
+        }
     }
 }
 
@@ -400,5 +462,25 @@ async fn close_resource(resource: Resource) -> Result<(), String> {
         Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
         Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
         Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
+    }
+}
+
+async fn retry_smb<F, Fut, T, E>(retry_policy: RetryPolicy, mut op: F) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) if retry_policy.should_retry(attempts) => {
+                tokio::time::sleep(retry_policy.delay_for_attempt(attempts)).await;
+                let _ = err;
+            }
+            Err(err) => return Err(err.to_string()),
+        }
     }
 }

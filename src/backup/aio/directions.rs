@@ -17,6 +17,7 @@ use crate::backup::aio::transport::{
 };
 use crate::backup::copy_plan::{produce_copy_plan, CopyPlanEntry, FileCopyPlan};
 use crate::backup::stats::BackupStats;
+use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
 
 #[cfg(feature = "nfs")]
 use crate::backup::aio::transport::{NfsSource, NfsTarget};
@@ -47,6 +48,8 @@ pub async fn run_local_to_nfs_copy_pipeline(
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let target_prefix = PathBuf::from(target_prefix);
@@ -71,6 +74,8 @@ pub async fn run_local_to_nfs_copy_pipeline(
         stats,
         "local->NFS",
         NFS_MAX_CONCURRENT_TASKS,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -86,6 +91,8 @@ pub async fn run_local_to_smb_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(pool.size());
@@ -110,6 +117,8 @@ pub async fn run_local_to_smb_copy_pipeline(
         stats,
         "local->SMB",
         max_concurrent_tasks,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -124,6 +133,8 @@ pub async fn run_aio_nfs_to_local_pipeline(
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let _ = nfs_source_base;
@@ -149,6 +160,8 @@ pub async fn run_aio_nfs_to_local_pipeline(
         stats,
         "NFS->local",
         NFS_MAX_CONCURRENT_TASKS,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -164,6 +177,8 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let _ = nfs_source_base;
@@ -194,6 +209,8 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
         stats,
         "NFS->NFS",
         NFS_MAX_CONCURRENT_TASKS,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -209,6 +226,8 @@ pub async fn run_smb_to_local_copy_pipeline(
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(pool.size());
@@ -231,6 +250,8 @@ pub async fn run_smb_to_local_copy_pipeline(
         max_concurrent_tasks,
         copy_buffer_size,
         aggregate_config,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -248,6 +269,8 @@ pub async fn run_smb_to_smb_copy_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(source_pool.size().min(target_pool.size()));
@@ -264,6 +287,8 @@ pub async fn run_smb_to_smb_copy_pipeline(
             stats,
             max_concurrent_tasks,
             copy_buffer_size,
+            retry_policy,
+            failure_recorder.clone(),
         )
         .await;
         return;
@@ -297,6 +322,8 @@ pub async fn run_smb_to_smb_copy_pipeline(
         max_concurrent_tasks,
         copy_buffer_size,
         aggregate_config,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -314,6 +341,8 @@ async fn run_smb_to_smb_streaming_pipeline(
     stats: Arc<BackupStats>,
     max_concurrent_tasks: usize,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let pipeline_started = Instant::now();
@@ -430,6 +459,7 @@ async fn run_smb_to_smb_streaming_pipeline(
         let stats2 = Arc::clone(&stats);
         let copy_metrics2 = Arc::clone(&copy_metrics);
         let task_sem2 = Arc::clone(&task_sem);
+        let failure_recorder2 = failure_recorder.clone();
 
         task_handles.push(tokio::spawn(async move {
             let _permit = task_sem2.acquire_owned().await.unwrap();
@@ -455,6 +485,16 @@ async fn run_smb_to_smb_streaming_pipeline(
                 Err(msg) => {
                     error!("SMB->SMB: write {:?}: {msg}", write_path);
                     stats2.files_failed.fetch_add(1, Ordering::Relaxed);
+                    if let Some(recorder) = failure_recorder2 {
+                        recorder.record(FailureRecord::from_detail(
+                            "backup",
+                            "streaming_copy",
+                            FailureItemType::File,
+                            write_path.to_string_lossy(),
+                            msg,
+                            retry_policy.max_retries + 1,
+                        ));
+                    }
                 }
             }
         }));
@@ -506,6 +546,8 @@ async fn run_smb_source_copy_pipeline<T>(
     max_concurrent_tasks: usize,
     copy_buffer_size: usize,
     aggregate_config: AggregateConfig,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) where
     T: TargetWriter,
 {
@@ -536,17 +578,28 @@ async fn run_smb_source_copy_pipeline<T>(
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
                 let path = dst_path;
+                let failure_recorder2 = failure_recorder.clone();
                 debug!("{log_prefix}: mkdir {:?}", path);
 
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
-                    match target2.create_dir(path.clone()).await {
+                    match retry_create_dir(&target2, path.clone(), retry_policy).await {
                         Ok(()) => {
                             stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(e) => {
                             error!("{log_prefix}: mkdir {:?}: {e}", path);
                             stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                            if let Some(recorder) = failure_recorder2 {
+                                recorder.record(FailureRecord::from_detail(
+                                    "backup",
+                                    "create_dir",
+                                    FailureItemType::Directory,
+                                    path.to_string_lossy(),
+                                    e,
+                                    retry_policy.max_retries + 1,
+                                ));
+                            }
                         }
                     }
                 });
@@ -558,6 +611,7 @@ async fn run_smb_source_copy_pipeline<T>(
                 let target2 = target.clone();
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
+                let failure_recorder2 = failure_recorder.clone();
 
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
@@ -570,6 +624,8 @@ async fn run_smb_source_copy_pipeline<T>(
                         log_prefix,
                         copy_buffer_size,
                         aggregate_config,
+                        retry_policy,
+                        failure_recorder2,
                     )
                     .await;
                 });
@@ -622,6 +678,8 @@ async fn run_smb_to_smb_aggregate_pipeline(
     max_concurrent_tasks: usize,
     copy_buffer_size: usize,
     aggregate_config: AggregateConfig,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
     let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
@@ -650,17 +708,28 @@ async fn run_smb_to_smb_aggregate_pipeline(
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
                 let path = dst_path;
+                let failure_recorder2 = failure_recorder.clone();
                 debug!("{log_prefix}: mkdir {:?}", path);
 
                 task_handles.push(tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
-                    match target2.create_dir(path.clone()).await {
+                    match retry_create_dir(&target2, path.clone(), retry_policy).await {
                         Ok(()) => {
                             stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(e) => {
                             error!("{log_prefix}: mkdir {:?}: {e}", path);
                             stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                            if let Some(recorder) = failure_recorder2 {
+                                recorder.record(FailureRecord::from_detail(
+                                    "backup",
+                                    "create_dir",
+                                    FailureItemType::Directory,
+                                    path.to_string_lossy(),
+                                    e,
+                                    retry_policy.max_retries + 1,
+                                ));
+                            }
                         }
                     }
                 }));
@@ -683,6 +752,7 @@ async fn run_smb_to_smb_aggregate_pipeline(
                 let target2 = target.clone();
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
+                let failure_recorder2 = failure_recorder.clone();
                 let src_rel = src_path.to_string_lossy().replace('\\', "/");
                 let dst_rel = dst_path.to_string_lossy().replace('\\', "/");
                 let read_path = src_path.clone();
@@ -705,6 +775,8 @@ async fn run_smb_to_smb_aggregate_pipeline(
                             log_prefix,
                             copy_buffer_size,
                             aggregate_config,
+                            retry_policy,
+                            failure_recorder2,
                         )
                         .await;
                         return;
@@ -732,6 +804,16 @@ async fn run_smb_to_smb_aggregate_pipeline(
                         Err(msg) => {
                             error!("{log_prefix}: write {:?}: {msg}", write_path);
                             stats2.files_failed.fetch_add(1, Ordering::Relaxed);
+                            if let Some(recorder) = failure_recorder2 {
+                                recorder.record(FailureRecord::from_detail(
+                                    "backup",
+                                    "streaming_copy",
+                                    FailureItemType::File,
+                                    write_path.to_string_lossy(),
+                                    msg,
+                                    retry_policy.max_retries + 1,
+                                ));
+                            }
                         }
                     }
                 }));
@@ -799,6 +881,8 @@ pub async fn run_nfs_to_smb_copy_pipeline(
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks =
@@ -830,6 +914,8 @@ pub async fn run_nfs_to_smb_copy_pipeline(
         stats,
         "NFS->SMB",
         max_concurrent_tasks,
+        retry_policy,
+        failure_recorder,
     )
     .await;
 }
@@ -846,6 +932,8 @@ pub async fn run_smb_to_nfs_copy_pipeline(
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks =
@@ -874,6 +962,31 @@ pub async fn run_smb_to_nfs_copy_pipeline(
         max_concurrent_tasks,
         copy_buffer_size,
         aggregate_config,
+        retry_policy,
+        failure_recorder,
     )
     .await;
+}
+
+#[cfg(feature = "smb")]
+async fn retry_create_dir<T>(
+    target: &T,
+    path: PathBuf,
+    retry_policy: RetryPolicy,
+) -> Result<(), String>
+where
+    T: TargetWriter,
+{
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match target.create_dir(path.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) if retry_policy.should_retry(attempts) => {
+                tokio::time::sleep(retry_policy.delay_for_attempt(attempts)).await;
+                let _ = err;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }

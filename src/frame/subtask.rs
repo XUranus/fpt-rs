@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 
 use crate::backup::aggregate::AggregateConfig;
+use crate::failure::{FailureLogConfig, RetryPolicy};
 use crate::frame::backup_impls::{BackupConfig, LocalFileBackup};
 use crate::frame::location::DataLocation;
 use crate::frame::repo::RepoLayout;
@@ -47,6 +48,10 @@ pub struct SubtaskConfig {
     pub smb_connection_count: usize,
     /// Maximum per-file copy buffer size in bytes.
     pub copy_buffer_size: usize,
+    /// Optional failure log file for this subtask.
+    pub failure_log: Option<FailureLogConfig>,
+    /// Retry policy for copy operations in this subtask.
+    pub retry_policy: RetryPolicy,
     /// Data source for backup (local or NFS).
     pub backup_source: DataLocation,
     /// Data target for backup (local or NFS).
@@ -119,7 +124,9 @@ pub fn run_backup_subtask(
     .enable_delete(config.enable_delete)
     .enable_mtime(config.enable_mtime)
     .smb_connection_count(config.smb_connection_count)
-    .copy_buffer_size(config.copy_buffer_size);
+    .copy_buffer_size(config.copy_buffer_size)
+    .failure_log(config.failure_log.clone())
+    .retry_policy(config.retry_policy);
 
     match (&config.backup_source, &config.backup_target) {
         (DataLocation::Local(_), DataLocation::Local(_)) => LocalFileBackup::new(backup_cfg)

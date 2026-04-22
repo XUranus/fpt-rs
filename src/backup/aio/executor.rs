@@ -8,6 +8,9 @@ use crate::backup::aio::transport::{SourceReader, TargetWriter};
 use crate::backup::copy_block::CopyBlock;
 use crate::backup::copy_plan::FileCopyPlan;
 use crate::backup::stats::BackupStats;
+use crate::failure::{
+    retry_async, retry_async_item, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy,
+};
 
 pub(crate) async fn execute_async_file_plan<S, T>(
     plan: FileCopyPlan,
@@ -15,6 +18,8 @@ pub(crate) async fn execute_async_file_plan<S, T>(
     target: T,
     stats: Arc<BackupStats>,
     log_prefix: &'static str,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) where
     S: SourceReader,
     T: TargetWriter,
@@ -51,11 +56,21 @@ pub(crate) async fn execute_async_file_plan<S, T>(
     };
 
     loop {
-        block = match source.read_block(block).await {
+        block = match retry_read_block(&source, block, retry_policy).await {
             Ok(block) => block,
-            Err((block, msg)) => {
+            Err((block, msg, attempts)) => {
                 error!("{log_prefix}: read {:?}: {msg}", block.src_path);
                 stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                if let Some(recorder) = &failure_recorder {
+                    recorder.record(FailureRecord::from_detail(
+                        "backup",
+                        "read_block",
+                        FailureItemType::File,
+                        block.src_path.to_string_lossy(),
+                        msg,
+                        attempts,
+                    ));
+                }
                 return;
             }
         };
@@ -69,11 +84,21 @@ pub(crate) async fn execute_async_file_plan<S, T>(
             return;
         }
 
-        block = match target.write_block(block).await {
+        block = match retry_write_block(&target, block, retry_policy).await {
             Ok(done_block) => done_block,
-            Err((block, msg)) => {
+            Err((block, msg, attempts)) => {
                 error!("{log_prefix}: write {:?}: {msg}", block.dst_path);
                 stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                if let Some(recorder) = &failure_recorder {
+                    recorder.record(FailureRecord::from_detail(
+                        "backup",
+                        "write_block",
+                        FailureItemType::File,
+                        block.dst_path.to_string_lossy(),
+                        msg,
+                        attempts,
+                    ));
+                }
                 return;
             }
         };
@@ -99,6 +124,8 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
     log_prefix: &'static str,
     buffer_size: usize,
     aggregate_config: AggregateConfig,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
 ) where
     T: TargetWriter,
 {
@@ -135,11 +162,21 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
     let open_args = smb_client::FileCreateArgs::make_open_existing(
         smb_client::FileAccessMask::new().with_generic_read(true),
     );
-    let resource = match client.create_file(&unc, &open_args).await {
+    let resource = match retry_async(retry_policy, || client.create_file(&unc, &open_args)).await {
         Ok(resource) => resource,
-        Err(e) => {
+        Err((e, attempts)) => {
             error!("{log_prefix}: read {:?}: open {}: {e}", src_path, unc);
             stats.files_failed.fetch_add(1, Ordering::Relaxed);
+            if let Some(recorder) = &failure_recorder {
+                recorder.record(FailureRecord::from_detail(
+                    "backup",
+                    "open_source",
+                    FailureItemType::File,
+                    src_path.to_string_lossy(),
+                    format!("open {}: {e}", unc),
+                    attempts,
+                ));
+            }
             return;
         }
     };
@@ -167,19 +204,30 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
         let mut offset = 0u64;
         while offset < file_size {
             let chunk_len = read_cap.min((file_size - offset) as usize);
-            let mut chunk = vec![0u8; chunk_len];
-            let read_len = match file.read_block(&mut chunk, offset, None, false).await {
-                Ok(read_len) => read_len,
-                Err(e) => {
-                    error!(
-                        "{log_prefix}: read {:?}: read {} @{}: {e}",
-                        src_path, unc, offset
-                    );
-                    stats.files_failed.fetch_add(1, Ordering::Relaxed);
-                    drop(file);
-                    return;
-                }
-            };
+            let chunk = vec![0u8; chunk_len];
+            let (chunk, read_len) =
+                match retry_smb_read_chunk(&file, chunk, offset, retry_policy).await {
+                    Ok(result) => result,
+                    Err((_, e, attempts)) => {
+                        error!(
+                            "{log_prefix}: read {:?}: read {} @{}: {e}",
+                            src_path, unc, offset
+                        );
+                        stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                        if let Some(recorder) = &failure_recorder {
+                            recorder.record(FailureRecord::from_detail(
+                                "backup",
+                                "read_block",
+                                FailureItemType::File,
+                                src_path.to_string_lossy(),
+                                e,
+                                attempts,
+                            ));
+                        }
+                        drop(file);
+                        return;
+                    }
+                };
             if read_len == 0 {
                 error!(
                     "{log_prefix}: read {:?}: zero-length chunk before EOF",
@@ -202,9 +250,19 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
             data,
             is_last: true,
         };
-        if let Err((block, msg)) = target.write_block(block).await {
+        if let Err((block, msg, attempts)) = retry_write_block(&target, block, retry_policy).await {
             error!("{log_prefix}: write {:?}: {msg}", block.dst_path);
             stats.files_failed.fetch_add(1, Ordering::Relaxed);
+            if let Some(recorder) = &failure_recorder {
+                recorder.record(FailureRecord::from_detail(
+                    "backup",
+                    "write_block",
+                    FailureItemType::File,
+                    block.dst_path.to_string_lossy(),
+                    msg,
+                    attempts,
+                ));
+            }
             drop(file);
             return;
         }
@@ -212,19 +270,30 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
         let mut offset = 0u64;
         while offset < file_size {
             let chunk_len = read_cap.min((file_size - offset) as usize);
-            let mut chunk = vec![0u8; chunk_len];
-            let read_len = match file.read_block(&mut chunk, offset, None, false).await {
-                Ok(read_len) => read_len,
-                Err(e) => {
-                    error!(
-                        "{log_prefix}: read {:?}: read {} @{}: {e}",
-                        src_path, unc, offset
-                    );
-                    stats.files_failed.fetch_add(1, Ordering::Relaxed);
-                    drop(file);
-                    return;
-                }
-            };
+            let chunk = vec![0u8; chunk_len];
+            let (chunk, read_len) =
+                match retry_smb_read_chunk(&file, chunk, offset, retry_policy).await {
+                    Ok(result) => result,
+                    Err((_, e, attempts)) => {
+                        error!(
+                            "{log_prefix}: read {:?}: read {} @{}: {e}",
+                            src_path, unc, offset
+                        );
+                        stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                        if let Some(recorder) = &failure_recorder {
+                            recorder.record(FailureRecord::from_detail(
+                                "backup",
+                                "read_block",
+                                FailureItemType::File,
+                                src_path.to_string_lossy(),
+                                e,
+                                attempts,
+                            ));
+                        }
+                        drop(file);
+                        return;
+                    }
+                };
             if read_len == 0 {
                 error!(
                     "{log_prefix}: read {:?}: zero-length chunk before EOF",
@@ -246,9 +315,21 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
                 data: chunk[..read_len].to_vec(),
                 is_last: next_offset >= file_size,
             };
-            if let Err((block, msg)) = target.write_block(block).await {
+            if let Err((block, msg, attempts)) =
+                retry_write_block(&target, block, retry_policy).await
+            {
                 error!("{log_prefix}: write {:?}: {msg}", block.dst_path);
                 stats.files_failed.fetch_add(1, Ordering::Relaxed);
+                if let Some(recorder) = &failure_recorder {
+                    recorder.record(FailureRecord::from_detail(
+                        "backup",
+                        "write_block",
+                        FailureItemType::File,
+                        block.dst_path.to_string_lossy(),
+                        msg,
+                        attempts,
+                    ));
+                }
                 drop(file);
                 return;
             }
@@ -260,4 +341,42 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
     debug!("{log_prefix}: copied {:?} -> {:?}", read_path, write_path);
     stats.files_copied.fetch_add(1, Ordering::Relaxed);
     stats.bytes_copied.fetch_add(file_size, Ordering::Relaxed);
+}
+
+async fn retry_read_block<S: SourceReader>(
+    source: &S,
+    block: CopyBlock,
+    retry_policy: RetryPolicy,
+) -> Result<CopyBlock, (CopyBlock, String, u32)> {
+    retry_async_item(retry_policy, block, |block| async move {
+        source.read_block(block).await
+    })
+    .await
+}
+
+async fn retry_write_block<T: TargetWriter>(
+    target: &T,
+    block: CopyBlock,
+    retry_policy: RetryPolicy,
+) -> Result<CopyBlock, (CopyBlock, String, u32)> {
+    retry_async_item(retry_policy, block, |block| async move {
+        target.write_block(block).await
+    })
+    .await
+}
+
+#[cfg(feature = "smb")]
+async fn retry_smb_read_chunk(
+    file: &smb_client::resource::file::File,
+    chunk: Vec<u8>,
+    offset: u64,
+    retry_policy: RetryPolicy,
+) -> Result<(Vec<u8>, usize), (Vec<u8>, String, u32)> {
+    retry_async_item(retry_policy, chunk, |mut chunk| async move {
+        match file.read_block(&mut chunk, offset, None, false).await {
+            Ok(read_len) => Ok((chunk, read_len)),
+            Err(e) => Err((chunk, e.to_string())),
+        }
+    })
+    .await
 }

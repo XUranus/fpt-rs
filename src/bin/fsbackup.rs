@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bifrost::backup::aggregate::{AggregateConfig, AggregateLayout};
+use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 #[cfg(feature = "nfs")]
 use bifrost::frame::backup_impls::{NfsSourceFileBackup, NfsSourceTargetFileBackup};
 #[cfg(all(feature = "nfs", feature = "smb"))]
@@ -89,6 +90,35 @@ struct Args {
     #[arg(long, value_name = "SIZE_KB", default_value = "1024")]
     buffer_size: usize,
 
+    /// Structured failure log output path. If omitted and --failure-log-format is set,
+    /// defaults to <ctrl-dir>/FSBACKUP_FAILURE.<ext>.
+    #[arg(long, value_name = "FILE")]
+    failure_log: Option<PathBuf>,
+
+    /// Structured failure log format.
+    #[arg(long, value_enum, value_name = "FMT")]
+    failure_log_format: Option<FailureLogFormatArg>,
+
+    /// Number of retries for copy operations before recording failure.
+    #[arg(long, default_value = "3", value_name = "COUNT")]
+    operation_retries: u32,
+
+    /// Delay in milliseconds between retries.
+    #[arg(long, default_value = "1000", value_name = "MS")]
+    retry_delay_ms: u64,
+
+    /// Exponential retry backoff multiplier. 1.0 keeps fixed delay.
+    #[arg(long, default_value = "1.0", value_name = "N")]
+    retry_backoff: f64,
+
+    /// Maximum retry delay in milliseconds when backoff is enabled.
+    #[arg(long, default_value = "1000", value_name = "MS")]
+    retry_max_delay_ms: u64,
+
+    /// Deterministic jitter ratio for retry delays, range 0.0..1.0.
+    #[arg(long, default_value = "0.0", value_name = "RATIO")]
+    retry_jitter: f64,
+
     /// AUTH_UNIX uid to present to the NFS server (overrides uid= in URL)
     #[arg(long, value_name = "UID")]
     nfs_uid: Option<u32>,
@@ -112,11 +142,28 @@ enum AggregateLayoutArg {
     Shard,
 }
 
+#[derive(ValueEnum, Debug, Clone, Copy)]
+enum FailureLogFormatArg {
+    Csv,
+    Json,
+    Xml,
+}
+
 impl From<AggregateLayoutArg> for AggregateLayout {
     fn from(value: AggregateLayoutArg) -> Self {
         match value {
             AggregateLayoutArg::DirLevel => AggregateLayout::DirLevel,
             AggregateLayoutArg::Shard => AggregateLayout::Shard,
+        }
+    }
+}
+
+impl From<FailureLogFormatArg> for FailureLogFormat {
+    fn from(value: FailureLogFormatArg) -> Self {
+        match value {
+            FailureLogFormatArg::Csv => FailureLogFormat::Csv,
+            FailureLogFormatArg::Json => FailureLogFormat::Json,
+            FailureLogFormatArg::Xml => FailureLogFormat::Xml,
         }
     }
 }
@@ -151,6 +198,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .parent()
             .unwrap_or(args.meta_dir.as_path())
             .to_path_buf()
+    });
+    let retry_policy = RetryPolicy::new(
+        args.operation_retries,
+        Duration::from_millis(args.retry_delay_ms),
+    )
+    .with_backoff(
+        args.retry_backoff,
+        Duration::from_millis(args.retry_max_delay_ms),
+    )
+    .with_jitter(args.retry_jitter);
+    let failure_log = args.failure_log_format.map(|format| {
+        let format: FailureLogFormat = format.into();
+        let path = args
+            .failure_log
+            .clone()
+            .unwrap_or_else(|| failure_file_path(&ctrl_dir, "FSBACKUP_FAILURE", format));
+        FailureLogConfig::new(path, format)
     });
 
     // Build the shared BackupConfig.
@@ -197,6 +261,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .remote_target_prefix((!target.is_local()).then(|| String::new()))
     .smb_connection_count(args.smb_connections)
     .copy_buffer_size(args.buffer_size * 1024)
+    .failure_log(failure_log)
+    .retry_policy(retry_policy)
     .enable_hardlink(args.hardlink)
     .enable_delete(args.delete)
     .enable_mtime(args.mtime);
@@ -320,11 +386,12 @@ fn print_summary(stats: &bifrost::frame::TransferStats, elapsed: Duration) {
     let file_rate = stats.files_transferred as f64 / elapsed_secs;
     let byte_rate = stats.bytes_transferred as f64 / elapsed_secs;
     println!(
-        "Backup complete: {} files ({:.2} MiB), {} dirs, {} failed, elapsed {}, {:.2} files/s, {}/s",
+        "Backup complete: {} files ({:.2} MiB), {} dirs, {} failed files, {} failed dirs, elapsed {}, {:.2} files/s, {}/s",
         stats.files_transferred,
         stats.bytes_transferred as f64 / (1024.0 * 1024.0),
         stats.dirs_created,
         stats.files_failed,
+        stats.dirs_failed,
         format_elapsed(elapsed),
         file_rate,
         format_bytes(byte_rate),

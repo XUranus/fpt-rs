@@ -5,6 +5,7 @@ use crate::backup::{
     bio::mtime::MtimeStatsSnapshot,
     stats::{BackupStats, BackupStatsSnapshot},
 };
+use crate::failure::{FailureLogConfig, FailureRecorder, RetryPolicy};
 use log::info;
 use std::{
     path::PathBuf,
@@ -64,6 +65,8 @@ pub struct BackupOption {
 
     worker_count: usize,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_log: Option<FailureLogConfig>,
 
     /// Whether to run the hardlink phase after copy phase
     enable_hardlink_phase: bool,
@@ -162,6 +165,8 @@ impl BackupOption {
         Self {
             worker_count: 8,
             copy_buffer_size: 1024 * 1024,
+            retry_policy: RetryPolicy::default(),
+            failure_log: None,
             source_dir_base,
             target_dir_base,
             meta_dir,
@@ -233,6 +238,16 @@ impl BackupOption {
     /// Set maximum per-file copy buffer size in bytes.
     pub fn copy_buffer_size(mut self, size: usize) -> Self {
         self.copy_buffer_size = size.clamp(256 * 1024, 4 * 1024 * 1024);
+        self
+    }
+
+    pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+
+    pub fn failure_log(mut self, config: Option<FailureLogConfig>) -> Self {
+        self.failure_log = config;
         self
     }
 
@@ -335,6 +350,12 @@ impl BackupTask {
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
+        let failure_recorder = self
+            .option
+            .failure_log
+            .as_ref()
+            .and_then(|cfg| FailureRecorder::create(cfg).ok());
+        let retry_policy = self.option.retry_policy;
 
         // Capture the NFS target location (if any) before moving `self.option`.
         #[cfg(feature = "nfs")]
@@ -366,6 +387,8 @@ impl BackupTask {
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -393,6 +416,8 @@ impl BackupTask {
                 smb_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -421,6 +446,8 @@ impl BackupTask {
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -450,6 +477,8 @@ impl BackupTask {
                 nfs_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -478,6 +507,8 @@ impl BackupTask {
                 target_dir_base.clone(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 enable_hardlink_phase,
@@ -505,6 +536,8 @@ impl BackupTask {
                 smb_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -532,6 +565,8 @@ impl BackupTask {
                 smb_target_d_repo_path.clone().unwrap_or_default(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -559,6 +594,8 @@ impl BackupTask {
                 target_dir_base.clone(),
                 self.option.aggregate_config,
                 copy_buffer_size,
+                retry_policy,
+                failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
@@ -583,6 +620,8 @@ impl BackupTask {
             ctrl_dir,
             worker_count,
             copy_buffer_size,
+            retry_policy,
+            failure_recorder,
             self.option.aggregate_config,
             enable_hardlink_phase,
             enable_delete_phase,
@@ -1144,6 +1183,8 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         &option.meta_dir,
         &option.original_source_base,
         &option.target_dir_base,
+        crate::failure::RetryPolicy::default(),
+        None,
     )
     .map(|_| ())
     .map_err(RestoreError::IoError)
@@ -1203,6 +1244,8 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
+        crate::failure::RetryPolicy::default(),
+        None,
     )
     .map(|_| ())
     .map_err(RestoreError::IoError)
@@ -1262,6 +1305,8 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
+        crate::failure::RetryPolicy::default(),
+        None,
     )
     .map(|_| ())
     .map_err(RestoreError::IoError)

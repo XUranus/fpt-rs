@@ -6,6 +6,7 @@ use std::thread;
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::stats::BackupStats;
 use crate::backup::SharedState;
+use crate::failure::{FailureRecorder, RetryPolicy};
 
 pub mod delete;
 pub mod hardlink;
@@ -20,6 +21,8 @@ pub(crate) fn spawn_local_backup_pipeline(
     ctrl_dir: PathBuf,
     worker_count: usize,
     copy_buffer_size: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
     aggregate_config: AggregateConfig,
     enable_hardlink_phase: bool,
     enable_delete_phase: bool,
@@ -36,6 +39,8 @@ pub(crate) fn spawn_local_backup_pipeline(
         ctrl_dir,
         worker_count,
         copy_buffer_size,
+        retry_policy,
+        failure_recorder,
         aggregate_config,
         enable_hardlink_phase,
         enable_delete_phase,
