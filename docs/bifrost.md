@@ -48,11 +48,18 @@ Responsible for filesystem traversal and metadata generation.
 
 Outputs:
 
-- `meta_*.dat`
+- `meta_<writer>_<segment>.dat`
 - `fcache_*.dat`
 - `dcache_*.dat`
-- `copy.txt`
+- `copy.txt` or `copy_*.txt` when copy-control sharding is enabled
 - optional `hardlink.txt`, `delete.txt`, `mtime.txt`
+
+Scanner notes:
+
+- `writer_count` now maps to real metadata writer shards.
+- each writer owns its own metadata namespace and cache files
+- metadata locators encode `(writer_shard, segment)` into the stored `meta_fid`
+- copy control files can be sliced into multiple `copy_*.txt` shards so backup can schedule multiple copy subtasks in parallel
 
 ### `src/backup/`
 

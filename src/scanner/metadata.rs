@@ -13,14 +13,16 @@ mod meta_storage;
 pub use filemeta::{DirMeta, FileMeta, MetaCommon};
 
 pub use meta_storage::{
-    MetaEntryLocator, MetaFileReader, MetaFileWriter, MetaRepoReader, MetaRepoWriter,
+    decode_meta_file_id, encode_meta_file_id, meta_file_path, MetaEntryLocator, MetaFileReader,
+    MetaFileWriter, MetaRepoReader, MetaRepoWriter,
 };
 
 pub use filecache::{DirCacheEntry, FileCacheEntry, FixedSize};
 
 pub use cache_storage::{
-    BinaryObjectSeqIterator, CacheRepoReader, DirCacheIterator, DirCacheRandomReader,
-    DirCacheWriter, FileCacheIterator, FileCacheRandomReader, FileCacheWriter,
+    dir_cache_path, file_cache_path, BinaryObjectSeqIterator, CacheRepoReader, DirCacheIterator,
+    DirCacheRandomReader, DirCacheWriter, FileCacheIterator, FileCacheRandomReader,
+    FileCacheWriter,
 };
 
 pub use filecontrol::{

@@ -16,6 +16,7 @@ Start here if you are new to the repository:
 8. [task_lifecycle.md](task_lifecycle.md) for the common scanner/backup/restore lifecycle API.
 9. [retry_failure.md](retry_failure.md) for structured failure logs and retry policy behavior.
 10. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
+11. [scanner_optimization.md](scanner_optimization.md) for the current metadata-writer and copy-control sharding changes.
 
 Reference docs:
 

@@ -7,6 +7,7 @@ Bifrost uses text control files to describe what the backup and restore engines 
 Under `C_REPO/ctrl/` you will typically see:
 
 - `copy.txt`
+- `copy_<SHARD>.txt` or `copy_<SHARD>_<ROLLOVER>.txt` when control sharding is enabled
 - `hardlink.txt`
 - `delete.txt`
 - `mtime.txt`
@@ -68,6 +69,25 @@ D NN ... /data/huge BATCH=0/5
 D NN ... /data/huge BATCH=1/5 CONT
 D NN ... /data/huge BATCH=2/5 CONT LAST
 ```
+
+### Sharded Copy Control Files
+
+When scanner control sharding is enabled, the scanner emits multiple copy control
+files instead of a single `copy.txt`:
+
+```text
+copy_00000000_0000.txt
+copy_00000001_0000.txt
+copy_0000000A_0001.txt
+```
+
+Important properties:
+
+- the shard id is derived from the directory path hash
+- one directory and all of its file entries always stay in the same copy shard
+- rollover may create multiple files for the same shard id
+- backup already discovers and runs all `copy_*.txt` files as parallel subtasks
+- restore also discovers `copy_*.txt` files
 
 ## `delete.txt`
 
@@ -131,5 +151,13 @@ This phase restores directory metadata after copy, hardlink, and delete have alr
 - `META_OFFSET`
 
 Those point into `M_REPO/meta/meta_*.dat`.
+
+With multi-writer scanner output, metadata files are now physically named:
+
+- `meta_<WRITER_SHARD>_<SEGMENT>.dat`
+
+The `META_FID` stored in control files is still a single 32-bit value. Bifrost
+encodes the writer shard and segment into that value and resolves the physical
+file name internally.
 
 See [metafile.md](metafile.md) for metadata-file format details.

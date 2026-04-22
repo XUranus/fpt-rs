@@ -24,13 +24,16 @@ All metadata is stored under a single base directory:
 
 ```
 <base_dir>/
-├── meta_0.dat
-├── meta_1.dat
-├── meta_2.dat
+├── meta_0_0.dat
+├── meta_0_1.dat
+├── meta_1_0.dat
 └── ...
 ```
 
-- Each file is named `meta_<N>.dat`, where `N` is a zero-based, monotonically increasing **32-bit unsigned integer** (`meta_file_id`).
+- Each physical metadata file is named `meta_<WRITER_SHARD>_<SEGMENT>.dat`.
+- `WRITER_SHARD` is the scanner metadata-writer id.
+- `SEGMENT` is the rollover counter within that writer shard.
+- Logical `meta_file_id` is still a single **32-bit unsigned integer**, but it is encoded from `(writer_shard, segment)`.
 - Maximum file size: **512 MiB** (configurable at compile time).
 - Files are **append-only** and **never modified after writing**.
 
@@ -71,9 +74,16 @@ Each metadata record is stored as a **self-delimiting binary blob** with the fol
 ## 📥 Writing Records
 
 1. Compute serialized payload using `bincode::serialize` with **standard configuration** (default Rust struct layout, little-endian, no varint).
-2. Choose next available `meta_<N>.dat` file (create new if current would exceed 512 MiB).
-3. Append `[tag][len_le][payload]` to the file.
-4. Return `(meta_file_id = N, offset = file_position_before_write)` as the **location key**.
+2. Choose the current writer shard's next `meta_<WRITER_SHARD>_<SEGMENT>.dat` file.
+3. Create a new segment if the current one would exceed the size limit.
+4. Append `[tag][len_le][payload]` to the file.
+5. Return `(meta_file_id, offset)` as the **location key**.
+
+Current implementation detail:
+
+```text
+meta_file_id = (writer_shard << 16) | segment
+```
 
 > **Note**: `offset` is a **32-bit unsigned integer**, limiting each `.dat` file to **≤ 4 GiB** of logical records (but physical limit is 512 MiB, so safe).
 
@@ -83,12 +93,13 @@ Each metadata record is stored as a **self-delimiting binary blob** with the fol
 
 Given `(meta_file_id, offset)`:
 
-1. Open (or reuse) file `meta_<meta_file_id>.dat`.
-2. Seek to `offset`.
-3. Read 1 byte → `tag`.
-4. Read 4 bytes → `len` (interpret as little-endian `u32`).
-5. Read `len` bytes → `payload`.
-6. Deserialize `payload` with `bincode::deserialize` into the appropriate type based on `tag`.
+1. Decode `meta_file_id` into `(writer_shard, segment)`.
+2. Open (or reuse) file `meta_<writer_shard>_<segment>.dat`.
+3. Seek to `offset`.
+4. Read 1 byte → `tag`.
+5. Read 4 bytes → `len` (interpret as little-endian `u32`).
+6. Read `len` bytes → `payload`.
+7. Deserialize `payload` with `bincode::deserialize` into the appropriate type based on `tag`.
 
 > **No validation beyond structure is performed**—caller must ensure `(meta_file_id, offset)` points to a valid record start.
 

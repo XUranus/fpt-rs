@@ -459,17 +459,16 @@ async fn validate_copy_structure_nfs(
 async fn validate_smb_target_writable(loc: &crate::smb::SmbLocation) -> Result<(), String> {
     let client = crate::smb::aio::connect_client(loc).await?;
     let dir_cache = crate::smb::aio::new_dir_cache();
-    let magic = prereq_magic_file_name();
+    let magic_dir = prereq_magic_file_name();
     let result = async {
-        crate::smb::aio::write_relative_file(&client, loc, &dir_cache, &magic, b"bifrost-prereq")
-            .await?;
-        crate::smb::aio::delete::mark_delete_pending(&client, loc, &magic, false)
+        crate::smb::aio::ensure_relative_directory(&client, loc, &dir_cache, &magic_dir).await?;
+        crate::smb::aio::delete::mark_delete_pending(&client, loc, &magic_dir, true)
             .await
             .and_then(|deleted| {
                 if deleted {
                     Ok(())
                 } else {
-                    Err(format!("delete temp magic file {magic}: not found"))
+                    Err(format!("delete temp magic directory {magic_dir}: not found"))
                 }
             })
     }

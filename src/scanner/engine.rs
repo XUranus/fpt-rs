@@ -41,11 +41,12 @@ pub fn start_meta_writers(
 
         let handle = std::thread::spawn(move || {
             // writer thread logic here
-            let mut meta_writer = MetaRepoWriter::new(meta_dir).unwrap();
+            let writer_shard = i as u32;
+            let mut meta_writer = MetaRepoWriter::new(meta_dir, writer_shard as u16).unwrap();
             let mut dcache_writer: DirCacheWriter =
-                DirCacheWriter::new(dcache_dir, i as u32).unwrap();
+                DirCacheWriter::new(dcache_dir, writer_shard).unwrap();
             let mut fcache_writer: FileCacheWriter =
-                FileCacheWriter::new(fcache_dir, i as u32).unwrap();
+                FileCacheWriter::new(fcache_dir, writer_shard).unwrap();
             info!("Writer thread {} started", i);
             loop {
                 // pop path from output meta queue and process
@@ -56,6 +57,7 @@ pub fn start_meta_writers(
                         &mut meta_writer,
                         &mut dcache_writer,
                         &mut fcache_writer,
+                        writer_shard,
                         hardlink_index.as_ref(),
                         scan_hardlinks,
                     );
@@ -90,6 +92,7 @@ fn process_scan_result(
     meta_writer: &mut MetaRepoWriter,
     dcache_writer: &mut DirCacheWriter,
     fcache_writer: &mut FileCacheWriter,
+    writer_shard: u32,
     hardlink_index: Option<&Arc<Mutex<HardlinkIndex>>>,
     scan_hardlinks: bool,
 ) {
@@ -102,7 +105,7 @@ fn process_scan_result(
     let mut sorted_fcaches = vec![];
     let files_count = dir_scan_result.files.len();
     let (_, fcache_offset) = fcache_writer.current();
-    let fcache_fid = 0;
+    let fcache_fid = writer_shard;
 
     for fmeta in dir_scan_result.files {
         let fmeta_loc = meta_writer.write_filemeta(&fmeta).unwrap();
@@ -160,7 +163,6 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
     // Ensure ctrl_dir exists
     fs::create_dir_all(&ctrl_dir)?;
 
-    let copy_file_path = ctrl_dir.join("copy.txt");
     let mtime_file_path = ctrl_dir.join("mtime.txt");
 
     // Check if incremental backup is requested
@@ -228,12 +230,35 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
         }
 
         mtime_writer.finish().unwrap();
+        if scan_option.shard_option.enabled {
+            split_copy_control_file(scan_option, &ctrl_header)?;
+        }
         return Ok(());
     }
 
-    // Full backup mode - generate copy.txt with all entries marked as NN
+    // Full backup mode - generate copy control files with all entries marked as NN
     let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
-    let mut copy_writer = ControlFileWriter::new_with_header(copy_file_path, &ctrl_header).unwrap();
+    let mut copy_writer = if scan_option.shard_option.enabled {
+        None
+    } else {
+        Some(ControlFileWriter::new_with_header(ctrl_dir.join("copy.txt"), &ctrl_header).unwrap())
+    };
+    let mut sharded_copy = if scan_option.shard_option.enabled {
+        Some(
+            crate::scanner::metadata::ShardedControlFileManager::with_policy(
+                ctrl_dir.clone(),
+                "copy".to_string(),
+                scan_option.shard_option.num_shards.max(1),
+                crate::scanner::metadata::ShardSplitPolicy::MaxSize {
+                    max_size: scan_option.shard_option.max_size,
+                    max_entries: scan_option.shard_option.max_entries_copy,
+                },
+            )?
+            .max_files_per_batch(u32::MAX),
+        )
+    } else {
+        None
+    };
     let mut mtime_writer = MtimeControlFileWriter::new_with_source(
         mtime_file_path,
         &scan_option.control_path.source_kind,
@@ -263,7 +288,11 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
                 meta_offset: dcache_entry.meta_loc.1,
                 files_count: files_count,
             };
-            copy_writer.write_dir(&dctrl_entry).unwrap();
+            if let Some(copy_writer) = copy_writer.as_mut() {
+                copy_writer.write_dir(&dctrl_entry).unwrap();
+            } else if let Some(sharded_copy) = sharded_copy.as_mut() {
+                sharded_copy.write_directory(&dctrl_entry, None)?;
+            }
 
             // Write mtime entry for directory
             let mtime_entry = MtimeDirEntry {
@@ -281,7 +310,7 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
             }
 
             // read file cache
-            let fcache_path = fcache_dir.join(format!("{}_{}.dat", "fcache", fcache_fid));
+            let fcache_path = crate::scanner::metadata::file_cache_path(&fcache_dir, fcache_fid);
             let fcache_iter: FileCacheIterator = FileCacheIterator::from(
                 FileCacheRandomReader::open(fcache_path).unwrap(),
                 files_count,
@@ -296,12 +325,66 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
                     meta_fid: fcache_entry.meta_loc.0,
                     meta_offset: fcache_entry.meta_loc.1,
                 };
-                copy_writer.write_file(&fctrl_entry).unwrap();
+                if let Some(copy_writer) = copy_writer.as_mut() {
+                    copy_writer.write_file(&fctrl_entry).unwrap();
+                } else if let Some(sharded_copy) = sharded_copy.as_mut() {
+                    sharded_copy.write_file(&dctrl_entry.path, &fctrl_entry)?;
+                }
             }
         }
     }
 
-    copy_writer.finish().unwrap();
+    if let Some(copy_writer) = copy_writer {
+        copy_writer.finish().unwrap();
+    }
+    if let Some(sharded_copy) = sharded_copy {
+        sharded_copy.finish()?;
+    }
     mtime_writer.finish().unwrap();
+    Ok(())
+}
+
+fn split_copy_control_file(
+    scan_option: &ScanOption,
+    ctrl_header: &ControlFileHeader,
+) -> Result<(), io::Error> {
+    use crate::scanner::metadata::{
+        ControlEntry, ControlFileReader, ShardSplitPolicy, ShardedControlFileManager,
+    };
+
+    let copy_path = scan_option.target_dir.ctrl_dir.join("copy.txt");
+    if !copy_path.exists() {
+        return Ok(());
+    }
+
+    let mut sharded_copy = ShardedControlFileManager::with_policy(
+        scan_option.target_dir.ctrl_dir.clone(),
+        "copy".to_string(),
+        scan_option.shard_option.num_shards.max(1),
+        ShardSplitPolicy::MaxSize {
+            max_size: scan_option.shard_option.max_size,
+            max_entries: scan_option.shard_option.max_entries_copy,
+        },
+    )?
+    .max_files_per_batch(u32::MAX);
+
+    let reader = ControlFileReader::open(&copy_path)?;
+    let mut current_dir_path = String::new();
+    for entry in reader {
+        match entry? {
+            ControlEntry::Dir(dir) => {
+                current_dir_path = dir.path.clone();
+                sharded_copy.write_directory(&dir, None)?;
+            }
+            ControlEntry::File(file) => {
+                sharded_copy.write_file(&current_dir_path, &file)?;
+            }
+        }
+    }
+    sharded_copy.finish()?;
+    std::fs::remove_file(copy_path)?;
+
+    // Recreate an empty headerless marker is unnecessary; sharded copies are now authoritative.
+    let _ = ctrl_header;
     Ok(())
 }

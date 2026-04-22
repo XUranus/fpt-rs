@@ -38,6 +38,14 @@ const FILE_CACHE_PREFIX: &str = "fcache";
 /// Filename prefix for directory cache files (e.g., `dcache_0.dat`).
 const DIR_CACHE_PREFIX: &str = "dcache";
 
+pub fn file_cache_path(base_dir: &Path, fid: u32) -> PathBuf {
+    base_dir.join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid))
+}
+
+pub fn dir_cache_path(base_dir: &Path, fid: u32) -> PathBuf {
+    base_dir.join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid))
+}
+
 /// Writer for a sequence of fixed-size, serializable objects in a binary file.
 ///
 /// Objects are appended **densely and sequentially** without delimiters.
@@ -133,20 +141,14 @@ pub type DirCacheWriter = BinObjectSeqWriter<DirCacheEntry>;
 impl FileCacheWriter {
     /// Creates a new file cache writer for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir
-            .as_ref()
-            .join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
-        Self::open(path)
+        Self::open(file_cache_path(base_dir.as_ref(), fid))
     }
 }
 
 impl DirCacheWriter {
     /// Creates a new directory cache writer for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir
-            .as_ref()
-            .join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
-        Self::open(path)
+        Self::open(dir_cache_path(base_dir.as_ref(), fid))
     }
 }
 
@@ -261,20 +263,14 @@ pub type FileCacheIterator = BinaryObjectSeqIterator<FileCacheEntry>;
 impl FileCacheRandomReader {
     /// Opens a file cache reader for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir
-            .as_ref()
-            .join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
-        Self::open(path)
+        Self::open(file_cache_path(base_dir.as_ref(), fid))
     }
 }
 
 impl DirCacheRandomReader {
     /// Opens a directory cache reader for file ID `fid`.
     pub fn new<P: AsRef<Path>>(base_dir: P, fid: u32) -> io::Result<Self> {
-        let path = base_dir
-            .as_ref()
-            .join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
-        Self::open(path)
+        Self::open(dir_cache_path(base_dir.as_ref(), fid))
     }
 }
 
@@ -306,9 +302,7 @@ impl CacheRepoReader {
     pub fn read_fcache(&self, fid: u32, index: u32) -> io::Result<FileCacheEntry> {
         let mut map = self.fcache_reader_map.borrow_mut();
         let reader = map.entry(fid).or_insert_with(|| {
-            let path = self
-                .base_dir
-                .join(format!("{}_{}.dat", FILE_CACHE_PREFIX, fid));
+            let path = file_cache_path(&self.base_dir, fid);
             FileCacheRandomReader::new(path, fid).expect("Failed to open file cache")
         });
         reader.read_object(index)
@@ -318,9 +312,7 @@ impl CacheRepoReader {
     pub fn read_dcache(&self, fid: u32, index: u32) -> io::Result<DirCacheEntry> {
         let mut map = self.dcache_reader_map.borrow_mut();
         let reader = map.entry(fid).or_insert_with(|| {
-            let path = self
-                .base_dir
-                .join(format!("{}_{}.dat", DIR_CACHE_PREFIX, fid));
+            let path = dir_cache_path(&self.base_dir, fid);
             DirCacheRandomReader::new(path, fid).expect("Failed to open directory cache")
         });
         reader.read_object(index)

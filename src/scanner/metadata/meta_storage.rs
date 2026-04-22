@@ -42,6 +42,28 @@ const TAG_FILE: u8 = 2;
 /// - `offset` is the byte offset within that file where the record starts.
 pub type MetaEntryLocator = (u32, u32);
 
+const META_SHARD_BITS: u32 = 16;
+const META_SEGMENT_MASK: u32 = (1 << META_SHARD_BITS) - 1;
+
+/// Encode a metadata file id from `(writer_shard, segment_id)`.
+pub fn encode_meta_file_id(writer_shard: u16, segment_id: u16) -> u32 {
+    ((writer_shard as u32) << META_SHARD_BITS) | segment_id as u32
+}
+
+/// Decode a metadata file id into `(writer_shard, segment_id)`.
+pub fn decode_meta_file_id(file_id: u32) -> (u16, u16) {
+    (
+        (file_id >> META_SHARD_BITS) as u16,
+        (file_id & META_SEGMENT_MASK) as u16,
+    )
+}
+
+/// Build the on-disk metadata file path for a metadata file id.
+pub fn meta_file_path(base_dir: &Path, file_id: u32) -> PathBuf {
+    let (writer_shard, segment_id) = decode_meta_file_id(file_id);
+    base_dir.join(format!("meta_{writer_shard}_{segment_id}.dat"))
+}
+
 /// Writer for a single metadata file in TLV (Tag-Length-Value) format.
 ///
 /// Records are appended sequentially. Each record consists of:
@@ -133,31 +155,37 @@ impl MetaFileWriter {
 pub struct MetaRepoWriter {
     /// Base directory containing metadata files.
     base_dir: PathBuf,
+    /// Writer shard that owns this metadata repo writer.
+    writer_shard: u16,
     /// Maximum size per metadata file (in bytes). Uses `MAX_FILE_SIZE` if `None`.
     max_size: Option<u32>,
     /// Current active writer.
     current_writer: MetaFileWriter,
-    /// ID of the current metadata file (e.g., `0` → `meta_0.dat`).
-    current_file_id: u32,
+    /// Segment id within the current writer shard.
+    current_segment_id: u16,
 }
 
 impl MetaRepoWriter {
     /// Initializes a new metadata repository.
     ///
     /// Creates the base directory if it doesn't exist and opens the first metadata file (`meta_0.dat`).
-    pub fn new<P: AsRef<Path>>(base_dir: P) -> io::Result<Self> {
+    pub fn new<P: AsRef<Path>>(base_dir: P, writer_shard: u16) -> io::Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&base_dir)?;
 
-        let current_file_id = 0;
-        let dat_path = base_dir.join(format!("meta_{}.dat", current_file_id));
+        let current_segment_id = 0;
+        let dat_path = meta_file_path(
+            &base_dir,
+            encode_meta_file_id(writer_shard, current_segment_id),
+        );
         let current_writer = MetaFileWriter::open(dat_path)?;
 
         Ok(Self {
             base_dir,
+            writer_shard,
             max_size: None,
             current_writer,
-            current_file_id,
+            current_segment_id,
         })
     }
 
@@ -169,8 +197,14 @@ impl MetaRepoWriter {
 
     /// Returns the path of the currently active metadata file.
     fn current_file_path(&self) -> PathBuf {
-        self.base_dir
-            .join(format!("meta_{}.dat", self.current_file_id))
+        meta_file_path(
+            &self.base_dir,
+            encode_meta_file_id(self.writer_shard, self.current_segment_id),
+        )
+    }
+
+    fn current_file_id(&self) -> u32 {
+        encode_meta_file_id(self.writer_shard, self.current_segment_id)
     }
 
     /// Checks if a new metadata file should be started based on available space.
@@ -178,7 +212,7 @@ impl MetaRepoWriter {
         let max_size = self.max_size.unwrap_or(MAX_FILE_SIZE);
         if self.current_writer.size() + needed > max_size {
             self.current_writer.flush()?;
-            self.current_file_id += 1;
+            self.current_segment_id += 1;
             let new_path = self.current_file_path();
             self.current_writer = MetaFileWriter::open(new_path)?;
         }
@@ -191,7 +225,7 @@ impl MetaRepoWriter {
         let needed = 1 + 4 + bincode::serialized_size(dirmeta).unwrap_or(4096) as u32;
         self.check_room(needed)?;
         let offset = self.current_writer.write_dirmeta(dirmeta)?;
-        Ok((self.current_file_id, offset))
+        Ok((self.current_file_id(), offset))
     }
 
     /// Writes a `FileMeta` and returns its locator in the repository.
@@ -199,7 +233,7 @@ impl MetaRepoWriter {
         let needed = 1 + 4 + bincode::serialized_size(filemeta).unwrap_or(4096) as u32;
         self.check_room(needed)?;
         let offset = self.current_writer.write_filemeta(filemeta)?;
-        Ok((self.current_file_id, offset))
+        Ok((self.current_file_id(), offset))
     }
 }
 
@@ -291,7 +325,7 @@ impl MetaRepoReader {
         let mut cache = self.file_handle_map.borrow_mut();
 
         let reader = cache.entry(file_id).or_insert_with(|| {
-            let path = self.base_dir.join(format!("meta_{}.dat", file_id));
+            let path = meta_file_path(&self.base_dir, file_id);
             MetaFileReader::new(path).expect("Failed to open metadata file")
         });
 
