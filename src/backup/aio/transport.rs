@@ -223,51 +223,6 @@ impl TargetWriter for NfsTarget {
 
 #[cfg(feature = "smb")]
 #[derive(Clone)]
-pub struct SmbSource {
-    pub location: crate::smb::SmbLocation,
-    pub pool: Arc<crate::smb::aio::SmbClientPool>,
-    pub buffer_size: usize,
-}
-
-#[cfg(feature = "smb")]
-impl SourceReader for SmbSource {
-    fn read_block(
-        &self,
-        mut block: CopyBlock,
-    ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
-        let this = self.clone();
-        Box::pin(async move {
-            let rel_path = block.src_path.to_string_lossy().replace('\\', "/");
-            let client = this.pool.client();
-            match crate::smb::aio::read_relative_file_chunk(
-                &client,
-                &this.location,
-                &rel_path,
-                block.file_size,
-                block.src_offset,
-                clamp_copy_buffer_size(this.buffer_size),
-            )
-            .await
-            {
-                Ok(buf) => {
-                    block.src_offset = block.src_offset.saturating_add(buf.len() as u64);
-                    block.is_last = block.src_offset >= block.file_size;
-                    block.data = buf;
-                    Ok(block)
-                }
-                Err(msg) => Err((block, msg)),
-            }
-        })
-    }
-
-    fn finish(&self) -> BoxFuture<'static, Result<(), String>> {
-        let this = self.clone();
-        Box::pin(async move { this.pool.close().await })
-    }
-}
-
-#[cfg(feature = "smb")]
-#[derive(Clone)]
 pub struct SmbTarget {
     pub location: crate::smb::SmbLocation,
     pub pool: Arc<crate::smb::aio::SmbClientPool>,

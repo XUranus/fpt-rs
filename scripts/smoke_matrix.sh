@@ -38,6 +38,9 @@ TEST_SMB_PASSWORD="${TEST_SMB_PASSWORD:-123456789}"
 TEST_AGGREGATE_LAYOUTS="${TEST_AGGREGATE_LAYOUTS:-shard dir-level}"
 # Space-separated transports to include. Default covers the full matrix.
 TEST_TRANSPORTS="${TEST_TRANSPORTS:-local nfs smb}"
+# Number of 100MiB files in the smoke dataset. Keep the default at 1 so
+# SMB->SMB remains a smoke test instead of a throughput benchmark.
+TEST_LARGE_FILE_COUNT="${TEST_LARGE_FILE_COUNT:-1}"
 
 DATASET_DIR="${TEST_ROOT_DIR}/test_smoke"
 OUT_DIR="${TEST_ROOT_DIR}/out"
@@ -114,8 +117,8 @@ generate_dataset() {
   echo "[INFO] Generating smoke dataset at ${DATASET_DIR}"
   mkdir -p "${DATASET_DIR}"
 
-  # 15 x 1K, 15 x 128K, 15 x 1M, 10 x 4M, 2 x 100M.
-  # Total: 57 files, ~257 MiB plus directory metadata.
+  # 15 x 1K, 15 x 128K, 15 x 1M, 10 x 4M, and TEST_LARGE_FILE_COUNT x 100M.
+  # Default total: 56 files, ~157 MiB plus directory metadata.
   run_step "vdbench 1K files" "${LOG_DIR}/vdbench_1k.log" \
     "${VDBENCH}" --output "${DATASET_DIR}/sz_1k" \
     --depth 2 --dirs 2 --files 5 --size 1K --threads 4 \
@@ -138,7 +141,7 @@ generate_dataset() {
 
   run_step "vdbench 100M files" "${LOG_DIR}/vdbench_100m.log" \
     "${VDBENCH}" --output "${DATASET_DIR}/sz_100m" \
-    --depth 1 --dirs 0 --files 2 --size 100M --threads 2 \
+    --depth 1 --dirs 0 --files "${TEST_LARGE_FILE_COUNT}" --size 100M --threads 2 \
     --dir-prefix vdb.100m.dir. --file-prefix file. --level-names --index-base 1 -y
 
   local files bytes

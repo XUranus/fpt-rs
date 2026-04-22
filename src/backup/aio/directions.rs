@@ -8,7 +8,7 @@ use std::time::Instant;
 use log::{debug, error, info};
 use tokio::sync::{mpsc, Semaphore};
 
-use crate::backup::aggregate::AggregateConfig;
+use crate::backup::aggregate::{should_aggregate, AggregateConfig};
 use crate::backup::aio::aggregation::AggregatingTarget;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
@@ -26,7 +26,9 @@ use crate::nfs::aio::{reader::new_file_handle_cache, writer::new_dir_handle_cach
 use crate::nfs::connection::NfsConnectionPool;
 
 #[cfg(feature = "smb")]
-use crate::backup::aio::transport::{SmbSource, SmbTarget};
+use crate::backup::aio::executor::execute_smb_source_file_plan;
+#[cfg(feature = "smb")]
+use crate::backup::aio::transport::SmbTarget;
 #[cfg(feature = "smb")]
 use crate::smb::SmbLocation;
 
@@ -47,8 +49,8 @@ pub async fn run_local_to_nfs_copy_pipeline(
     copy_buffer_size: usize,
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
-    let mapping =
-        EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, target_prefix.clone());
     let target = NfsTarget {
         pool: Arc::clone(&pool),
         dir_cache: new_dir_handle_cache(),
@@ -56,7 +58,7 @@ pub async fn run_local_to_nfs_copy_pipeline(
         write_chunk: pool.server_wtmax,
         buffer_size: copy_buffer_size,
     };
-    let target = AggregatingTarget::new(target, aggregate_config);
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
 
     run_copy_pipeline(
         control_file,
@@ -87,15 +89,15 @@ pub async fn run_local_to_smb_copy_pipeline(
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let max_concurrent_tasks = smb_copy_task_limit(pool.size());
-    let mapping =
-        EntryMapping::local_to_prefixed_target(source_dir_base, PathBuf::from(target_prefix));
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::local_to_prefixed_target(source_dir_base, target_prefix.clone());
     let target = SmbTarget {
         location,
         pool,
         dir_cache: crate::smb::aio::new_dir_cache(),
         buffer_size: copy_buffer_size,
     };
-    let target = AggregatingTarget::new(target, aggregate_config);
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
 
     run_copy_pipeline(
         control_file,
@@ -165,7 +167,8 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
 ) {
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let _ = nfs_source_base;
-    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
     let source = NfsSource {
         pool: Arc::clone(&source_pool),
         dir_cache: new_file_handle_cache(),
@@ -180,7 +183,7 @@ pub async fn run_aio_nfs_to_nfs_pipeline(
         write_chunk: target_pool.server_wtmax,
         buffer_size: copy_buffer_size,
     };
-    let target = AggregatingTarget::new(target, aggregate_config);
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
 
     run_copy_pipeline(
         control_file,
@@ -211,25 +214,23 @@ pub async fn run_smb_to_local_copy_pipeline(
     let max_concurrent_tasks = smb_copy_task_limit(pool.size());
     let _ = smb_source_base;
     let mapping = EntryMapping::remote_to_local();
-    let source = SmbSource {
-        location,
-        pool,
-        buffer_size: copy_buffer_size,
-    };
     let target = LocalTarget {
         base: local_target_base,
     };
     let target = AggregatingTarget::new(target, aggregate_config);
 
-    run_copy_pipeline(
+    run_smb_source_copy_pipeline(
         control_file,
         meta_dir,
         mapping,
-        source,
+        location,
+        pool,
         target,
         stats,
         "SMB->local",
         max_concurrent_tasks,
+        copy_buffer_size,
+        aggregate_config,
     )
     .await;
 }
@@ -269,29 +270,33 @@ pub async fn run_smb_to_smb_copy_pipeline(
     }
 
     let _ = smb_source_base;
-    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
-    let source = SmbSource {
-        location: source_location,
-        pool: source_pool,
-        buffer_size: copy_buffer_size,
-    };
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
+    let target_pool_for_streaming = Arc::clone(&target_pool);
+    let target_dir_cache = crate::smb::aio::new_dir_cache();
     let target = SmbTarget {
-        location: target_location,
+        location: target_location.clone(),
         pool: target_pool,
-        dir_cache: crate::smb::aio::new_dir_cache(),
+        dir_cache: target_dir_cache.clone(),
         buffer_size: copy_buffer_size,
     };
-    let target = AggregatingTarget::new(target, aggregate_config);
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
 
-    run_copy_pipeline(
+    run_smb_to_smb_aggregate_pipeline(
         control_file,
         meta_dir,
         mapping,
-        source,
+        source_location,
+        target_location,
+        source_pool,
+        target_pool_for_streaming,
+        target_dir_cache,
         target,
         stats,
         "SMB->SMB",
         max_concurrent_tasks,
+        copy_buffer_size,
+        aggregate_config,
     )
     .await;
 }
@@ -313,7 +318,8 @@ async fn run_smb_to_smb_streaming_pipeline(
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
     let pipeline_started = Instant::now();
     let _ = smb_source_base;
-    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
     let dir_target = SmbTarget {
         location: target_location.clone(),
         pool: Arc::clone(&target_pool),
@@ -488,6 +494,284 @@ async fn run_smb_to_smb_streaming_pipeline(
 }
 
 #[cfg(feature = "smb")]
+async fn run_smb_source_copy_pipeline<T>(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    mapping: EntryMapping,
+    source_location: SmbLocation,
+    source_pool: Arc<crate::smb::aio::SmbClientPool>,
+    target: T,
+    stats: Arc<BackupStats>,
+    log_prefix: &'static str,
+    max_concurrent_tasks: usize,
+    copy_buffer_size: usize,
+    aggregate_config: AggregateConfig,
+) where
+    T: TargetWriter,
+{
+    let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
+    let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
+
+    let producer_handle = {
+        let entry_tx = entry_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            produce_copy_plan(
+                control_file,
+                meta_dir,
+                mapping,
+                log_prefix,
+                |_| false,
+                |entry| entry_tx.blocking_send(entry).is_ok(),
+            );
+        })
+    };
+    drop(entry_tx);
+
+    let mut task_handles = Vec::new();
+
+    while let Some(item) = entry_rx.recv().await {
+        match item {
+            CopyPlanEntry::Directory { dst_path, .. } => {
+                let target2 = target.clone();
+                let stats2 = Arc::clone(&stats);
+                let task_sem2 = Arc::clone(&task_sem);
+                let path = dst_path;
+                debug!("{log_prefix}: mkdir {:?}", path);
+
+                let h = tokio::spawn(async move {
+                    let _permit = task_sem2.acquire_owned().await.unwrap();
+                    match target2.create_dir(path.clone()).await {
+                        Ok(()) => {
+                            stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            error!("{log_prefix}: mkdir {:?}: {e}", path);
+                            stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+                task_handles.push(h);
+            }
+            CopyPlanEntry::File(plan) => {
+                let source_location2 = source_location.clone();
+                let source_pool2 = Arc::clone(&source_pool);
+                let target2 = target.clone();
+                let stats2 = Arc::clone(&stats);
+                let task_sem2 = Arc::clone(&task_sem);
+
+                let h = tokio::spawn(async move {
+                    let _permit = task_sem2.acquire_owned().await.unwrap();
+                    execute_smb_source_file_plan(
+                        plan,
+                        source_location2,
+                        source_pool2,
+                        target2,
+                        stats2,
+                        log_prefix,
+                        copy_buffer_size,
+                        aggregate_config,
+                    )
+                    .await;
+                });
+                task_handles.push(h);
+            }
+        }
+    }
+
+    if let Err(e) = producer_handle.await {
+        error!("{log_prefix}: entry producer panicked: {e}");
+    }
+
+    for h in task_handles {
+        if let Err(e) = h.await {
+            error!("{log_prefix}: task panicked: {e}");
+        }
+    }
+
+    if let Err(e) = source_pool.close().await {
+        error!("{log_prefix}: source finalization failed: {e}");
+        stats.files_failed.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Err(e) = target.finish().await {
+        error!("{log_prefix}: target finalization failed: {e}");
+        stats.files_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    info!(
+        "{log_prefix}: complete: {} files, {} bytes, {} dirs, {} failed",
+        stats.files_copied.load(Ordering::Relaxed),
+        stats.bytes_copied.load(Ordering::Relaxed),
+        stats.dirs_created.load(Ordering::Relaxed),
+        stats.files_failed.load(Ordering::Relaxed),
+    );
+}
+
+#[cfg(feature = "smb")]
+async fn run_smb_to_smb_aggregate_pipeline(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    mapping: EntryMapping,
+    source_location: SmbLocation,
+    target_location: SmbLocation,
+    source_pool: Arc<crate::smb::aio::SmbClientPool>,
+    target_pool: Arc<crate::smb::aio::SmbClientPool>,
+    target_dir_cache: crate::smb::aio::DirCache,
+    target: AggregatingTarget<SmbTarget>,
+    stats: Arc<BackupStats>,
+    log_prefix: &'static str,
+    max_concurrent_tasks: usize,
+    copy_buffer_size: usize,
+    aggregate_config: AggregateConfig,
+) {
+    let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
+    let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
+
+    let producer_handle = {
+        let entry_tx = entry_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            produce_copy_plan(
+                control_file,
+                meta_dir,
+                mapping,
+                log_prefix,
+                |_| false,
+                |entry| entry_tx.blocking_send(entry).is_ok(),
+            );
+        })
+    };
+    drop(entry_tx);
+
+    let mut task_handles = Vec::new();
+
+    while let Some(item) = entry_rx.recv().await {
+        match item {
+            CopyPlanEntry::Directory { dst_path, .. } => {
+                let target2 = target.clone();
+                let stats2 = Arc::clone(&stats);
+                let task_sem2 = Arc::clone(&task_sem);
+                let path = dst_path;
+                debug!("{log_prefix}: mkdir {:?}", path);
+
+                task_handles.push(tokio::spawn(async move {
+                    let _permit = task_sem2.acquire_owned().await.unwrap();
+                    match target2.create_dir(path.clone()).await {
+                        Ok(()) => {
+                            stats2.dirs_created.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            error!("{log_prefix}: mkdir {:?}: {e}", path);
+                            stats2.dirs_failed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }));
+            }
+            CopyPlanEntry::File(FileCopyPlan::Direct {
+                meta,
+                src_path,
+                dst_path,
+            }) => {
+                if meta.common.symlink_target_path.is_some() {
+                    debug!("{log_prefix}: skipping symlink {:?}", src_path);
+                    continue;
+                }
+
+                let source_location2 = source_location.clone();
+                let target_location2 = target_location.clone();
+                let source_pool2 = Arc::clone(&source_pool);
+                let target_pool2 = Arc::clone(&target_pool);
+                let target_dir_cache2 = target_dir_cache.clone();
+                let target2 = target.clone();
+                let stats2 = Arc::clone(&stats);
+                let task_sem2 = Arc::clone(&task_sem);
+                let src_rel = src_path.to_string_lossy().replace('\\', "/");
+                let dst_rel = dst_path.to_string_lossy().replace('\\', "/");
+                let read_path = src_path.clone();
+                let write_path = dst_path.clone();
+                let file_size = meta.size;
+
+                task_handles.push(tokio::spawn(async move {
+                    let _permit = task_sem2.acquire_owned().await.unwrap();
+                    if should_aggregate(file_size, &aggregate_config) {
+                        execute_smb_source_file_plan(
+                            FileCopyPlan::Direct {
+                                meta,
+                                src_path,
+                                dst_path,
+                            },
+                            source_location2,
+                            source_pool2,
+                            target2,
+                            stats2,
+                            log_prefix,
+                            copy_buffer_size,
+                            aggregate_config,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    match crate::smb::aio::copy_relative_file_streaming(
+                        &source_pool2,
+                        &source_location2,
+                        &src_rel,
+                        &target_pool2,
+                        &target_location2,
+                        &target_dir_cache2,
+                        &dst_rel,
+                        true,
+                        None,
+                        copy_buffer_size,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            debug!("{log_prefix}: copied {:?} -> {:?}", read_path, write_path);
+                            stats2.files_copied.fetch_add(1, Ordering::Relaxed);
+                            stats2.bytes_copied.fetch_add(file_size, Ordering::Relaxed);
+                        }
+                        Err(msg) => {
+                            error!("{log_prefix}: write {:?}: {msg}", write_path);
+                            stats2.files_failed.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }));
+            }
+            CopyPlanEntry::File(FileCopyPlan::Aggregate { src_path, .. }) => {
+                error!("{log_prefix}: unexpected aggregate plan for {:?}", src_path);
+                stats.files_failed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    if let Err(e) = producer_handle.await {
+        error!("{log_prefix}: entry producer panicked: {e}");
+    }
+
+    for h in task_handles {
+        if let Err(e) = h.await {
+            error!("{log_prefix}: task panicked: {e}");
+        }
+    }
+
+    if let Err(e) = source_pool.close().await {
+        error!("{log_prefix}: source finalization failed: {e}");
+        stats.files_failed.fetch_add(1, Ordering::Relaxed);
+    }
+    if let Err(e) = target.finish().await {
+        error!("{log_prefix}: target finalization failed: {e}");
+        stats.files_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    info!(
+        "{log_prefix}: complete: {} files, {} bytes, {} dirs, {} failed",
+        stats.files_copied.load(Ordering::Relaxed),
+        stats.bytes_copied.load(Ordering::Relaxed),
+        stats.dirs_created.load(Ordering::Relaxed),
+        stats.files_failed.load(Ordering::Relaxed),
+    );
+}
+
+#[cfg(feature = "smb")]
 fn smb_copy_task_limit(pool_size: usize) -> usize {
     pool_size.max(1).min(SMB_MAX_CONCURRENT_TASKS)
 }
@@ -520,7 +804,8 @@ pub async fn run_nfs_to_smb_copy_pipeline(
     let max_concurrent_tasks =
         smb_copy_task_limit(target_pool.size()).min(NFS_MAX_CONCURRENT_TASKS);
     let _ = nfs_source_base;
-    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
     let source = NfsSource {
         pool: Arc::clone(&source_pool),
         dir_cache: new_file_handle_cache(),
@@ -534,7 +819,7 @@ pub async fn run_nfs_to_smb_copy_pipeline(
         dir_cache: crate::smb::aio::new_dir_cache(),
         buffer_size: copy_buffer_size,
     };
-    let target = AggregatingTarget::new(target, aggregate_config);
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
 
     run_copy_pipeline(
         control_file,
@@ -566,12 +851,8 @@ pub async fn run_smb_to_nfs_copy_pipeline(
     let max_concurrent_tasks =
         smb_copy_task_limit(source_pool.size()).min(NFS_MAX_CONCURRENT_TASKS);
     let _ = smb_source_base;
-    let mapping = EntryMapping::remote_to_prefixed_target(PathBuf::from(target_prefix));
-    let source = SmbSource {
-        location: source_location,
-        pool: source_pool,
-        buffer_size: copy_buffer_size,
-    };
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
     let target = NfsTarget {
         pool: Arc::clone(&target_pool),
         dir_cache: new_dir_handle_cache(),
@@ -579,17 +860,20 @@ pub async fn run_smb_to_nfs_copy_pipeline(
         write_chunk: target_pool.server_wtmax,
         buffer_size: copy_buffer_size,
     };
-    let target = AggregatingTarget::new(target, aggregate_config);
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
 
-    run_copy_pipeline(
+    run_smb_source_copy_pipeline(
         control_file,
         meta_dir,
         mapping,
-        source,
+        source_location,
+        source_pool,
         target,
         stats,
         "SMB->NFS",
         max_concurrent_tasks,
+        copy_buffer_size,
+        aggregate_config,
     )
     .await;
 }

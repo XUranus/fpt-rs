@@ -101,9 +101,11 @@ pub async fn run_copy_pipeline<S, T>(
 
     if let Err(e) = source.finish().await {
         error!("{log_prefix}: source finalization failed: {e}");
+        stats.files_failed.fetch_add(1, Ordering::Relaxed);
     }
     if let Err(e) = target.finish().await {
         error!("{log_prefix}: target finalization failed: {e}");
+        stats.files_failed.fetch_add(1, Ordering::Relaxed);
     }
 
     info!(

@@ -1,12 +1,12 @@
 //! Transport-agnostic aggregation decorator for async target writers.
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tempfile::Builder as TempFileBuilder;
+use tempfile::tempdir;
 
 use crate::backup::aggregate::{
     should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateLayout,
@@ -38,6 +38,7 @@ impl BucketAggregationState {
 pub struct AggregatingTarget<T: TargetWriter> {
     inner: T,
     config: AggregateConfig,
+    repo_prefix: PathBuf,
     state: Arc<Mutex<HashMap<String, BucketAggregationState>>>,
     blobs: Arc<Mutex<Vec<AggregateBlobMeta>>>,
     bytes_seen: Arc<AtomicU64>,
@@ -46,9 +47,14 @@ pub struct AggregatingTarget<T: TargetWriter> {
 
 impl<T: TargetWriter> AggregatingTarget<T> {
     pub fn new(inner: T, config: AggregateConfig) -> Self {
+        Self::with_repo_prefix(inner, config, PathBuf::new())
+    }
+
+    pub fn with_repo_prefix(inner: T, config: AggregateConfig, repo_prefix: PathBuf) -> Self {
         Self {
             inner,
             config,
+            repo_prefix,
             state: Arc::new(Mutex::new(HashMap::new())),
             blobs: Arc::new(Mutex::new(Vec::new())),
             bytes_seen: Arc::new(AtomicU64::new(0)),
@@ -61,6 +67,17 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             && should_aggregate(block.file_size, &self.config)
             && block.is_last
             && block.data.len() as u64 == block.file_size
+    }
+
+    fn logical_relative_path(&self, dst_path: &PathBuf) -> String {
+        let rel = if self.repo_prefix.as_os_str().is_empty() {
+            dst_path.as_path()
+        } else {
+            dst_path
+                .strip_prefix(&self.repo_prefix)
+                .unwrap_or(dst_path.as_path())
+        };
+        rel.to_string_lossy().replace('\\', "/")
     }
 
     fn bucket_for_relative_path(&self, relative_path: &str) -> String {
@@ -82,7 +99,7 @@ impl<T: TargetWriter> AggregatingTarget<T> {
     }
 
     fn blob_rel_path(&self, bucket: &str, blob_name: &str) -> PathBuf {
-        match self.config.layout {
+        let layout_path = match self.config.layout {
             AggregateLayout::DirLevel => {
                 if bucket.is_empty() {
                     PathBuf::from(AGGREGATE_DIR_NAME).join(blob_name)
@@ -95,7 +112,23 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             AggregateLayout::Shard => PathBuf::from(AGGREGATE_ROOT_DIR)
                 .join(bucket)
                 .join(blob_name),
+        };
+        if self.repo_prefix.as_os_str().is_empty() {
+            layout_path
+        } else {
+            self.repo_prefix.join(layout_path)
         }
+    }
+
+    fn index_relative_path(&self, target_path: &PathBuf) -> String {
+        let rel = if self.repo_prefix.as_os_str().is_empty() {
+            target_path.as_path()
+        } else {
+            target_path
+                .strip_prefix(&self.repo_prefix)
+                .unwrap_or(target_path.as_path())
+        };
+        rel.to_string_lossy().replace('\\', "/")
     }
 
     async fn write_blob(
@@ -126,24 +159,26 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             offset += size;
         }
 
-        let blob_rel_path_str = blob_rel_path.to_string_lossy().replace('\\', "/");
+        let blob_target_path_str = blob_rel_path.to_string_lossy().replace('\\', "/");
+        let blob_index_path_str = self.index_relative_path(&blob_rel_path);
         let blob_size = offset;
-        let mut write_offset = 0u64;
+        let mut blob_data = Vec::with_capacity(blob_size as usize);
         for file in files {
-            let data_len = file.data.len() as u64;
-            let block = synthetic_block(
-                PathBuf::from(&blob_rel_path_str),
-                file.data,
-                write_offset,
-                blob_size,
-                0o644,
-            );
-            self.inner.write_block(block).await.map_err(|(_, e)| e)?;
-            write_offset += data_len;
+            blob_data
+                .write_all(&file.data)
+                .map_err(|e| format!("build aggregate blob {blob_target_path_str}: {e}"))?;
         }
+        let block = synthetic_block(
+            PathBuf::from(&blob_target_path_str),
+            blob_data,
+            0,
+            blob_size,
+            0o644,
+        );
+        self.inner.write_block(block).await.map_err(|(_, e)| e)?;
 
         Ok(AggregateBlobMeta {
-            blob_path: blob_rel_path_str,
+            blob_path: blob_index_path_str,
             blob_size,
             file_count: entries.len() as u32,
             files: entries,
@@ -157,12 +192,10 @@ impl<T: TargetWriter> AggregatingTarget<T> {
             return Ok(());
         }
 
-        let temp = TempFileBuilder::new()
-            .suffix(".bidx")
-            .tempfile()
-            .map_err(|e| e.to_string())?;
+        let temp = tempdir().map_err(|e| e.to_string())?;
+        let temp_index_path = temp.path().join(BINARY_INDEX_FILE_NAME);
         {
-            let index = AggregateIndex::open(temp.path()).map_err(|e| e.to_string())?;
+            let index = AggregateIndex::open(&temp_index_path).map_err(|e| e.to_string())?;
             for blob in &snapshot {
                 index.add_blob(blob).map_err(|e| e.to_string())?;
             }
@@ -170,18 +203,13 @@ impl<T: TargetWriter> AggregatingTarget<T> {
         }
 
         let mut bytes = Vec::new();
-        temp.reopen()
+        std::fs::File::open(&temp_index_path)
             .map_err(|e| e.to_string())?
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        self.inner
-            .create_dir(PathBuf::from(AGGREGATE_ROOT_DIR))
-            .await?;
-        let idx_fcb = synthetic_fcb(
-            PathBuf::from(AGGREGATE_ROOT_DIR).join(BINARY_INDEX_FILE_NAME),
-            bytes,
-            0o644,
-        );
+        let index_dir = self.repo_prefix.join(AGGREGATE_ROOT_DIR);
+        self.inner.create_dir(index_dir.clone()).await?;
+        let idx_fcb = synthetic_fcb(index_dir.join(BINARY_INDEX_FILE_NAME), bytes, 0o644);
         self.inner.write_file(idx_fcb).await.map_err(|(_, e)| e)?;
         Ok(())
     }
@@ -198,22 +226,25 @@ impl<T: TargetWriter> AggregatingTarget<T> {
         }
 
         for (dir_key, blobs) in blobs_by_dir {
-            let temp = TempFileBuilder::new()
-                .suffix(".sqlite")
-                .tempfile()
-                .map_err(|e| e.to_string())?;
-            write_dir_index(temp.path(), &blobs)?;
+            let temp = tempdir().map_err(|e| e.to_string())?;
+            let temp_index_path = temp.path().join(SQLITE_INDEX_FILE_NAME);
+            write_dir_index(&temp_index_path, &blobs)?;
             let mut bytes = Vec::new();
-            temp.reopen()
+            std::fs::File::open(&temp_index_path)
                 .map_err(|e| e.to_string())?
                 .read_to_end(&mut bytes)
                 .map_err(|e| e.to_string())?;
-            let idx_rel = if dir_key.is_empty() {
+            let layout_idx_rel = if dir_key.is_empty() {
                 PathBuf::from(AGGREGATE_DIR_NAME).join(SQLITE_INDEX_FILE_NAME)
             } else {
                 PathBuf::from(&dir_key)
                     .join(AGGREGATE_DIR_NAME)
                     .join(SQLITE_INDEX_FILE_NAME)
+            };
+            let idx_rel = if self.repo_prefix.as_os_str().is_empty() {
+                layout_idx_rel
+            } else {
+                self.repo_prefix.join(layout_idx_rel)
             };
             if let Some(parent) = idx_rel.parent() {
                 self.inner.create_dir(parent.to_path_buf()).await?;
@@ -244,7 +275,7 @@ impl<T: TargetWriter> TargetWriter for AggregatingTarget<T> {
                 return this.inner.write_block(block).await;
             }
 
-            let relative_path = block.dst_path.to_string_lossy().replace('\\', "/");
+            let relative_path = this.logical_relative_path(&block.dst_path);
             let pending = PendingFile {
                 relative_path: relative_path.clone(),
                 data: block.data.clone(),

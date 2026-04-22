@@ -19,8 +19,8 @@ use log::{error, info};
 pub enum PathLayout {
     LocalSource { root: PathBuf },
     RemoteSource,
-    LogicalTarget,
     PrefixedLogicalTarget { prefix: PathBuf },
+    PrefixedRemoteRelativeTarget { prefix: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -50,20 +50,20 @@ impl EntryMapping {
     pub fn remote_to_local() -> Self {
         Self {
             dir_source: PathLayout::RemoteSource,
-            dir_target: PathLayout::LogicalTarget,
+            dir_target: PathLayout::RemoteSource,
             file_source: PathLayout::RemoteSource,
-            file_target: PathLayout::LogicalTarget,
+            file_target: PathLayout::RemoteSource,
         }
     }
 
     pub fn remote_to_prefixed_target(target_prefix: PathBuf) -> Self {
         Self {
             dir_source: PathLayout::RemoteSource,
-            dir_target: PathLayout::PrefixedLogicalTarget {
+            dir_target: PathLayout::PrefixedRemoteRelativeTarget {
                 prefix: target_prefix.clone(),
             },
             file_source: PathLayout::RemoteSource,
-            file_target: PathLayout::PrefixedLogicalTarget {
+            file_target: PathLayout::PrefixedRemoteRelativeTarget {
                 prefix: target_prefix,
             },
         }
@@ -173,9 +173,11 @@ fn map_control_path(
             join_local_source(root, logical_source_root, control_path)
         }
         PathLayout::RemoteSource => strip_logical_source_root(logical_source_root, control_path),
-        PathLayout::LogicalTarget => logical_relative_path(control_path),
         PathLayout::PrefixedLogicalTarget { prefix } => {
             prefix.join(logical_relative_path(control_path))
+        }
+        PathLayout::PrefixedRemoteRelativeTarget { prefix } => {
+            prefix.join(strip_logical_source_root(logical_source_root, control_path))
         }
     }
 }
@@ -193,9 +195,11 @@ fn map_child_path(
         PathLayout::RemoteSource => {
             strip_logical_source_root(logical_source_root, control_dir).join(file_name)
         }
-        PathLayout::LogicalTarget => logical_relative_path(control_dir).join(file_name),
         PathLayout::PrefixedLogicalTarget { prefix } => prefix
             .join(logical_relative_path(control_dir))
+            .join(file_name),
+        PathLayout::PrefixedRemoteRelativeTarget { prefix } => prefix
+            .join(strip_logical_source_root(logical_source_root, control_dir))
             .join(file_name),
     }
 }
@@ -244,7 +248,7 @@ mod tests {
         );
         assert_eq!(
             map_control_path(&mapping.dir_target, &dir, &logical_root),
-            PathBuf::from("COPY_COMMON_FULL_x/D_REPO/ds2/a/b")
+            PathBuf::from("COPY_COMMON_FULL_x/D_REPO/a/b")
         );
         assert_eq!(
             map_child_path(&mapping.file_source, &dir, "f.txt", &logical_root),
@@ -252,7 +256,23 @@ mod tests {
         );
         assert_eq!(
             map_child_path(&mapping.file_target, &dir, "f.txt", &logical_root),
-            PathBuf::from("COPY_COMMON_FULL_x/D_REPO/ds2/a/b/f.txt")
+            PathBuf::from("COPY_COMMON_FULL_x/D_REPO/a/b/f.txt")
+        );
+    }
+
+    #[test]
+    fn remote_to_local_target_strips_logical_root() {
+        let mapping = EntryMapping::remote_to_local();
+        let logical_root = PathBuf::from("/test_smoke");
+        let dir = PathBuf::from("/test_smoke/sz_1k");
+
+        assert_eq!(
+            map_control_path(&mapping.dir_target, &dir, &logical_root),
+            PathBuf::from("sz_1k")
+        );
+        assert_eq!(
+            map_child_path(&mapping.file_target, &dir, "file.1", &logical_root),
+            PathBuf::from("sz_1k/file.1")
         );
     }
 

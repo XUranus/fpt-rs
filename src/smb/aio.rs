@@ -24,7 +24,7 @@ pub struct SmbClientPool {
 const SMB_DEFAULT_WRITE_CHUNK: usize = 256 * 1024;
 const SMB_DEFAULT_READ_CHUNK: usize = 256 * 1024;
 const SMB_MAX_SAFE_WRITE_CHUNK: usize = 256 * 1024;
-const SMB_MAX_SAFE_READ_CHUNK: usize = 256 * 1024;
+pub const SMB_MAX_SAFE_READ_CHUNK: usize = 256 * 1024;
 
 #[derive(Debug, Default)]
 pub struct SmbCopyMetrics {
