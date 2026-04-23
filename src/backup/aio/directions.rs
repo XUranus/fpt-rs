@@ -34,9 +34,9 @@ use crate::backup::aio::transport::SmbTarget;
 use crate::smb::SmbLocation;
 
 #[cfg(feature = "smb")]
-const SMB_MAX_CONCURRENT_TASKS: usize = 16;
+const SMB_MAX_CONCURRENT_TASKS: usize = 32;
 #[cfg(feature = "smb")]
-const SMB_TASKS_PER_CONNECTION: usize = 2;
+const SMB_TASKS_PER_CONNECTION: usize = 8;
 #[cfg(feature = "nfs")]
 const NFS_MAX_CONCURRENT_TASKS: usize = 16;
 
@@ -388,8 +388,6 @@ async fn run_smb_to_smb_streaming_pipeline(
     };
     drop(entry_tx);
 
-    let mut task_handles = Vec::new();
-
     while let Some(item) = entry_rx.recv().await {
         match item {
             CopyPlanEntry::Directory { dst_path, .. } => {
@@ -430,6 +428,7 @@ async fn run_smb_to_smb_streaming_pipeline(
     let producer_wait_elapsed = producer_wait_started.elapsed();
 
     let mkdir_started = Instant::now();
+    let mut task_handles = Vec::new();
     for path in dir_paths {
         let target2 = dir_target.clone();
         let stats2 = Arc::clone(&stats);
@@ -475,6 +474,7 @@ async fn run_smb_to_smb_streaming_pipeline(
                 &source_pool2,
                 &source_location2,
                 &src_rel,
+                file_size,
                 &target_pool2,
                 &target_location2,
                 &target_dir_cache2,
@@ -795,6 +795,7 @@ async fn run_smb_to_smb_aggregate_pipeline(
                         &source_pool2,
                         &source_location2,
                         &src_rel,
+                        meta.size,
                         &target_pool2,
                         &target_location2,
                         &target_dir_cache2,

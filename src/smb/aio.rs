@@ -37,6 +37,10 @@ pub struct SmbCopyMetrics {
     pub target_open_count: AtomicU64,
     pub target_open_ns: AtomicU64,
     pub target_open_max_ns: AtomicU64,
+    pub srv_copy_count: AtomicU64,
+    pub srv_copy_ns: AtomicU64,
+    pub srv_copy_max_ns: AtomicU64,
+    pub srv_copy_bytes: AtomicU64,
     pub read_count: AtomicU64,
     pub read_ns: AtomicU64,
     pub read_max_ns: AtomicU64,
@@ -94,11 +98,14 @@ impl SmbCopyMetrics {
         let read_count = self.read_count.load(Ordering::Relaxed);
         let read_ns = self.read_ns.load(Ordering::Relaxed);
         let read_bytes = self.read_bytes.load(Ordering::Relaxed);
+        let srv_copy_count = self.srv_copy_count.load(Ordering::Relaxed);
+        let srv_copy_ns = self.srv_copy_ns.load(Ordering::Relaxed);
+        let srv_copy_bytes = self.srv_copy_bytes.load(Ordering::Relaxed);
         let write_count = self.write_count.load(Ordering::Relaxed);
         let write_ns = self.write_ns.load(Ordering::Relaxed);
         let write_bytes = self.write_bytes.load(Ordering::Relaxed);
         format!(
-            "ensure_dir={} total={} avg={} max={}, source_open={} total={} avg={} max={}, target_open={} total={} avg={} max={}, read={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, write={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, active_max: copy={} read={} write={}, source_close={} total={} avg={} max={} deferred={}, target_close={} total={} avg={} max={} deferred={}",
+            "ensure_dir={} total={} avg={} max={}, source_open={} total={} avg={} max={}, target_open={} total={} avg={} max={}, srv_copy={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, read={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, write={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, active_max: copy={} read={} write={}, source_close={} total={} avg={} max={} deferred={}, target_close={} total={} avg={} max={} deferred={}",
             self.ensure_dir_count.load(Ordering::Relaxed),
             format_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed), self.ensure_dir_count.load(Ordering::Relaxed)),
@@ -111,6 +118,13 @@ impl SmbCopyMetrics {
             format_duration_ns(self.target_open_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.target_open_ns.load(Ordering::Relaxed), self.target_open_count.load(Ordering::Relaxed)),
             format_duration_ns(self.target_open_max_ns.load(Ordering::Relaxed)),
+            srv_copy_count,
+            format_bytes(srv_copy_bytes),
+            format_bytes(avg_u64(srv_copy_bytes, srv_copy_count)),
+            format_duration_ns(srv_copy_ns),
+            avg_duration_ns(srv_copy_ns, srv_copy_count),
+            format_duration_ns(self.srv_copy_max_ns.load(Ordering::Relaxed)),
+            format_rate(srv_copy_bytes, srv_copy_ns),
             read_count,
             format_bytes(read_bytes),
             format_bytes(avg_u64(read_bytes, read_count)),
@@ -209,6 +223,14 @@ fn format_rate(bytes: u64, ns: u64) -> String {
     }
     let seconds = ns as f64 / 1_000_000_000.0;
     format!("{}/s", format_bytes((bytes as f64 / seconds) as u64))
+}
+
+fn same_share(source: &SmbLocation, target: &SmbLocation) -> bool {
+    source.host.eq_ignore_ascii_case(&target.host)
+        && source.share.eq_ignore_ascii_case(&target.share)
+        && source.port == target.port
+        && source.username == target.username
+        && source.password == target.password
 }
 
 pub fn new_dir_cache() -> DirCache {
@@ -406,6 +428,7 @@ pub async fn copy_relative_file_streaming(
     source_pool: &Arc<SmbClientPool>,
     source_location: &SmbLocation,
     source_relative_path: &str,
+    expected_size: u64,
     target_pool: &Arc<SmbClientPool>,
     target_location: &SmbLocation,
     dir_cache: &DirCache,
@@ -446,8 +469,13 @@ pub async fn copy_relative_file_streaming(
     let source_unc = relative_unc_path(source_location, &source_relative_path)?;
     let target_unc = relative_unc_path(target_location, &target_relative_path)?;
 
+    let share_local_copy = same_share(source_location, target_location);
     let source_client = source_pool.client();
-    let target_client = target_pool.client();
+    let target_client = if share_local_copy {
+        Arc::clone(&source_client)
+    } else {
+        target_pool.client()
+    };
 
     let source_open_args = smb_client::FileCreateArgs::make_open_existing(
         smb_client::FileAccessMask::new().with_generic_read(true),
@@ -506,8 +534,45 @@ pub async fn copy_relative_file_streaming(
         }
     };
 
+    if share_local_copy {
+        let started = Instant::now();
+        match target_file.srv_copy(&source_file).await {
+            Ok(()) => {
+                if let Some(metrics) = &metrics {
+                    SmbCopyMetrics::add_io(
+                        &metrics.srv_copy_count,
+                        &metrics.srv_copy_ns,
+                        &metrics.srv_copy_max_ns,
+                        &metrics.srv_copy_bytes,
+                        expected_size,
+                        started,
+                    );
+                    metrics
+                        .source_close_deferred
+                        .fetch_add(1, Ordering::Relaxed);
+                    metrics
+                        .target_close_deferred
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                drop(source_file);
+                drop(target_file);
+                return Ok(());
+            }
+            Err(e) => {
+                let _ = source_file.close().await;
+                let _ = target_file.close().await;
+                return Err(format!(
+                    "srv_copy {} -> {}: {e}",
+                    source_unc, target_unc
+                ));
+            }
+        }
+    }
+
     let read_smb_chunk = |offset: u64| {
-        let mut read_buf = vec![0u8; read_chunk];
+        let remaining = expected_size.saturating_sub(offset);
+        let request_len = read_chunk.min(remaining as usize);
+        let mut read_buf = vec![0u8; request_len];
         let metrics = metrics.clone();
         let source_unc = source_unc.clone();
         let source_file = &source_file;
@@ -536,12 +601,20 @@ pub async fn copy_relative_file_streaming(
         }
     };
 
-    let mut chunk = read_smb_chunk(0).await?;
+    let mut chunk = if expected_size == 0 {
+        Vec::new()
+    } else {
+        read_smb_chunk(0).await?
+    };
     let mut next_src_offset = chunk.len() as u64;
     let mut dst_offset = 0u64;
 
     while !chunk.is_empty() {
-        let next_read = read_smb_chunk(next_src_offset);
+        let next_read = if next_src_offset < expected_size {
+            Some(read_smb_chunk(next_src_offset))
+        } else {
+            None
+        };
         let read_len = chunk.len();
 
         let mut chunk_offset = 0usize;
@@ -578,7 +651,10 @@ pub async fn copy_relative_file_streaming(
             dst_offset += written as u64;
         }
 
-        chunk = next_read.await?;
+        chunk = match next_read {
+            Some(next_read) => next_read.await?,
+            None => Vec::new(),
+        };
         next_src_offset = next_src_offset.saturating_add(chunk.len() as u64);
     }
 
