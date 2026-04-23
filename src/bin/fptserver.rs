@@ -14,6 +14,7 @@ use bifrost::frame::{
     scan::ScanConfig, BackupJobConfig, BackupRestoreJob, DataLocation, FileBackupJob,
     FileRestoreJob, RestoreJobConfig, TempRepoConfig,
 };
+use bifrost::scanner::filter::ScanPathFilterSet;
 use bifrost::scanner::options::ScanOption;
 use bifrost::scanner::Scanner;
 use chrono::Utc;
@@ -214,6 +215,8 @@ struct ScanTaskSpec {
     #[serde(default)]
     skip: Vec<String>,
     #[serde(default)]
+    filters: ScanPathFilterSpec,
+    #[serde(default)]
     prev_meta_dir: Option<PathBuf>,
     #[serde(default)]
     shard: bool,
@@ -293,6 +296,8 @@ struct BackupTaskSpec {
     delete: bool,
     #[serde(default)]
     mtime: bool,
+    #[serde(default)]
+    scan_filters: ScanPathFilterSpec,
     #[serde(default = "default_nfs_connections")]
     nfs_connections: usize,
     #[serde(default)]
@@ -311,6 +316,30 @@ struct BackupTaskSpec {
     retry: RetryPolicySpec,
     #[serde(default)]
     verbose: u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ScanPathFilterSpec {
+    #[serde(default)]
+    include_dir_patterns: Vec<String>,
+    #[serde(default)]
+    include_file_patterns: Vec<String>,
+    #[serde(default)]
+    exclude_dir_patterns: Vec<String>,
+    #[serde(default)]
+    exclude_file_patterns: Vec<String>,
+}
+
+impl ScanPathFilterSpec {
+    fn compile(&self) -> Result<Option<ScanPathFilterSet>, io::Error> {
+        ScanPathFilterSet::compile(
+            self.include_dir_patterns.clone(),
+            self.include_file_patterns.clone(),
+            self.exclude_dir_patterns.clone(),
+            self.exclude_file_patterns.clone(),
+        )
+        .map_err(io::Error::other)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -998,6 +1027,7 @@ fn run_scan_task(spec: &ScanTaskSpec) -> Result<TaskStats, Box<dyn std::error::E
             location.logical_source_root(),
             location.kind_name().to_string(),
         )
+        .path_filters(spec.filters.compile()?)
         .retry_policy(retry_policy)
         .stats_only(spec.stats_only);
     if let Some(max_entries) = spec.shard_max_entries_copy {
@@ -1108,6 +1138,7 @@ fn run_backup_task(spec: &BackupTaskSpec) -> Result<TaskStats, Box<dyn std::erro
         aggregate_file_threshold: spec.aggregate.threshold_kb * 1024,
         failure_log: None,
         retry_policy,
+        path_filters: spec.scan_filters.compile()?,
     };
     let config = BackupJobConfig {
         source,

@@ -23,6 +23,7 @@ use crate::backup::aggregate::AggregateConfig;
 #[cfg(feature = "nfs")]
 use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::stats::BackupStats;
+use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
 #[cfg(feature = "nfs")]
 use crate::nfs::aio::reader::new_file_handle_cache;
@@ -60,9 +61,7 @@ pub fn spawn_local_to_nfs_backup(
     failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -104,9 +103,7 @@ pub fn spawn_local_to_nfs_backup(
                 failure_recorder,
                 pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -131,9 +128,7 @@ pub fn spawn_local_to_smb_backup(
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
     smb_copy_task_count: usize,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -179,9 +174,7 @@ pub fn spawn_local_to_smb_backup(
                 smb_target,
                 pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -206,9 +199,7 @@ pub fn spawn_smb_to_local_backup(
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
     smb_copy_task_count: usize,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -254,9 +245,7 @@ pub fn spawn_smb_to_local_backup(
                 smb_source,
                 pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -282,9 +271,7 @@ pub fn spawn_smb_to_smb_backup(
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
     smb_copy_task_count: usize,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -343,9 +330,7 @@ pub fn spawn_smb_to_smb_backup(
                 source_pool,
                 target_pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -371,9 +356,7 @@ pub fn spawn_nfs_to_smb_backup(
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
     smb_copy_task_count: usize,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -427,9 +410,7 @@ pub fn spawn_nfs_to_smb_backup(
                 smb_target,
                 target_pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -455,9 +436,7 @@ pub fn spawn_smb_to_nfs_backup(
     terminate_indicator: Arc<AtomicBool>,
     smb_connection_count: usize,
     smb_copy_task_count: usize,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -512,9 +491,7 @@ pub fn spawn_smb_to_nfs_backup(
                 source_pool,
                 target_pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -537,9 +514,7 @@ pub fn spawn_nfs_to_local_backup(
     failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -581,9 +556,7 @@ pub fn spawn_nfs_to_local_backup(
                 failure_recorder,
                 pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -607,9 +580,7 @@ pub fn spawn_nfs_to_nfs_backup(
     failure_recorder: Option<FailureRecorder>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
@@ -660,9 +631,7 @@ pub fn spawn_nfs_to_nfs_backup(
                 src_pool,
                 tgt_pool,
                 stats,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             )
             .await;
         });
@@ -685,9 +654,7 @@ pub async fn run_local_to_nfs_backup(
     failure_recorder: Option<FailureRecorder>,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_local_to_nfs_copy_pipeline(
         control_file,
@@ -713,9 +680,7 @@ pub async fn run_local_to_nfs_backup(
         pool,
         file_cache,
         dir_cache,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
     )
     .await;
 }
@@ -736,9 +701,7 @@ pub async fn run_local_to_smb_backup(
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_local_to_smb_copy_pipeline(
         control_file,
@@ -761,9 +724,7 @@ pub async fn run_local_to_smb_backup(
         &source_dir_base,
         &target_prefix,
         &location,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
     )
     .await;
 }
@@ -782,9 +743,7 @@ pub async fn run_nfs_to_local_backup(
     failure_recorder: Option<FailureRecorder>,
     pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_aio_nfs_to_local_pipeline(
         control_file,
@@ -805,9 +764,7 @@ pub async fn run_nfs_to_local_backup(
         &meta_dir,
         &source_dir_base,
         &target_dir_base,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
         retry_policy,
         failure_recorder.as_ref(),
     );
@@ -828,9 +785,7 @@ pub async fn run_nfs_to_nfs_backup(
     source_pool: Arc<NfsConnectionPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_aio_nfs_to_nfs_pipeline(
         control_file,
@@ -857,9 +812,7 @@ pub async fn run_nfs_to_nfs_backup(
         target_pool,
         file_cache,
         dir_cache,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
     )
     .await;
 }
@@ -880,9 +833,7 @@ pub async fn run_smb_to_local_backup(
     location: SmbLocation,
     pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_smb_to_local_copy_pipeline(
         control_file,
@@ -905,9 +856,7 @@ pub async fn run_smb_to_local_backup(
         &meta_dir,
         &source_dir_base,
         &target_dir_base,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
         retry_policy,
         failure_recorder.as_ref(),
     );
@@ -931,9 +880,7 @@ pub async fn run_smb_to_smb_backup(
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_smb_to_smb_copy_pipeline(
         control_file,
@@ -958,9 +905,7 @@ pub async fn run_smb_to_smb_backup(
         &source_dir_base,
         &target_prefix,
         &target_location,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
     )
     .await;
 }
@@ -981,9 +926,7 @@ pub async fn run_nfs_to_smb_backup(
     target_location: SmbLocation,
     target_pool: Arc<crate::smb::aio::SmbClientPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_nfs_to_smb_copy_pipeline(
         control_file,
@@ -1007,9 +950,7 @@ pub async fn run_nfs_to_smb_backup(
         &source_dir_base,
         &target_prefix,
         &target_location,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
     )
     .await;
 }
@@ -1030,9 +971,7 @@ pub async fn run_smb_to_nfs_backup(
     source_pool: Arc<crate::smb::aio::SmbClientPool>,
     target_pool: Arc<NfsConnectionPool>,
     stats: Arc<BackupStats>,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
     directions::run_smb_to_nfs_copy_pipeline(
         control_file,
@@ -1061,9 +1000,7 @@ pub async fn run_smb_to_nfs_backup(
         target_pool,
         file_cache,
         dir_cache,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
     )
     .await;
 }
@@ -1074,13 +1011,11 @@ fn run_local_target_phases(
     meta_dir: &PathBuf,
     source_dir_base: &PathBuf,
     target_dir_base: &PathBuf,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
     retry_policy: RetryPolicy,
     failure_recorder: Option<&FailureRecorder>,
 ) {
-    if enable_hardlink_phase {
+    if phase_flags.hardlink {
         info!("Starting hardlink phase...");
         match hardlink::run_hardlink_phase(
             ctrl_dir,
@@ -1102,7 +1037,7 @@ fn run_local_target_phases(
         }
     }
 
-    if enable_delete_phase {
+    if phase_flags.delete {
         info!("Starting delete phase...");
         match delete::run_delete_phase(
             ctrl_dir,
@@ -1123,7 +1058,7 @@ fn run_local_target_phases(
         }
     }
 
-    if enable_mtime_phase {
+    if phase_flags.mtime {
         info!("Starting mtime phase...");
         match mtime::run_mtime_phase(
             ctrl_dir,
@@ -1153,11 +1088,9 @@ async fn run_nfs_target_phases(
     pool: Arc<NfsConnectionPool>,
     file_cache: crate::nfs::aio::reader::FileHandleCache,
     dir_cache: crate::nfs::aio::writer::DirHandleCache,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
-    if enable_hardlink_phase {
+    if phase_flags.hardlink {
         info!("NFS: starting hardlink phase...");
         let hl_stats = crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
             ctrl_dir,
@@ -1174,7 +1107,7 @@ async fn run_nfs_target_phases(
         );
     }
 
-    if enable_delete_phase {
+    if phase_flags.delete {
         info!("NFS: starting delete phase...");
         let del_stats = crate::nfs::aio::delete::run_nfs_delete_phase(
             ctrl_dir,
@@ -1190,7 +1123,7 @@ async fn run_nfs_target_phases(
         );
     }
 
-    if enable_mtime_phase {
+    if phase_flags.mtime {
         info!("NFS: starting mtime phase...");
         let mt_stats = crate::nfs::aio::mtime::run_nfs_mtime_phase(
             ctrl_dir,
@@ -1213,11 +1146,9 @@ async fn run_smb_target_phases(
     source_dir_base: &PathBuf,
     target_prefix: &str,
     location: &SmbLocation,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
 ) {
-    if enable_hardlink_phase {
+    if phase_flags.hardlink {
         info!("SMB: starting hardlink phase...");
         let hl_stats = crate::smb::aio::hardlink::run_smb_hardlink_phase(
             ctrl_dir,
@@ -1232,7 +1163,7 @@ async fn run_smb_target_phases(
         );
     }
 
-    if enable_delete_phase {
+    if phase_flags.delete {
         info!("SMB: starting delete phase...");
         let del_stats = crate::smb::aio::delete::run_smb_delete_phase(
             ctrl_dir,
@@ -1247,7 +1178,7 @@ async fn run_smb_target_phases(
         );
     }
 
-    if enable_mtime_phase {
+    if phase_flags.mtime {
         info!("SMB: starting mtime phase...");
         let mt_stats = crate::smb::aio::mtime::run_smb_mtime_phase(
             ctrl_dir,

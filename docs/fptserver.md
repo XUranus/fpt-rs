@@ -87,6 +87,12 @@ Supported methods:
     "temp_dir": "/tmp/scan/cache",
     "workers": 8,
     "writers": 1,
+    "filters": {
+      "include_dir_patterns": ["/dir/*/*/dir1"],
+      "include_file_patterns": ["/dir/*/dir1/*.txt"],
+      "exclude_dir_patterns": ["/dir/*/dir1/dir1"],
+      "exclude_file_patterns": ["/dir/*/dir1/1.txt"]
+    },
     "stats_only": false
   }
 }
@@ -98,6 +104,8 @@ Important scan params:
 - `ctrl_dir`, `meta_dir`, `temp_dir`
 - `workers`, `writers`
 - `follow_symlinks`, `scan_hidden`, `scan_acl`, `scan_xattrs`, `scan_hardlinks`
+- `filters`: optional scanner path filter object; fields are repeatable arrays:
+  `include_dir_patterns`, `include_file_patterns`, `exclude_dir_patterns`, `exclude_file_patterns`
 - `prev_meta_dir`
 - sharding fields: `shard`, `shard_num`, `shard_max_entries_copy`, `shard_max_entries_other`, `shard_max_size`
 - transport fields: `nfs_connections`, `nfs_uid`, `nfs_gid`, `smb_query_buffer_mb`
@@ -117,6 +125,10 @@ Important scan params:
     "temp_dir": "/opt/target/work",
     "scan_workers": 8,
     "scan_writers": 1,
+    "scan_filters": {
+      "include_dir_patterns": ["/important/*"],
+      "exclude_file_patterns": ["/important/tmp/*.log"]
+    },
     "jobs": 4,
     "smb_connections": 4,
     "smb_copy_tasks": 2,
@@ -132,6 +144,7 @@ Important backup params:
 - `incremental_base`: optional path to previous copy
 - `temp_dir`
 - `scan_workers`, `scan_writers`
+- `scan_filters`: optional scanner path filter object using the same fields as `task.create_scan`
 - `jobs`: max concurrent copy subtasks inside the job
 - `hardlink`, `delete`, `mtime`
 - `aggregate`: aggregation block:

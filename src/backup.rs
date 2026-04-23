@@ -66,14 +66,8 @@ pub struct BackupOption {
     retry_policy: RetryPolicy,
     failure_log: Option<FailureLogConfig>,
 
-    /// Whether to run the hardlink phase after copy phase
-    enable_hardlink_phase: bool,
-
-    /// Whether to run the delete phase after hardlink phase
-    enable_delete_phase: bool,
-
-    /// Whether to run the mtime phase after copy/hardlink phase
-    enable_mtime_phase: bool,
+    /// Post-copy phases enabled for this task.
+    phase_flags: PhaseFlags,
 
     /// Aggregate backup configuration
     pub aggregate_config: AggregateConfig,
@@ -119,6 +113,16 @@ pub struct BackupOption {
     /// Maximum concurrent SMB file copy tasks. 0 means auto.
     #[cfg(feature = "smb")]
     pub smb_copy_task_count: usize,
+}
+
+/// Named flags for post-copy phases.
+///
+/// This avoids passing several adjacent booleans through backup code.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PhaseFlags {
+    pub hardlink: bool,
+    pub delete: bool,
+    pub mtime: bool,
 }
 
 // each backup task do the data copy following the instruction of one control file
@@ -174,9 +178,7 @@ impl BackupOption {
             meta_dir,
             ctrl_dir,
             control_file,
-            enable_hardlink_phase: false,
-            enable_delete_phase: false,
-            enable_mtime_phase: false,
+            phase_flags: PhaseFlags::default(),
             aggregate_config: AggregateConfig::default(),
             #[cfg(feature = "nfs")]
             nfs_target: None,
@@ -199,19 +201,25 @@ impl BackupOption {
 
     /// Enable the hardlink phase
     pub fn enable_hardlink_phase(mut self, enable: bool) -> Self {
-        self.enable_hardlink_phase = enable;
+        self.phase_flags.hardlink = enable;
         self
     }
 
     /// Enable the delete phase
     pub fn enable_delete_phase(mut self, enable: bool) -> Self {
-        self.enable_delete_phase = enable;
+        self.phase_flags.delete = enable;
         self
     }
 
     /// Enable the mtime phase
     pub fn enable_mtime_phase(mut self, enable: bool) -> Self {
-        self.enable_mtime_phase = enable;
+        self.phase_flags.mtime = enable;
+        self
+    }
+
+    /// Set all post-copy phase flags at once.
+    pub fn phase_flags(mut self, flags: PhaseFlags) -> Self {
+        self.phase_flags = flags;
         self
     }
 
@@ -356,9 +364,7 @@ impl BackupTask {
         let target_dir_base = self.option.target_dir_base.clone();
         let meta_dir = self.option.meta_dir.clone();
         let ctrl_dir = self.option.ctrl_dir.clone();
-        let enable_hardlink_phase = self.option.enable_hardlink_phase;
-        let enable_delete_phase = self.option.enable_delete_phase;
-        let enable_mtime_phase = self.option.enable_mtime_phase;
+        let phase_flags = self.option.phase_flags;
         let stats = Arc::new(BackupStats::default());
         let shared_state = Arc::new(SharedState::default());
         let terminate_indicator = Arc::new(AtomicBool::new(false));
@@ -405,9 +411,7 @@ impl BackupTask {
                 failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -436,9 +440,7 @@ impl BackupTask {
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
                 smb_copy_task_count,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -467,9 +469,7 @@ impl BackupTask {
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
                 smb_copy_task_count,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -497,9 +497,7 @@ impl BackupTask {
                 failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -527,9 +525,7 @@ impl BackupTask {
                 failure_recorder.clone(),
                 Arc::clone(&stats),
                 Arc::clone(&terminate_indicator),
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -558,9 +554,7 @@ impl BackupTask {
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
                 smb_copy_task_count,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -588,9 +582,7 @@ impl BackupTask {
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
                 smb_copy_task_count,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -618,9 +610,7 @@ impl BackupTask {
                 Arc::clone(&terminate_indicator),
                 smb_connection_count,
                 smb_copy_task_count,
-                enable_hardlink_phase,
-                enable_delete_phase,
-                enable_mtime_phase,
+                phase_flags,
             );
 
             return Ok(Self::running_backup(
@@ -642,9 +632,7 @@ impl BackupTask {
             retry_policy,
             failure_recorder,
             self.option.aggregate_config,
-            enable_hardlink_phase,
-            enable_delete_phase,
-            enable_mtime_phase,
+            phase_flags,
             Arc::clone(&shared_state),
             Arc::clone(&stats),
             Arc::clone(&terminate_indicator),

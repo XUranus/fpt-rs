@@ -40,6 +40,9 @@ Examples currently used:
   - `PathFilterArgs` groups scanner include/exclude pattern flags.
   - `RetryArgs` groups retry-related CLI flags and converts them into `RetryPolicy`.
 
+- `src/backup.rs`
+  - `PhaseFlags` groups post-copy phase booleans (`hardlink`, `delete`, `mtime`) so callers do not pass multiple adjacent boolean arguments.
+
 - `src/nfs/scanner.rs`
   - `NfsScanShared` holds immutable scan settings shared by every worker.
   - `NfsWorkerChannels` groups the worker queues and progress counter.
@@ -79,6 +82,22 @@ Scanner hot paths should keep disabled features cheap:
 - optional features should be represented by `Option<T>` or a compact flag checked once near the hot loop
 - expensive derived data, such as logical filter paths, should only be built when the feature is enabled
 - traversal pruning should happen before expensive per-entry metadata queries where possible
+
+## Current Pipeline Map
+
+The main data path is:
+
+```text
+DataLocation
+  -> ScanJob / Scanner
+  -> M_REPO metadata + generated control plans
+  -> BackupJob or RestoreJob
+  -> copy-plan layer
+  -> local/NFS/SMB transport adapters
+```
+
+Restore uses metadata-driven control-plan generation. It does not depend on
+the original backup-time control files as authoritative restore input.
 
 ## Review Checklist
 

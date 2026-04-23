@@ -3,12 +3,11 @@ use std::path::Path;
 use log::{error, info};
 
 use crate::backup::bio::{delete, hardlink, mtime};
+use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
 
 pub(crate) fn run_local_followup_phases(
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phases: PhaseFlags,
     ctrl_dir: &Path,
     meta_dir: &Path,
     source_dir_base: &Path,
@@ -16,7 +15,7 @@ pub(crate) fn run_local_followup_phases(
     retry_policy: RetryPolicy,
     failure_recorder: Option<&FailureRecorder>,
 ) {
-    if enable_hardlink_phase {
+    if phases.hardlink {
         info!("Starting hardlink phase...");
         match hardlink::run_hardlink_phase(
             ctrl_dir,
@@ -38,7 +37,7 @@ pub(crate) fn run_local_followup_phases(
         }
     }
 
-    if enable_delete_phase {
+    if phases.delete {
         info!("Starting delete phase...");
         match delete::run_delete_phase(
             ctrl_dir,
@@ -59,7 +58,7 @@ pub(crate) fn run_local_followup_phases(
         }
     }
 
-    if enable_mtime_phase {
+    if phases.mtime {
         info!("Starting mtime phase...");
         match mtime::run_mtime_phase(
             ctrl_dir,

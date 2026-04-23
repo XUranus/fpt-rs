@@ -5,7 +5,7 @@ use std::thread;
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::stats::BackupStats;
-use crate::backup::SharedState;
+use crate::backup::{PhaseFlags, SharedState};
 use crate::failure::{FailureRecorder, RetryPolicy};
 
 pub mod delete;
@@ -24,9 +24,7 @@ pub(crate) fn spawn_local_backup_pipeline(
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
     aggregate_config: AggregateConfig,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
     _shared_state: Arc<SharedState>,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
@@ -42,9 +40,7 @@ pub(crate) fn spawn_local_backup_pipeline(
         retry_policy,
         failure_recorder,
         aggregate_config,
-        enable_hardlink_phase,
-        enable_delete_phase,
-        enable_mtime_phase,
+        phase_flags,
         stats,
         terminate_indicator,
     )

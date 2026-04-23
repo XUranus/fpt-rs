@@ -24,6 +24,7 @@ use crate::frame::repo::RepoLayout;
 use crate::frame::scanner_impls::{LocalFileScanner, ScannerConfig};
 use crate::frame::traits::FileScanner;
 pub use crate::frame::traits::ScanStats;
+use crate::scanner::filter::ScanPathFilterSet;
 
 // ---------------------------------------------------------------------------
 // ScanError
@@ -110,6 +111,8 @@ pub struct ScanConfig {
     pub failure_log: Option<FailureLogConfig>,
     /// Retry policy for scan operations.
     pub retry_policy: RetryPolicy,
+    /// Optional include/exclude filters used by the scanner.
+    pub path_filters: Option<ScanPathFilterSet>,
 }
 
 impl Default for ScanConfig {
@@ -123,6 +126,7 @@ impl Default for ScanConfig {
             aggregate_file_threshold: 1024 * 1024,
             failure_log: None,
             retry_policy: RetryPolicy::default(),
+            path_filters: None,
         }
     }
 }
@@ -159,6 +163,7 @@ impl<'a> ScanJob<'a> {
             .aggregate_file_threshold(self.config.aggregate_file_threshold)
             .failure_log(self.config.failure_log.clone())
             .retry_policy(self.config.retry_policy)
+            .path_filters(self.config.path_filters.clone())
     }
 
     /// Run the scan via a [`LocalFileScanner`] (blocking).

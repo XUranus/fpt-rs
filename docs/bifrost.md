@@ -13,6 +13,17 @@ Bifrost has four main layers:
 
 The main integrated workflow is driven by `fptcli`.
 
+Current data-flow map:
+
+```text
+DataLocation
+  -> ScanJob / Scanner
+  -> M_REPO metadata + generated control plans
+  -> BackupJob or RestoreJob
+  -> copy-plan layer
+  -> local/NFS/SMB transport adapters
+```
+
 ## Copy Layout
 
 Each `fptcli backup` creates a copy root:

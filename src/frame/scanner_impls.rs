@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use crate::failure::{FailureLogConfig, RetryPolicy};
 use crate::frame::traits::{FileScanner, ScanStats};
+use crate::scanner::filter::ScanPathFilterSet;
 use crate::scanner::options::ScanOption;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,8 @@ pub struct ScannerConfig {
     pub failure_log: Option<FailureLogConfig>,
     /// Retry policy for scan operations.
     pub retry_policy: RetryPolicy,
+    /// Optional compiled path filters.
+    pub path_filters: Option<ScanPathFilterSet>,
 }
 
 impl Default for ScannerConfig {
@@ -61,6 +64,7 @@ impl Default for ScannerConfig {
             aggregate_file_threshold: 1024 * 1024,
             failure_log: None,
             retry_policy: RetryPolicy::default(),
+            path_filters: None,
         }
     }
 }
@@ -110,6 +114,10 @@ impl ScannerConfig {
         self.retry_policy = policy;
         self
     }
+    pub fn path_filters(mut self, filters: Option<ScanPathFilterSet>) -> Self {
+        self.path_filters = filters;
+        self
+    }
 
     /// Build a [`ScanOption`] from this config.
     pub(crate) fn to_scan_option(
@@ -127,7 +135,8 @@ impl ScannerConfig {
             .max_aggregate_blob_size(self.max_aggregate_blob_size)
             .aggregate_file_threshold(self.aggregate_file_threshold)
             .failure_log(self.failure_log.clone())
-            .retry_policy(self.retry_policy);
+            .retry_policy(self.retry_policy)
+            .path_filters(self.path_filters.clone());
         if let Some(ref prev) = self.prev_meta_dir {
             opt = opt.prev_meta_dir(Some(prev.clone()));
         }

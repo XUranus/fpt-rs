@@ -18,6 +18,7 @@ use bifrost::frame::{
     scan::ScanConfig, traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation,
     RestoreJob, RestoreJobConfig,
 };
+use bifrost::scanner::filter::ScanPathFilterSet;
 
 /// File Protection Tool CLI
 #[derive(Parser, Debug)]
@@ -84,6 +85,9 @@ enum Commands {
         /// Enable mtime phase
         #[arg(long, action = clap::ArgAction::SetTrue)]
         mtime: bool,
+
+        #[command(flatten)]
+        scan_filters: ScanFilterArgs,
 
         /// Number of worker threads per subtask
         #[arg(long, short = 'w', default_value = "8", value_name = "COUNT")]
@@ -231,6 +235,37 @@ enum AggregateLayoutArg {
     Shard,
 }
 
+#[derive(clap::Args, Debug, Clone, Default)]
+struct ScanFilterArgs {
+    /// Include directories whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    include_dir_pattern: Vec<String>,
+
+    /// Include files whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    include_file_pattern: Vec<String>,
+
+    /// Exclude directories whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    exclude_dir_pattern: Vec<String>,
+
+    /// Exclude files whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    exclude_file_pattern: Vec<String>,
+}
+
+impl ScanFilterArgs {
+    fn compile(&self) -> Result<Option<ScanPathFilterSet>, std::io::Error> {
+        ScanPathFilterSet::compile(
+            self.include_dir_pattern.clone(),
+            self.include_file_pattern.clone(),
+            self.exclude_dir_pattern.clone(),
+            self.exclude_file_pattern.clone(),
+        )
+        .map_err(std::io::Error::other)
+    }
+}
+
 #[derive(ValueEnum, Debug, Clone, Copy)]
 enum FailureLogFormatArg {
     Csv,
@@ -343,6 +378,7 @@ fn cmd_backup(
     hardlink: bool,
     delete: bool,
     mtime: bool,
+    scan_filters: ScanFilterArgs,
     workers: usize,
     nfs_connections: usize,
     smb_connections: usize,
@@ -404,6 +440,7 @@ fn cmd_backup(
         aggregate_file_threshold: threshold * 1024,
         failure_log: None,
         retry_policy,
+        path_filters: scan_filters.compile()?,
     };
 
     let config = BackupJobConfig {
@@ -675,6 +712,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardlink,
             delete,
             mtime,
+            scan_filters,
             workers,
             nfs_connections,
             smb_connections,
@@ -704,6 +742,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardlink,
             delete,
             mtime,
+            scan_filters,
             workers,
             nfs_connections,
             smb_connections,

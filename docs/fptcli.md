@@ -41,6 +41,10 @@ Main options:
 | `--hardlink` | Enable hardlink phase for common-format backup |
 | `--delete` | Enable delete phase for common-format backup |
 | `--mtime` | Enable mtime phase for common-format backup |
+| `--include-dir-pattern` | Scan only matching directory subtrees; repeatable |
+| `--include-file-pattern` | Scan only matching files; repeatable |
+| `--exclude-dir-pattern` | Prune matching directory subtrees; repeatable |
+| `--exclude-file-pattern` | Skip matching files; repeatable |
 | `--blob-size` | Aggregated blob size in MB |
 | `--threshold` | Aggregation threshold in KB |
 | `--aggregate-layout` | Aggregated layout: `dir-level` or `shard` |
@@ -66,6 +70,9 @@ When `--failure-log-format` is set, `fptcli backup` writes failure files under `
 - `SUBTASK_{subtask_uuid}_FAILURE.<fmt>`
 
 See [retry_failure.md](retry_failure.md) for record fields, retry policy details, and `fsscan`/`fsbackup` options.
+
+Scanner filter patterns use the same logical-path matching rules as `fsscan`.
+See [scanner_filter.md](scanner_filter.md).
 
 ### Common Format
 

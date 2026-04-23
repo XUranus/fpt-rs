@@ -7,6 +7,7 @@ use crate::backup::local_executor::{
 };
 use crate::backup::phases::run_local_followup_phases;
 use crate::backup::stats::BackupStats;
+use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
 use log::{error, info};
 use std::io;
@@ -26,9 +27,7 @@ pub(crate) fn spawn_local_common_copy_pipeline(
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
     aggregate_config: AggregateConfig,
-    enable_hardlink_phase: bool,
-    enable_delete_phase: bool,
-    enable_mtime_phase: bool,
+    phase_flags: PhaseFlags,
     stats: Arc<BackupStats>,
     terminate_indicator: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
@@ -122,9 +121,7 @@ pub(crate) fn spawn_local_common_copy_pipeline(
         }
 
         run_local_followup_phases(
-            enable_hardlink_phase,
-            enable_delete_phase,
-            enable_mtime_phase,
+            phase_flags,
             &ctrl_dir,
             &meta_dir,
             &source_dir_base,
