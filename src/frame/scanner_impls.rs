@@ -400,3 +400,34 @@ mod smb_impl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::filter::ScanPathFilterSet;
+
+    #[test]
+    fn scanner_config_preserves_path_filters() {
+        let filters = ScanPathFilterSet::compile(
+            vec!["/dir/*/keep".to_string()],
+            vec!["/dir/*.txt".to_string()],
+            vec!["/dir/tmp".to_string()],
+            vec!["/dir/skip.txt".to_string()],
+        )
+        .unwrap();
+
+        let option = ScannerConfig::new("/tmp/ctrl", "/tmp/meta")
+            .path_filters(filters)
+            .to_scan_option("/source".into(), "/", "local");
+
+        let filters = option
+            .meta_option
+            .path_filters
+            .as_ref()
+            .expect("path filters should propagate to ScanOption");
+        assert!(filters.should_descend_dir("/dir/a/keep"));
+        assert!(filters.should_emit_file("/dir/a.txt"));
+        assert!(!filters.should_descend_dir("/dir/tmp"));
+        assert!(!filters.should_emit_file("/dir/skip.txt"));
+    }
+}

@@ -13,6 +13,7 @@ Core library modules live under `src/`:
 - `smb/`: SMB connection helpers, scanner, reader/writer/phase helpers
 - `failure.rs`: retry policy and structured failure records
 - `logging.rs`: routed log output
+- `native/`: crate-private local filesystem metadata helpers
 - `utility/`: generic queues and small shared data structures
 
 CLI binaries live under `src/bin/`:
@@ -42,12 +43,20 @@ Examples currently used:
 
 - `src/backup.rs`
   - `PhaseFlags` groups post-copy phase booleans (`hardlink`, `delete`, `mtime`) so callers do not pass multiple adjacent boolean arguments.
+  - `BackupDirection` resolves local/NFS/SMB source-target combinations before dispatching, keeping `BackupTask::start()` focused on launching the selected plan.
+
+- `src/backup/aio/`
+  - `phases.rs` owns local/NFS/SMB post-copy phase runners used by async backup directions.
 
 - `src/nfs/scanner.rs`
   - `NfsScanShared` holds immutable scan settings shared by every worker.
   - `NfsWorkerChannels` groups the worker queues and progress counter.
   - `NfsWorkerRuntime` is the single parameter passed into each worker task.
   - `NfsDirScan` is the single parameter used for scanning one directory.
+
+- `src/bin/fptserver/`
+  - `cli.rs` owns server/worker CLI argument parsing.
+  - `api.rs` owns small HTTP API response helpers.
 
 ## When To Split Files
 
@@ -74,6 +83,16 @@ Generic orchestration should not know transport internals. It should work with:
 - scanner/backup/restore config structs
 - copy-plan and transfer adapter traits
 - job lifecycle traits
+
+## Module Visibility
+
+Keep module exports narrow by default:
+
+- Public crate modules (`backup`, `frame`, `scanner`, `nfs`, `smb`) should expose stable entry points and data types.
+- Transport implementation modules such as `backup::aio`, `nfs::aio`, `nfs::fstat`, `smb::aio`, `smb::fstat`, `smb::scanner`, and `native::fstat` are crate-private.
+- Frame phase helpers such as `prereq`, `postjob`, and `subtask` are crate-private implementation details.
+- Prefer top-level shortcuts for common public types. For example, use `bifrost::scanner::ScanOption`, `bifrost::scanner::ScanPathFilterSet`, and `bifrost::frame::ScanConfig` instead of reaching through deep module paths.
+- If a module must be visible only to sibling modules, use `pub(crate)` rather than `pub`.
 
 ## Scanner Conventions
 

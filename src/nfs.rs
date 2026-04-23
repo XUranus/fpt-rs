@@ -23,10 +23,10 @@
 
 use std::path::PathBuf;
 
-pub mod aio;
+pub(crate) mod aio;
 pub mod connection;
 pub mod error;
-pub mod fstat;
+pub(crate) mod fstat;
 pub mod scanner;
 
 pub use connection::NfsConnectionPool;

@@ -448,21 +448,6 @@ fn file_meta_to_sattr3(fcb: &FileControlBlock) -> sattr3 {
     }
 }
 
-/// Build an [`sattr3`] that sets mode and mtime for a directory.
-pub fn dir_meta_sattr3(mode: u32, mtime_secs: u32) -> sattr3 {
-    sattr3 {
-        mode: set_mode3::Some(mode),
-        uid: set_uid3::None,
-        gid: set_gid3::None,
-        size: nfs3_client::nfs3_types::nfs3::set_size3::None,
-        atime: nfs3_client::nfs3_types::nfs3::set_atime::SET_TO_SERVER_TIME,
-        mtime: set_mtime::SET_TO_CLIENT_TIME(nfs3_client::nfs3_types::nfs3::nfstime3 {
-            seconds: mtime_secs,
-            nseconds: 0,
-        }),
-    }
-}
-
 /// Upload raw bytes to a file at `nfs_path` on the NFS server.
 ///
 /// Used by the post-job phase to upload M\_REPO / C\_REPO files after all

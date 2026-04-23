@@ -2,14 +2,9 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, Read};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-
-use base64::Engine as _;
-use log::debug;
-
-use crate::backup::aggregate::AggregateRestoreInfo;
 
 pub struct AggregateRestoreEngine {
     source_base: PathBuf,
@@ -19,8 +14,6 @@ pub struct AggregateRestoreEngine {
 
 #[derive(Debug, Default, Clone)]
 pub struct AggregateRestoreStats {
-    pub files_from_blobs: u64,
-    pub bytes_from_blobs: u64,
     pub blobs_read: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
@@ -70,49 +63,7 @@ impl AggregateRestoreEngine {
         slice_blob(&blob_data, offset, size)
     }
 
-    pub fn restore_file(
-        &self,
-        info: &AggregateRestoreInfo,
-        target_path: &Path,
-    ) -> Result<(), AggregateRestoreError> {
-        let data = self.read_from_blob(&info.blob_path, info.offset, info.size)?;
-
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = File::create(target_path)?;
-        file.write_all(&data)?;
-        file.flush()?;
-
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let permissions = std::fs::Permissions::from_mode(info.mode);
-            std::fs::set_permissions(target_path, permissions)?;
-
-            let mtime =
-                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(info.mtime);
-            let times = std::fs::FileTimes::new()
-                .set_modified(mtime)
-                .set_accessed(mtime);
-            File::open(target_path)?.set_times(times)?;
-
-            if let Some(ref xattrs) = info.xattrs {
-                restore_xattrs(target_path, xattrs);
-            }
-            if let Some(ref acl) = info.acl {
-                restore_acl(target_path, acl);
-            }
-        }
-
-        let mut stats = self.stats.lock().unwrap();
-        stats.files_from_blobs += 1;
-        stats.bytes_from_blobs += info.size;
-        debug!("Restored {} from {}", target_path.display(), info.blob_path);
-        Ok(())
-    }
-
+    #[allow(dead_code)]
     pub fn stats(&self) -> AggregateRestoreStats {
         self.stats.lock().unwrap().clone()
     }
@@ -153,34 +104,3 @@ impl From<io::Error> for AggregateRestoreError {
         AggregateRestoreError::Io(e)
     }
 }
-
-#[cfg(target_os = "linux")]
-fn restore_xattrs(path: &Path, xattrs: &str) {
-    for line in xattrs.lines() {
-        if let Some((name, b64_value)) = line.split_once('=') {
-            if let Ok(value) = base64::engine::general_purpose::STANDARD.decode(b64_value) {
-                let _ = xattr::set(path, name, &value);
-            }
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn restore_xattrs(_path: &Path, _xattrs: &str) {}
-
-#[cfg(target_os = "linux")]
-fn restore_acl(path: &Path, acl: &str) {
-    use exacl::{setfacl, AclEntry};
-    let mut acl_entries = Vec::new();
-    for line in acl.lines() {
-        if let Ok(entry) = line.parse::<AclEntry>() {
-            acl_entries.push(entry);
-        }
-    }
-    if !acl_entries.is_empty() {
-        let _ = setfacl(&[path], &acl_entries, None);
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn restore_acl(_path: &Path, _acl: &str) {}

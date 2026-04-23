@@ -219,3 +219,38 @@ impl<'a> ScanJob<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::repo::RepoLayout;
+    use crate::scanner::filter::ScanPathFilterSet;
+
+    #[test]
+    fn scan_job_forwards_filter_config_to_scanner_config() {
+        let source = DataLocation::local("/dataset/source");
+        let repo = RepoLayout::from_existing("/tmp/copy".into());
+        let filters =
+            ScanPathFilterSet::compile(vec![], vec!["/source/*.txt".to_string()], vec![], vec![])
+                .unwrap();
+        let job = ScanJob::new(
+            &source,
+            &repo,
+            ScanConfig {
+                path_filters: filters,
+                ..ScanConfig::default()
+            },
+        );
+
+        let scanner_config = job.scanner_config();
+        let option = scanner_config.to_scan_option("/dataset/source".into(), "/", "local");
+        let filters = option
+            .meta_option
+            .path_filters
+            .as_ref()
+            .expect("ScanJob should forward path filters");
+
+        assert!(filters.should_emit_file("/source/a.txt"));
+        assert!(!filters.should_emit_file("/source/a.log"));
+    }
+}

@@ -10,12 +10,10 @@ use log::{debug, info};
 
 use crate::backup::aggregate::{
     should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateLayout,
-    AggregateStats, PendingAggregateBuffer, PendingFile, ThreadSafeSnowflake, AGGREGATE_DIR_NAME,
-    AGGREGATE_ROOT_DIR,
+    AggregateStats, ThreadSafeSnowflake, AGGREGATE_DIR_NAME, AGGREGATE_ROOT_DIR,
 };
 use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
 use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
-use crate::backup::fcb::FileControlBlock;
 use crate::backup::local_block::copy_exact_file_to_writer;
 
 #[derive(Debug)]
@@ -85,48 +83,6 @@ impl AggregateBackupEngine {
                 self.shard_for_relative_path_with_hint(relative_path, extra_bytes)
             ),
         }
-    }
-
-    pub fn create_blob(
-        &self,
-        bucket_key: &str,
-        files: Vec<PendingFile>,
-    ) -> Result<AggregateBlobMeta, AggregateEngineError> {
-        let blob_name = self.id_generator.generate_blob_name();
-        let (blob_rel_path, blob_path, shard_id) =
-            self.prepare_blob_path(bucket_key, &blob_name)?;
-
-        debug!(
-            "Writing aggregate blob {:?} ({} files)",
-            blob_path,
-            files.len()
-        );
-        let mut blob_file = File::create(&blob_path)?;
-        let mut entries = Vec::with_capacity(files.len());
-        let mut current_offset = 0_u64;
-        let mut total_size = 0_u64;
-
-        for file in files {
-            let file_size = file.data.len() as u64;
-            blob_file.write_all(&file.data)?;
-            entries.push(AggregateFileEntry {
-                relative_path: file.relative_path,
-                offset: current_offset,
-                size: file_size,
-                ctime: file.ctime,
-                mtime: file.mtime,
-                mode: file.mode,
-                xattrs: file.xattrs,
-                acl: file.acl,
-            });
-            current_offset += file_size;
-            total_size += file_size;
-        }
-
-        blob_file.flush()?;
-        drop(blob_file);
-
-        self.finish_blob(bucket_key, blob_rel_path, total_size, entries, shard_id)
     }
 
     pub fn create_blob_from_local_files(
@@ -312,52 +268,6 @@ impl AggregateBackupEngine {
     }
 }
 
-pub struct AggregateBackupState {
-    pub buffers: Mutex<HashMap<String, PendingAggregateBuffer>>,
-    pub engine: Arc<AggregateBackupEngine>,
-    pub normal_files: Mutex<Vec<FileControlBlock>>,
-}
-
-impl AggregateBackupState {
-    pub fn new(engine: Arc<AggregateBackupEngine>) -> Self {
-        Self {
-            buffers: Mutex::new(HashMap::new()),
-            engine,
-            normal_files: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn add_file(
-        &self,
-        relative_path: &str,
-        file: PendingFile,
-    ) -> Option<(String, Vec<PendingFile>)> {
-        let bucket_key = self
-            .engine
-            .bucket_key_for_relative_path(relative_path, file.data.len() as u64);
-        let mut buffers = self.buffers.lock().unwrap();
-        let buffer = buffers.entry(bucket_key.clone()).or_insert_with(|| {
-            PendingAggregateBuffer::new(bucket_key.clone(), self.engine.config.max_blob_size)
-        });
-        if buffer.add_file(file) {
-            Some((bucket_key, buffer.flush()))
-        } else {
-            None
-        }
-    }
-
-    pub fn flush_all(&self) -> Vec<(String, Vec<PendingFile>)> {
-        let mut buffers = self.buffers.lock().unwrap();
-        let mut result = Vec::new();
-        for (key, buffer) in buffers.iter_mut() {
-            if !buffer.is_empty() {
-                result.push((key.clone(), buffer.flush()));
-            }
-        }
-        result
-    }
-}
-
 #[derive(Debug)]
 pub enum AggregateEngineError {
     Io(io::Error),
@@ -401,17 +311,5 @@ pub fn aggregate_dir_for(dir_rel: &str) -> PathBuf {
         PathBuf::from(AGGREGATE_DIR_NAME)
     } else {
         PathBuf::from(dir_rel).join(AGGREGATE_DIR_NAME)
-    }
-}
-
-pub fn fcb_to_pending_file(fcb: &FileControlBlock) -> PendingFile {
-    PendingFile {
-        relative_path: fcb.dst_path.to_string_lossy().replace('\\', "/"),
-        data: fcb.buffer[..fcb.buffer_len].to_vec(),
-        ctime: fcb.meta.common.ctime as u64,
-        mtime: fcb.meta.common.mtime as u64,
-        mode: fcb.meta.common.mode,
-        xattrs: fcb.meta.common.xattributes.clone(),
-        acl: fcb.meta.common.posix_access_acl.clone(),
     }
 }

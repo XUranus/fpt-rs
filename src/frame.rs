@@ -61,14 +61,14 @@ pub mod backup_impls;
 pub mod backup_job;
 pub mod lifecycle;
 pub mod location;
-pub mod postjob;
-pub mod prereq;
+pub(crate) mod postjob;
+pub(crate) mod prereq;
 pub mod repo;
 pub mod restore_impls;
 pub mod restore_job;
 pub mod scan;
 pub mod scanner_impls;
-pub mod subtask;
+pub(crate) mod subtask;
 pub mod traits;
 
 // ── Core traits ──────────────────────────────────────────────────────────────
@@ -98,6 +98,7 @@ pub use restore_impls::{LocalFileRestore, RestoreConfig};
 // ── Infrastructure ────────────────────────────────────────────────────────────
 pub use location::DataLocation;
 pub use repo::{RepoLayout, TempRepoConfig};
+pub use scan::{ScanConfig, ScanError, ScanJob};
 
 // ── Job orchestrators (canonical + legacy aliases) ────────────────────────────
 pub use backup_job::{

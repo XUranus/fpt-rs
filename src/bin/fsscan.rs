@@ -3,9 +3,7 @@ use std::time::{Duration, Instant};
 
 use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use bifrost::frame::DataLocation;
-use bifrost::scanner::filter::ScanPathFilterSet;
-use bifrost::scanner::options::ScanOption;
-use bifrost::scanner::Scanner;
+use bifrost::scanner::{ScanOption, ScanPathFilterSet, Scanner};
 use clap::Parser;
 
 /// Bifrost Filesystem Scanner

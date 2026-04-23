@@ -2,7 +2,7 @@ pub mod backup;
 pub mod failure;
 pub mod frame;
 pub mod logging;
-pub mod native;
+pub(crate) mod native;
 pub mod scanner;
 pub mod utility;
 

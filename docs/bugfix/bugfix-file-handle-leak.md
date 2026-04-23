@@ -6,47 +6,25 @@ Fixed a "Too many open files (os error 24)" error that occurred during aggregate
 
 ## Affected Components
 
-- **File**: `src/backup/bio/copy.rs`
-- **Function**: `spawn_reader_with_aggregation()`
+- **File**: `src/backup/aggregate_engine.rs`
+- **Function**: `create_blob_from_local_files()`
 - **Feature**: Aggregate backup format (small file aggregation)
 
 ## Root Cause Analysis
 
-### Normal File Processing Flow
+### Previous Aggregation Path Issue
 
-In the backup engine's I/O pipeline, files typically flow through these states:
-
-1. **Inited** → FileControlBlock (FCB) created with file metadata
-2. **Opened** → `open_source()` opens the file, stores handle in `fcb.src_handle`
-3. **Read** → `read_source()` reads data, takes handle via `take()`, returns FCB
-4. **Closed** → `close_source()` explicitly closes the file handle
-
-For non-aggregated files, this flow works correctly because the writer pipeline eventually calls `close_source()`.
-
-### The Aggregation Path Issue
-
-For aggregated backups, the flow differs:
-
-1. Small files are identified for aggregation based on size threshold
-2. Files are read by `read_source()` which takes the handle:
-   ```rust
-   let mut file = fcb.src_handle.take().expect("...");
-   // ... read data ...
-   ReaderBioResult::ReadSource(Ok(fcb))  // fcb.src_handle is now None
-   ```
-3. The local `file` variable should be dropped at the end of `read_source()`
-4. The FCB (with read data in buffer) is returned to the aggregation reader
-5. The FCB is converted to a `PendingFile` and buffered for blob creation
+The old aggregation path queued `FileControlBlock` values after reading small-file data into memory. Earlier versions also carried optional source/target file handles inside the FCB state machine. Under high concurrency this design made it easy to keep too many source descriptors and payload buffers alive at once.
 
 ### Why File Handles Accumulated
 
 While Rust's drop mechanism should close files when variables go out of scope, several factors contributed to file descriptor exhaustion:
 
-1. **High Concurrency**: With 4 worker threads (`--workers 4` default), multiple files are processed simultaneously
-2. **Rapid File Opening**: The scanner quickly enumerates files, sending them to the reader pipeline
-3. **Delayed Drop**: The local `file` variable in `read_source()` may not be dropped immediately upon function return, especially under high load
-4. **No Explicit Close**: The aggregation path lacked an explicit file close operation
-5. **Many Small Files**: Aggregate backups target small files, meaning many files are processed quickly
+1. **High Concurrency**: Multiple workers could process small files simultaneously.
+2. **Rapid File Opening**: The scanner quickly enumerated files, sending them to the reader pipeline.
+3. **Queued Payloads**: Small-file payloads could accumulate in memory before blob flush.
+4. **Queued Handles**: Older FCB state carried file handle slots that made ownership harder to reason about.
+5. **Many Small Files**: Aggregate backups target small files, meaning many files are processed quickly.
 
 When the system file descriptor limit (default 1024 on most Linux systems) is reached, subsequent `File::open()` calls fail with "Too many open files (os error 24)".
 
@@ -57,38 +35,25 @@ When the system file descriptor limit (default 1024 on most Linux systems) is re
 In `src/backup/bio/copy.rs`, function `spawn_reader_with_aggregation()`:
 
 ```rust
-if should_agg && fcb.src_state == SourceHandleState::Read {
-    let file_size = fcb.meta.size;
-
-    // BUG FIX: Explicitly close the source file handle immediately after
-    // reading to avoid "Too many open files (os error 24)" error.
-    //
-    // Background: When read_source() reads a file, it takes the file
-    // handle from fcb.src_handle using take(), reads the data, and the
-    // local file variable should be dropped at the end of read_source().
-    // However, under high concurrency with many small files being
-    // aggregated, file handles can accumulate faster than they are
-    // released, causing the process to hit the system file descriptor
-    // limit (default 1024 on many systems).
-    //
-    // This explicit close ensures the file descriptor is released
-    // immediately before we continue processing, preventing resource
-    // exhaustion.
-    if fcb.src_handle.is_some() {
-        drop(fcb.src_handle.take());
-    }
-
-    let pending = fcb_to_pending_file(&fcb);
-    // ... rest of aggregation logic
+if should_aggregate(file_size) {
+    // Current implementation: aggregation stores pending file descriptors as
+    // paths and sizes only. Blob flush opens each source file, streams it into
+    // the blob with a bounded scratch buffer, and immediately drops the handle.
+    pending_local_files.push(PendingLocalFile {
+        relative_path,
+        source_path,
+        size,
+        // metadata omitted
+    });
 }
 ```
 
 ### Why This Fix Works
 
-1. **Immediate Release**: Explicitly dropping the file handle ensures the OS file descriptor is released immediately
-2. **Defensive Programming**: Even if `src_handle` should be `None` (from `read_source()`), this code handles any case where it might still exist
-3. **Minimal Overhead**: The check and drop operation has negligible performance impact
-4. **Targeted**: Only affects the aggregation path where the issue occurred
+1. **No queued handles**: File handles are no longer stored in `FileControlBlock` or queued between stages.
+2. **Bounded memory**: Aggregation avoids storing small-file payloads in memory; it stores path metadata and streams data during blob flush.
+3. **Immediate release**: Each source file is opened only for the duration of its stream-copy into the aggregate blob.
+4. **Targeted**: The fix affects aggregation without changing common backup semantics.
 
 ## Testing
 

@@ -31,7 +31,7 @@ Linux enforces two fd limits per process:
 
 The soft limit is what `ulimit -n` shows in a shell. Most shells and system services inherit the default of 1024.
 
-### How the Aggregate Backup Pipeline Accumulates File Descriptors
+### How the Old Aggregate Backup Pipeline Accumulated File Descriptors
 
 The backup engine runs a multi-threaded pipeline:
 
@@ -45,27 +45,27 @@ reader_rx channel ──► reader control thread
                       reader_io_pool_tx ──► N reader I/O threads
                                                 │  (each calls open() + read())
                                                 ▼
-                                          fcb with src_handle (open fd)
+                                          FCB / result with source state
                                                 │
                                                 ▼
                                       result channel back to reader control thread
                                                 │
                                                 ▼
-                                         drop(src_handle)  ← fd released HERE
+                                         source handle released here
 ```
 
 At any moment, the following fds are open simultaneously:
 
-- **N reader I/O threads × in-flight FCBs**: each FCB in `OpenSource` state holds one open source file fd. With 4+ reader threads and hundreds of small files being processed concurrently, dozens of fds accumulate before any are released.
+- **N reader I/O threads × in-flight files**: each in-flight open/read operation can hold one source file fd. With 4+ reader threads and many small files, dozens of descriptors can overlap.
 - **Writer threads**: target blob files being written.
 - **SQLite connections**: one per `add_blob()` call (short-lived but overlapping).
 - **Infrastructure**: stdin (0), stdout (1), stderr (2), the backup log file, metadata reader files, control file reader.
 
 With the default soft limit of 1024, this total is easily exceeded when many directories are processed in parallel, causing every subsequent `File::open()` call to fail with `EMFILE`.
 
-### Why the Previous Fix Was Insufficient
+### Why Raising `RLIMIT_NOFILE` Was Not Sufficient By Itself
 
-An earlier fix (`docs/bugfix/bugfix-file-handle-leak.md`) added an explicit `drop(fcb.src_handle.take())` after reading file data in the aggregation path. That addressed fds being held longer than necessary after reading, but did not address the fundamental issue: with enough concurrency, the natural in-flight concurrency of the pipeline alone can exceed 1024 fds before any explicit drop occurs.
+Raising the process fd limit made the failure less likely, but it did not address the underlying resource model. The current aggregation path stores only path metadata for pending small files, then opens each file during blob flush, streams it into the blob with a bounded scratch buffer, and immediately drops the handle. `FileControlBlock` no longer stores source/target file handles.
 
 ---
 

@@ -230,13 +230,6 @@ pub async fn connect_client(location: &SmbLocation) -> Result<Arc<smb_client::Cl
 }
 
 impl SmbClientPool {
-    pub fn with_client(client: Arc<smb_client::Client>) -> Self {
-        Self {
-            clients: vec![client],
-            next: AtomicUsize::new(0),
-        }
-    }
-
     pub async fn connect(location: &SmbLocation, size: usize) -> Result<Arc<Self>, String> {
         let pool_size = size.max(1);
         let mut clients = Vec::with_capacity(pool_size);
@@ -407,75 +400,6 @@ pub async fn write_relative_file_chunk(
         .await
         .map_err(|e| format!("close {}: {e}", unc))?;
     Ok(())
-}
-
-pub async fn read_relative_file(
-    client: &smb_client::Client,
-    location: &SmbLocation,
-    relative_path: &str,
-    expected_size: u64,
-) -> Result<Vec<u8>, String> {
-    read_relative_file_chunk(
-        client,
-        location,
-        relative_path,
-        expected_size,
-        0,
-        usize::MAX,
-    )
-    .await
-}
-
-pub async fn read_relative_file_chunk(
-    client: &smb_client::Client,
-    location: &SmbLocation,
-    relative_path: &str,
-    expected_size: u64,
-    file_offset: u64,
-    buffer_cap: usize,
-) -> Result<Vec<u8>, String> {
-    let read_chunk = negotiated_read_chunk(client, location)
-        .await
-        .min(buffer_cap.max(1));
-    let relative_path = normalize_relative_path(relative_path);
-    let unc = relative_unc_path(location, &relative_path)?;
-    let open_args = smb_client::FileCreateArgs::make_open_existing(
-        smb_client::FileAccessMask::new().with_generic_read(true),
-    );
-    let resource = client
-        .create_file(&unc, &open_args)
-        .await
-        .map_err(|e| format!("open {}: {e}", unc))?;
-
-    let file = match resource {
-        smb_client::Resource::File(file) => file,
-        other => {
-            close_resource(other).await?;
-            return Err(format!("{} did not resolve to a file handle", unc));
-        }
-    };
-
-    let remaining = expected_size.saturating_sub(file_offset) as usize;
-    let target_len = remaining.min(buffer_cap.max(1));
-    let mut data = Vec::with_capacity(target_len);
-    let mut offset = file_offset;
-    while data.len() < target_len {
-        let mut chunk = vec![0u8; read_chunk.min(target_len - data.len())];
-        let read_len = file
-            .read_block(&mut chunk, offset, None, false)
-            .await
-            .map_err(|e| format!("read {} @{}: {e}", unc, offset))?;
-        if read_len == 0 {
-            break;
-        }
-        data.extend_from_slice(&chunk[..read_len]);
-        offset += read_len as u64;
-    }
-
-    file.close()
-        .await
-        .map_err(|e| format!("close {}: {e}", unc))?;
-    Ok(data)
 }
 
 pub async fn copy_relative_file_streaming(
@@ -759,10 +683,6 @@ pub fn target_relative_path(source_dir_base: &Path, target_prefix: &str, path: &
         Path::new(target_prefix).join(rel)
     };
     normalize_relative_path(&prefixed.to_string_lossy())
-}
-
-pub fn relative_path_from_base(source_dir_base: &Path, path: &Path) -> String {
-    normalize_relative_path(&relative_path_buf(source_dir_base, path).to_string_lossy())
 }
 
 pub fn share_relative_path(location: &SmbLocation, relative_path: &str) -> String {

@@ -1,2 +1,2 @@
-pub mod fstat;
+pub(crate) mod fstat;
 mod fwrite_meta;

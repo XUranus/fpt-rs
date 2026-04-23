@@ -1,7 +1,5 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -11,14 +9,12 @@ use bifrost::backup::{
 };
 use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use bifrost::frame::{
-    scan::ScanConfig, BackupJobConfig, BackupRestoreJob, DataLocation, FileBackupJob,
-    FileRestoreJob, RestoreJobConfig, TempRepoConfig,
+    BackupJobConfig, BackupRestoreJob, DataLocation, FileBackupJob, FileRestoreJob,
+    RestoreJobConfig, ScanConfig, TempRepoConfig,
 };
-use bifrost::scanner::filter::ScanPathFilterSet;
-use bifrost::scanner::options::ScanOption;
-use bifrost::scanner::Scanner;
+use bifrost::scanner::{ScanOption, ScanPathFilterSet, Scanner};
 use chrono::Utc;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -32,42 +28,13 @@ use tokio::process::Command;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about = "Bifrost task RPC server", long_about = None)]
-struct Cli {
-    #[arg(long, default_value = "127.0.0.1")]
-    host: String,
+#[path = "fptserver/api.rs"]
+mod fptserver_api;
+#[path = "fptserver/cli.rs"]
+mod fptserver_cli;
 
-    #[arg(long, default_value_t = 3000)]
-    port: u16,
-
-    #[arg(long, default_value = "/tmp/fptserver")]
-    runtime_dir: PathBuf,
-
-    #[arg(long, default_value_t = 1)]
-    max_scanners_count: usize,
-
-    #[arg(long, default_value_t = 4)]
-    max_subtasks_count: usize,
-
-    #[command(subcommand)]
-    command: Option<CommandMode>,
-}
-
-#[derive(Subcommand, Debug)]
-enum CommandMode {
-    #[command(hide = true)]
-    Worker(WorkerArgs),
-}
-
-#[derive(Parser, Debug)]
-struct WorkerArgs {
-    #[arg(long)]
-    task_file: PathBuf,
-
-    #[arg(long)]
-    status_file: PathBuf,
-}
+use fptserver_api::ApiError;
+use fptserver_cli::{Cli, CommandMode, WorkerArgs};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1372,28 +1339,4 @@ fn default_backup_format() -> BackupFormatArg {
 
 fn default_restore_policy() -> RestorePolicyArg {
     RestorePolicyArg::Replace
-}
-
-#[derive(Debug)]
-struct ApiError {
-    status: StatusCode,
-    message: String,
-}
-
-impl ApiError {
-    fn server(err: impl ToString) -> Self {
-        let message = err.to_string();
-        let status = if message.contains("not found") {
-            StatusCode::NOT_FOUND
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        };
-        Self { status, message }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
-    }
 }

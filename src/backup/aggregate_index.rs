@@ -1,6 +1,6 @@
 //! Aggregate index for shard-based aggregated backups.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use log::debug;
 use serde::{Deserialize, Serialize};
 
-use crate::backup::aggregate::{AggregateBlobMeta, AggregateFileEntry, AggregateRestoreInfo};
+use crate::backup::aggregate::{AggregateBlobMeta, AggregateRestoreInfo};
 
 pub const BINARY_INDEX_FILE_NAME: &str = "AGGREGATE_INDEX.bidx";
 const BINARY_INDEX_MAGIC: &[u8; 8] = b"BAGG0002";
@@ -82,49 +82,9 @@ impl AggregateIndex {
         Ok(self.records.lock().unwrap().get(relative_path).cloned())
     }
 
+    #[allow(dead_code)]
     pub fn is_aggregated(&self, relative_path: &str) -> Result<bool, AggregateIndexError> {
         Ok(self.records.lock().unwrap().contains_key(relative_path))
-    }
-
-    pub fn get_blob_files(
-        &self,
-        blob_path: &str,
-    ) -> Result<Vec<AggregateFileEntry>, AggregateIndexError> {
-        let records = self.records.lock().unwrap();
-        Ok(records
-            .iter()
-            .filter(|(_, info)| info.blob_path == blob_path)
-            .map(|(relative_path, info)| AggregateFileEntry {
-                relative_path: relative_path.clone(),
-                offset: info.offset,
-                size: info.size,
-                ctime: 0,
-                mtime: info.mtime,
-                mode: info.mode,
-                xattrs: info.xattrs.clone(),
-                acl: info.acl.clone(),
-            })
-            .collect())
-    }
-
-    pub fn delete_blob_entries(&self, blob_path: &str) -> Result<usize, AggregateIndexError> {
-        let mut records = self.records.lock().unwrap();
-        let before = records.len();
-        records.retain(|_, info| info.blob_path != blob_path);
-        Ok(before - records.len())
-    }
-
-    pub fn get_stats(&self) -> Result<IndexStats, AggregateIndexError> {
-        let records = self.records.lock().unwrap();
-        Ok(IndexStats {
-            total_files: records.len() as u64,
-            total_blobs: records
-                .values()
-                .map(|info| info.blob_path.as_str())
-                .collect::<HashSet<_>>()
-                .len() as u64,
-            total_size: records.values().map(|info| info.size).sum(),
-        })
     }
 }
 
@@ -192,13 +152,6 @@ fn persist_binary_index(
     drop(file);
     std::fs::rename(temp_path, path)?;
     Ok(())
-}
-
-#[derive(Debug, Default)]
-pub struct IndexStats {
-    pub total_files: u64,
-    pub total_blobs: u64,
-    pub total_size: u64,
 }
 
 #[derive(Debug)]

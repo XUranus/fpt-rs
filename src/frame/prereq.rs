@@ -222,28 +222,6 @@ impl<'a> RestorePrereqJob<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Recursively copy a directory tree from `src` to `dst` using BIO.
-///
-/// Used by [`RestorePrereqJob`] to stage M\_REPO / C\_REPO locally before
-/// the pipeline starts.
-pub fn copy_dir_local(src: &Path, dst: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let target = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_local(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
-}
-
 fn validate_backup_source(source: &DataLocation) -> Result<(), PrereqError> {
     match source {
         DataLocation::Local(path) => validate_local_source_dir(path),

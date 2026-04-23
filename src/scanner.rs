@@ -35,7 +35,7 @@ use crate::{
     scanner::{
         engine::bio,
         models::{DirBatchScanResult, DirScanEntry, ScanStatistics},
-        options::{ControlPathOption, ScanOption},
+        options::ControlPathOption,
     },
     utility::{BlockingQueue, SpillQueue},
 };
@@ -46,7 +46,9 @@ pub mod metadata;
 pub(crate) mod models;
 pub mod options;
 
+pub use filter::ScanPathFilterSet;
 pub use models::ScanStatsSnapshot;
+pub use options::ScanOption;
 
 /// Main entry point for filesystem scanning.
 ///

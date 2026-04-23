@@ -12,7 +12,7 @@
 //! ensuring thread safety without shared mutable state. Open file handles are only held
 //! temporarily during I/O operations and are never stored when the FCB resides in a queue.
 
-use std::{fs::File, path::PathBuf};
+use std::path::PathBuf;
 
 use crate::scanner::metadata::{DirMeta, FileMeta};
 
@@ -27,14 +27,10 @@ pub(crate) const MAX_FILE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
 pub enum SourceHandleState {
     /// Initial state: file not yet opened.
     Inited,
-    /// Source file has been successfully opened.
-    Opened,
     /// Entire file content has been read into the buffer.
     Read,
     /// Partial data has been read (used for large files processed in chunks).
     PartialRead,
-    /// Source file has been closed.
-    Closed,
 }
 
 /// State of the target (output) file during backup.
@@ -42,14 +38,10 @@ pub enum SourceHandleState {
 pub enum TargetHandleState {
     /// Initial state: file not yet created/opened.
     Inited,
-    /// Target file has been successfully created/opened.
-    Opened,
     /// Partial data has been written (used for large files processed in chunks).
     PartialWritten,
     /// Entire file content has been written.
     Written,
-    /// Target file has been closed and finalized.
-    Closed,
 }
 
 /// File Control Block: orchestrates backup/restore of a single file.
@@ -69,10 +61,6 @@ pub struct FileControlBlock {
     pub src_state: SourceHandleState,
     /// Current state of target file processing.
     pub dst_state: TargetHandleState,
-    /// Open handle to the source file (only set during read operations).
-    pub src_handle: Option<File>,
-    /// Open handle to the target file (only set during write operations).
-    pub dst_handle: Option<File>,
     /// Absolute path to the source file.
     pub src_path: PathBuf,
     /// Absolute path to the target file.
@@ -121,8 +109,6 @@ impl From<FileMeta> for FileControlBlock {
             buffer_len: 0,
             src_state: SourceHandleState::Inited,
             dst_state: TargetHandleState::Inited,
-            src_handle: None,
-            dst_handle: None,
             src_path: PathBuf::new(),
             dst_path: PathBuf::new(),
             src_offset: 0,

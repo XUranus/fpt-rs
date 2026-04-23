@@ -102,6 +102,7 @@ impl BackupStats {
     }
 
     /// Atomically increments the files deleted counter.
+    #[allow(dead_code)]
     pub fn inc_files_deleted(&self) {
         self.files_deleted.fetch_add(1, Ordering::Relaxed);
     }
@@ -112,6 +113,7 @@ impl BackupStats {
     }
 
     /// Atomically increments the directories deleted counter.
+    #[allow(dead_code)]
     pub fn inc_dirs_deleted(&self) {
         self.dirs_deleted.fetch_add(1, Ordering::Relaxed);
     }

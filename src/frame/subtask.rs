@@ -31,6 +31,7 @@ use crate::frame::traits::{FileBackup, FileRestore, TransferStats};
 #[derive(Debug, Clone)]
 pub struct SubtaskConfig {
     /// UUID that identifies this subtask.
+    #[allow(dead_code)]
     pub subtask_uuid: String,
     /// Path to the control file this subtask should process.
     pub control_file: PathBuf,

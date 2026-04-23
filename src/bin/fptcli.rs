@@ -15,10 +15,10 @@ use bifrost::backup::aggregate::{AggregateConfig, AggregateLayout};
 use bifrost::backup::RestorePolicy;
 use bifrost::failure::{FailureLogFormat, RetryPolicy};
 use bifrost::frame::{
-    scan::ScanConfig, traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation,
-    RestoreJob, RestoreJobConfig,
+    traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation, RestoreJob,
+    RestoreJobConfig, ScanConfig, TempRepoConfig,
 };
-use bifrost::scanner::filter::ScanPathFilterSet;
+use bifrost::scanner::ScanPathFilterSet;
 
 /// File Protection Tool CLI
 #[derive(Parser, Debug)]
@@ -449,8 +449,8 @@ fn cmd_backup(
         format_tag,
         type_tag,
         temp_config: match temp_dir {
-            Some(p) => bifrost::frame::repo::TempRepoConfig::new(p),
-            None => bifrost::frame::repo::TempRepoConfig::default(),
+            Some(p) => TempRepoConfig::new(p),
+            None => TempRepoConfig::default(),
         },
         scan_config,
         aggregate_config,
@@ -572,8 +572,8 @@ fn cmd_restore(
         restore_target,
         policy,
         temp_config: match temp_dir {
-            Some(p) => bifrost::frame::repo::TempRepoConfig::new(p),
-            None => bifrost::frame::repo::TempRepoConfig::default(),
+            Some(p) => TempRepoConfig::new(p),
+            None => TempRepoConfig::default(),
         },
         max_concurrent_subtasks: jobs,
         fine_grain_paths: paths,
