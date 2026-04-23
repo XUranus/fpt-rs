@@ -41,6 +41,7 @@ use crate::{
 };
 
 mod engine;
+pub mod filter;
 pub mod metadata;
 pub(crate) mod models;
 pub mod options;
@@ -395,7 +396,9 @@ pub async fn run_nfs_scan(
     .map_err(|e| format!("NFS scanner init failed: {e}"))?;
 
     // Spawn the NFS scan task.
-    let scan_handle = tokio::spawn(async move { nfs_scanner.scan(root_fh, root_path, tx).await });
+    let scan_opt_for_task = Arc::clone(&scan_opt_arc);
+    let scan_handle =
+        tokio::spawn(async move { nfs_scanner.scan(root_fh, root_path, &scan_opt_for_task, tx).await });
 
     // Bridge: forward DirBatchScanResult items from tokio mpsc → BlockingQueue.
     let oq = Arc::clone(&output_queue);

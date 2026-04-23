@@ -17,8 +17,9 @@ Start here if you are new to the repository:
 9. [retry_failure.md](retry_failure.md) for structured failure logs and retry policy behavior.
 10. [logging.md](logging.md) when debugging routed logs or `C_REPO/logs`.
 11. [scanner_optimization.md](scanner_optimization.md) for the current metadata-writer and copy-control sharding changes.
-12. [runtime_memory.md](runtime_memory.md) for scan/backup/restore memory hotspots and runtime knobs.
-13. [fptserver.md](fptserver.md) for the RPC server, worker process model, and task APIs.
+12. [scanner_filter.md](scanner_filter.md) for scanner include/exclude path matching and traversal-pruning behavior.
+13. [runtime_memory.md](runtime_memory.md) for scan/backup/restore memory hotspots and runtime knobs.
+14. [fptserver.md](fptserver.md) for the RPC server, worker process model, and task APIs.
 
 Reference docs:
 

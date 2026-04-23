@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use bifrost::frame::DataLocation;
+use bifrost::scanner::filter::ScanPathFilterSet;
 use bifrost::scanner::options::ScanOption;
 use bifrost::scanner::Scanner;
 use clap::Parser;
@@ -86,6 +87,22 @@ struct Args {
     /// Entry names to skip (repeatable)
     #[arg(long, value_name = "NAME")]
     skip: Vec<String>,
+
+    /// Include directories whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    include_dir_pattern: Vec<String>,
+
+    /// Include files whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    include_file_pattern: Vec<String>,
+
+    /// Exclude directories whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    exclude_dir_pattern: Vec<String>,
+
+    /// Exclude files whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    exclude_file_pattern: Vec<String>,
 
     /// Previous metadata directory for incremental scan
     #[arg(long, value_name = "DIR")]
@@ -209,7 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for source in &args.sources {
         let location =
             parse_data_location(source, args.nfs_connections, args.nfs_uid, args.nfs_gid)?;
-        let scan_option = build_scan_option(&args, &location);
+        let scan_option = build_scan_option(&args, &location)?;
 
         let started = Instant::now();
         let summary = run_scan(&location, scan_option.clone())?;
@@ -229,7 +246,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_scan_option(args: &Args, location: &DataLocation) -> ScanOption {
+fn build_scan_option(
+    args: &Args,
+    location: &DataLocation,
+) -> Result<ScanOption, Box<dyn std::error::Error>> {
     let retry_policy = RetryPolicy::new(
         args.operation_retries,
         Duration::from_millis(args.retry_delay_ms),
@@ -263,6 +283,15 @@ fn build_scan_option(args: &Args, location: &DataLocation) -> ScanOption {
         .stats_only(args.stats_only)
         .retry_policy(retry_policy);
 
+    let path_filters = ScanPathFilterSet::compile(
+        args.include_dir_pattern.clone(),
+        args.include_file_pattern.clone(),
+        args.exclude_dir_pattern.clone(),
+        args.exclude_file_pattern.clone(),
+    )
+    .map_err(std::io::Error::other)?;
+    opt = opt.path_filters(path_filters);
+
     if let Some(format) = args.failure_log_format {
         let format: FailureLogFormat = format.into();
         let path = args
@@ -282,7 +311,7 @@ fn build_scan_option(args: &Args, location: &DataLocation) -> ScanOption {
         opt = opt.shard_max_size(size);
     }
 
-    opt
+    Ok(opt)
 }
 
 fn run_scan(

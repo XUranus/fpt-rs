@@ -67,6 +67,7 @@ Scanner notes:
 - each writer owns its own metadata namespace and cache files
 - metadata locators encode `(writer_shard, segment)` into the stored `meta_fid`
 - copy control files can be sliced into multiple `copy_*.txt` shards so backup can schedule multiple copy subtasks in parallel
+- optional scanner path filters can prune traversal and emitted entries by logical path pattern; see [scanner_filter.md](scanner_filter.md)
 
 ### `src/backup/`
 

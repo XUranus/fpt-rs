@@ -26,6 +26,7 @@ use crate::{
     failure::{FailureItemType, FailureRecord},
     native::fstat,
     scanner::{
+        filter::logical_path_from_physical,
         models::{DirBatchScanResult, DirScanEntry},
         ScanWorkerContext,
     },
@@ -90,6 +91,16 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
 
     let mut dir_result = DirBatchScanResult::default();
     let depth = dir_entry.depth;
+    let path_filters = scan_option.meta_option.path_filters.as_ref();
+    let current_logical_path =
+        path_filters.map(|_| logical_path_from_physical(&scan_option.control_path, &dir_entry.path));
+
+    if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
+        if !filters.should_descend_dir(logical_path) {
+            debug!("Skipping filtered directory subtree: {:?}", dir_entry.path);
+            return;
+        }
+    }
 
     // Stat the directory itself
     match retry_scan_io(context, || fstat::stat_dir(&dir_entry.path)) {
@@ -177,11 +188,19 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     continue;
                 }
 
+                let logical_path =
+                    path_filters.map(|_| logical_path_from_physical(&scan_option.control_path, &path));
+
                 if file_type.is_symlink() {
                     // Handle symlinks - always record them as files, but only follow if configured
                     debug!("Processing symlink: {:?}", path);
                     match retry_scan_io(context, || fstat::stat_file(&path)) {
                         Ok((file_meta, _)) => {
+                            if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                                if !filters.should_emit_file(lp) {
+                                    continue;
+                                }
+                            }
                             let file_size = file_meta.size;
                             dir_result.files.push(file_meta);
                             stats.add_file_size(file_size);
@@ -191,6 +210,11 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                             if scan_option.meta_option.follow_symlinks {
                                 if let Ok(target_meta) = std::fs::metadata(&path) {
                                     if target_meta.is_dir() {
+                                        if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                                            if !filters.should_descend_dir(lp) {
+                                                continue;
+                                            }
+                                        }
                                         debug!("Following symlink to directory: {:?}", path);
                                         if let Err(e) =
                                             dirent_queue.push(DirScanEntry::new(path, depth + 1))
@@ -228,6 +252,12 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         }
                     }
                 } else if file_type.is_dir() {
+                    if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                        if !filters.should_descend_dir(lp) {
+                            debug!("Skipping filtered subdirectory: {:?}", path);
+                            continue;
+                        }
+                    }
                     // Enqueue subdirectory for recursive scanning
                     debug!("Enqueuing subdirectory: {:?}", path);
                     if let Err(e) = dirent_queue.push(DirScanEntry::new(path, depth + 1)) {
@@ -245,6 +275,12 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         stats.inc_dirs();
                     }
                 } else if file_type.is_file() {
+                    if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                        if !filters.should_emit_file(lp) {
+                            debug!("Skipping filtered file: {:?}", path);
+                            continue;
+                        }
+                    }
                     // Process regular file
                     debug!("Processing file: {:?}", path);
                     match retry_scan_io(context, || fstat::stat_file(&path)) {
@@ -268,6 +304,12 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         }
                     }
                 } else {
+                    if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                        if !filters.should_emit_file(lp) {
+                            debug!("Skipping filtered special entry: {:?}", path);
+                            continue;
+                        }
+                    }
                     // Handle special files (block devices, character devices, FIFOs, sockets)
                     #[cfg(unix)]
                     {
@@ -320,6 +362,13 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                 context.scan_option.retry_policy.max_retries + 1,
             );
             // Still push an empty result to avoid losing the directory
+        }
+    }
+
+    if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
+        if !filters.should_emit_dir(logical_path) && dir_result.files.is_empty() {
+            debug!("Dropping filtered directory batch: {:?}", dir_entry.path);
+            return;
         }
     }
 

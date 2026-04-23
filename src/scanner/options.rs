@@ -15,6 +15,7 @@
 use std::path::PathBuf;
 
 use crate::failure::{FailureLogConfig, RetryPolicy};
+use crate::scanner::filter::ScanPathFilterSet;
 
 #[derive(Debug, Clone)]
 pub struct ControlPathOption {
@@ -129,6 +130,9 @@ pub struct MetaScanOption {
     /// Empty by default.
     pub skip_entries: Vec<String>,
 
+    /// Compiled include/exclude path filters. `None` keeps the hot path filter-free.
+    pub path_filters: Option<ScanPathFilterSet>,
+
     /// Whether to skip block devices during scanning.
     ///
     /// Enabled by default for safety.
@@ -209,6 +213,7 @@ impl Default for MetaScanOption {
             scan_hidden: false,
             follow_symlinks: false, // safe default
             skip_entries: Vec::new(),
+            path_filters: None,
             skip_block_devices: true, // safe default
             enable_aggregation: false,
             max_aggregate_blob_size: 64 * 1024 * 1024, // 64MB
@@ -384,6 +389,11 @@ impl ScanOption {
     /// Sets the list of entry names to skip during scanning.
     pub fn skip_entries(mut self, entries: Vec<String>) -> Self {
         self.meta_option.skip_entries = entries;
+        self
+    }
+
+    pub fn path_filters(mut self, filters: Option<ScanPathFilterSet>) -> Self {
+        self.meta_option.path_filters = filters;
         self
     }
 

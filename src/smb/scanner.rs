@@ -16,6 +16,7 @@ use smb_client::{
 use tokio::sync::mpsc;
 
 use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::scanner::filter::logical_path_from_physical;
 use crate::scanner::models::DirBatchScanResult;
 use crate::scanner::options::ScanOption;
 use crate::smb::fstat::{
@@ -202,6 +203,18 @@ impl SmbScanner {
     }
 
     async fn scan_one_dir(&self, task: DirTask, scan_option: &ScanOption) -> DirScanOutput {
+        let path_filters = scan_option.meta_option.path_filters.as_ref();
+        let current_logical_path =
+            path_filters.map(|_| logical_path_from_physical(&scan_option.control_path, task.path.as_ref()));
+        if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
+            if !filters.should_descend_dir(logical_path) {
+                return DirScanOutput {
+                    batch: None,
+                    children: Vec::new(),
+                };
+            }
+        }
+
         let dir_access = if task.seed.is_some() {
             DirAccessMask::new().with_list_directory(true)
         } else {
@@ -356,8 +369,15 @@ impl SmbScanner {
 
                 let child_path = format!("{}/{}", task.path, name);
                 let child_unc = task.unc.clone().with_add_path(&name);
+                let child_logical = path_filters
+                    .map(|_| logical_path_from_physical(&scan_option.control_path, child_path.as_ref()));
 
                 if entry.file_attributes.directory() && !entry.file_attributes.reparse_point() {
+                    if let (Some(filters), Some(logical)) = (path_filters, child_logical.as_deref()) {
+                        if !filters.should_descend_dir(logical) {
+                            continue;
+                        }
+                    }
                     if scan_option.max_depth.is_some_and(|max| task.depth >= max) {
                         continue;
                     }
@@ -368,6 +388,12 @@ impl SmbScanner {
                         seed: Some(smb_dir_seed_from_entry(&entry)),
                     });
                     continue;
+                }
+
+                if let (Some(filters), Some(logical)) = (path_filters, child_logical.as_deref()) {
+                    if !filters.should_emit_file(logical) {
+                        continue;
+                    }
                 }
 
                 let links = if scan_option.meta_option.scan_hardlinks {
@@ -383,6 +409,14 @@ impl SmbScanner {
         }
 
         drop(dir);
+        if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
+            if !filters.should_emit_dir(logical_path) && batch.files.is_empty() {
+                return DirScanOutput {
+                    batch: None,
+                    children,
+                };
+            }
+        }
         DirScanOutput {
             batch: Some(batch),
             children,
