@@ -217,7 +217,10 @@ class NfsBackupTestBase(BifrostTestBase):
         placeholder.mkdir(parents=True, exist_ok=True)
 
         if ctrl_file is None:
-            ctrl_file = self.ctrl_dir / "copy.txt"
+            ctrl_file = self.get_primary_control_file("copy")
+            if ctrl_file is None:
+                self.error_message = f"No copy control file found under {self.ctrl_dir}"
+                return False
 
         cmd = [
             str(self.binaries["fsbackup"]),
@@ -317,13 +320,13 @@ class TestNfsSourceToLocal(NfsBackupTestBase):
                 duration=0,
                 message=f"fsscan failed: {self.error_message}",
             )
-        ctrl_file = self.ctrl_dir / "copy.txt"
-        if not ctrl_file.exists():
+        ctrl_file = self.get_primary_control_file("copy")
+        if ctrl_file is None:
             return TestResult(
                 name=self.__class__.__name__,
                 passed=False,
                 duration=0,
-                message="copy.txt was not created by fsscan",
+                message="copy control file was not created by fsscan",
             )
         print(f"    control file: {ctrl_file}")
 
@@ -423,7 +426,14 @@ class TestLocalSourceToNfs(NfsBackupTestBase):
                 duration=0,
                 message=f"fsscan failed: {self.error_message}",
             )
-        ctrl_file = self.ctrl_dir / "copy.txt"
+        ctrl_file = self.get_primary_control_file("copy")
+        if ctrl_file is None:
+            return TestResult(
+                name=self.__class__.__name__,
+                passed=False,
+                duration=0,
+                message="copy control file was not created by fsscan",
+            )
         print(f"    control file: {ctrl_file}")
 
         # ── Step 2: AIO copy to NFS target ────────────────────────────────
@@ -540,7 +550,14 @@ class TestNfsSourceToNfs(NfsBackupTestBase):
                 duration=0,
                 message=f"fsscan failed: {self.error_message}",
             )
-        ctrl_file = self.ctrl_dir / "copy.txt"
+        ctrl_file = self.get_primary_control_file("copy")
+        if ctrl_file is None:
+            return TestResult(
+                name=self.__class__.__name__,
+                passed=False,
+                duration=0,
+                message="copy control file was not created by fsscan",
+            )
         print(f"    control file: {ctrl_file}")
 
         # ── Step 2: AIO copy to NFS target ────────────────────────────────

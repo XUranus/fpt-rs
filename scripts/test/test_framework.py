@@ -219,6 +219,15 @@ class BifrostTestBase:
             self.error_message = f"fsscan failed: {e.stderr}"
             return False
 
+    def get_control_files(self, phrase: str) -> List[Path]:
+        """Return sorted control files for a given phase."""
+        return sorted(self.ctrl_dir.glob(f"{phrase}_*.control.bin"))
+
+    def get_primary_control_file(self, phrase: str) -> Optional[Path]:
+        """Return the first control file for a phase, or None if absent."""
+        files = self.get_control_files(phrase)
+        return files[0] if files else None
+
     def run_fsbackup(self, source: Path, target: Path,
                      control_file: Optional[Path] = None,
                      enable_hardlink: bool = False,
@@ -232,11 +241,13 @@ class BifrostTestBase:
             "-m", str(self.meta_dir),
         ]
 
-        if control_file:
-            cmd.extend(["-c", str(control_file)])
-        else:
-            # Default to copy.txt
-            cmd.extend(["-c", str(self.ctrl_dir / "copy.txt")])
+        if control_file is None:
+            control_file = self.get_primary_control_file("copy")
+            if control_file is None:
+                self.error_message = f"No copy control file found under {self.ctrl_dir}"
+                return False
+
+        cmd.extend(["-c", str(control_file)])
 
         if enable_hardlink or enable_delete or enable_mtime:
             cmd.extend(["--ctrl-dir", str(self.ctrl_dir)])

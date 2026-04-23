@@ -58,15 +58,15 @@ class TestBasicBackup(BifrostTestBase):
             )
 
         # Verify control file was created
-        copy_txt = self.ctrl_dir / "copy.txt"
-        if not copy_txt.exists():
+        copy_ctrl = self.get_primary_control_file("copy")
+        if copy_ctrl is None:
             return TestResult(
                 name=self.__class__.__name__,
                 passed=False,
                 duration=0,
-                message="copy.txt was not created"
+                message="copy control file was not created"
             )
-        print(f"  Control file created: {copy_txt}")
+        print(f"  Control file created: {copy_ctrl}")
 
         # Step 2: Backup
         print("\nStep 2: Running backup...")

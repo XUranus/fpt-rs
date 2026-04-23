@@ -139,12 +139,16 @@ class AggregateBackupTest(BifrostTestBase):
 
     def run_fsbackup_aggregate(self) -> bool:
         """Run fsbackup with aggregation enabled."""
+        ctrl_file = self.get_primary_control_file("copy")
+        if ctrl_file is None:
+            self.error_message = f"No copy control file found under {self.ctrl_dir}"
+            return False
         cmd = [
             str(self.binaries["fsbackup"]),
             "-s", str(self.source_dir),
             "-t", str(self.backup_dir),
             "-m", str(self.meta_dir),
-            "-c", str(self.ctrl_dir / "copy.txt"),
+            "-c", str(ctrl_file),
             "--aggregate",
             "--max-blob-size", str(self.max_blob_size // (1024 * 1024)),  # Convert to MB
             "--aggregate-threshold", str(self.aggregate_threshold // 1024)  # Convert to KB
@@ -347,12 +351,16 @@ class AggregateRestoreTest(BifrostTestBase):
 
     def run_fsbackup_aggregate(self) -> bool:
         """Run fsbackup with aggregation enabled."""
+        ctrl_file = self.get_primary_control_file("copy")
+        if ctrl_file is None:
+            self.error_message = f"No copy control file found under {self.ctrl_dir}"
+            return False
         cmd = [
             str(self.binaries["fsbackup"]),
             "-s", str(self.source_dir),
             "-t", str(self.backup_dir),
             "-m", str(self.meta_dir),
-            "-c", str(self.ctrl_dir / "copy.txt"),
+            "-c", str(ctrl_file),
             "--aggregate",
             "--aggregate-layout", "dir-level",
             "--max-blob-size", "64",
@@ -582,12 +590,16 @@ class AggregateMixedFilesTest(BifrostTestBase):
 
     def run_fsbackup_aggregate(self) -> bool:
         """Run fsbackup with aggregation enabled."""
+        ctrl_file = self.get_primary_control_file("copy")
+        if ctrl_file is None:
+            self.error_message = f"No copy control file found under {self.ctrl_dir}"
+            return False
         cmd = [
             str(self.binaries["fsbackup"]),
             "-s", str(self.source_dir),
             "-t", str(self.backup_dir),
             "-m", str(self.meta_dir),
-            "-c", str(self.ctrl_dir / "copy.txt"),
+            "-c", str(ctrl_file),
             "--aggregate",
             "--max-blob-size", "64",
             "--aggregate-threshold", str(self.threshold // 1024)  # Convert to KB

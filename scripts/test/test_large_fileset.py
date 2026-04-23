@@ -85,19 +85,15 @@ class TestLargeFileset(BifrostTestBase):
             )
 
         # Verify control file
-        copy_txt = self.ctrl_dir / "copy.txt"
-        if not copy_txt.exists():
+        copy_ctrl = self.get_primary_control_file("copy")
+        if copy_ctrl is None:
             return TestResult(
                 name=self.__class__.__name__,
                 passed=False,
                 duration=0,
-                message="copy.txt was not created"
+                message="copy control file was not created"
             )
-
-        # Count entries in control file
-        with open(copy_txt) as f:
-            line_count = sum(1 for _ in f)
-        print(f"  Control file entries: {line_count}")
+        print(f"  Control file created: {copy_ctrl.name}")
 
         # Step 2: Backup
         print("\nStep 2: Running backup...")

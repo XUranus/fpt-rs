@@ -126,12 +126,12 @@ class TestIncrementalBackup(BifrostTestBase):
             )
 
         # Check that copy.txt was created
-        if not (self.ctrl_dir / "copy.txt").exists():
+        if self.get_primary_control_file("copy") is None:
             return TestResult(
                 name=self.__class__.__name__,
                 passed=False,
                 duration=0,
-                message="Incremental copy.txt was not created"
+                message="Incremental copy control file was not created"
             )
 
         # Step 5: Run incremental backup

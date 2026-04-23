@@ -90,14 +90,11 @@ class TestHardlinks(BifrostTestBase):
                 message=f"Scan failed: {self.error_message}"
             )
 
-        # Check for hardlink.txt
-        hardlink_txt = self.ctrl_dir / "hardlink.txt"
-        if hardlink_txt.exists():
-            print(f"  Hardlink control file created: {hardlink_txt}")
-            content = hardlink_txt.read_text()
-            print(f"  Hardlink entries: {len(content.strip().split(chr(10)))}")
+        hardlink_ctrl = self.get_primary_control_file("hardlink")
+        if hardlink_ctrl is not None:
+            print(f"  Hardlink control file created: {hardlink_ctrl}")
         else:
-            print("  Note: hardlink.txt not created (hardlinks may be handled differently)")
+            print("  Note: hardlink control file not created (hardlinks may be handled differently)")
 
         # Step 2: Backup with hardlink phase
         print("\nStep 2: Running backup with hardlink phase...")
