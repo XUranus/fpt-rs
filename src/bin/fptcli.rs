@@ -181,6 +181,11 @@ enum Commands {
         #[arg(long, action = clap::ArgAction::SetTrue, default_value = "true")]
         mtime: bool,
 
+        /// Fine-grained restore path. Repeat to restore multiple files/directories.
+        /// Files are exact matches; directories restore the full subtree.
+        #[arg(long = "path", value_name = "PATH")]
+        paths: Vec<String>,
+
         /// Number of parallel NFS connections (used when copy or target is an NFS URL)
         #[arg(long, default_value = "32", value_name = "COUNT")]
         nfs_connections: usize,
@@ -501,6 +506,7 @@ fn cmd_restore(
     _workers: usize,
     _hardlinks: bool,
     _mtime: bool,
+    paths: Vec<String>,
     nfs_connections: usize,
     nfs_uid: Option<u32>,
     nfs_gid: Option<u32>,
@@ -514,6 +520,9 @@ fn cmd_restore(
     println!("Restoring from : {}", copy_path);
     println!("Restore target : {}", restore_target);
     println!("Policy         : {:?}", policy);
+    if !paths.is_empty() {
+        println!("Mode           : fine-grained ({} path(s))", paths.len());
+    }
 
     bifrost::logging::init(verbose);
     if let Some(ref p) = log_file {
@@ -530,6 +539,7 @@ fn cmd_restore(
             None => bifrost::frame::repo::TempRepoConfig::default(),
         },
         max_concurrent_subtasks: jobs,
+        fine_grain_paths: paths,
     };
 
     let job = RestoreJob::new(config);
@@ -719,6 +729,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             hardlinks,
             mtime,
+            paths,
             nfs_connections,
             nfs_uid,
             nfs_gid,
@@ -733,6 +744,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             workers,
             hardlinks,
             mtime,
+            paths,
             nfs_connections,
             nfs_uid,
             nfs_gid,

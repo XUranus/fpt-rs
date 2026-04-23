@@ -172,6 +172,7 @@ Main options:
 | `--workers`, `-w` | Worker threads per subtask |
 | `--hardlinks` | Restore hardlinks |
 | `--mtime` | Restore mtimes |
+| `--path` | Fine-grained restore path; repeatable |
 | `--nfs-connections` | NFS connection count |
 | `--nfs-uid` | AUTH_UNIX uid override |
 | `--nfs-gid` | AUTH_UNIX gid override |
@@ -194,6 +195,26 @@ Examples:
   --target /restore/root \
   --policy skip
 ```
+
+Fine-grained restore:
+
+```bash
+./target/release/fptcli restore \
+  --copy /backup/root/COPY_COMMON_FULL_xxx \
+  --target /restore/root \
+  --path /opt/dataset/ds3/d1 \
+  --path /opt/dataset/ds3/d2/d3/f1
+```
+
+Fine-grain matching rules:
+
+- file path: exact match
+- directory path: subtree prefix match
+
+Implementation note:
+
+- restore now generates a fresh restore control plan from `M_REPO/meta`
+- it does not replay the copy's original `C_REPO/ctrl`
 
 ## Copy Layout
 

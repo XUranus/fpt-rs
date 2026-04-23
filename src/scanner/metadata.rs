@@ -1,4 +1,5 @@
 mod delete;
+mod control_plan;
 mod diff;
 mod filecache;
 mod filecontrol;
@@ -38,6 +39,7 @@ pub use hardlink::{
 pub use mtime::{MtimeControlFileReader, MtimeControlFileWriter, MtimeDirEntry};
 
 pub use delete::{DeleteControlFileReader, DeleteControlFileWriter, DeleteEntry, DeleteEntryType};
+pub use control_plan::{generate_control_plan, ControlPlanMode, GeneratedControlPlan};
 
 pub use diff::{
     diff_sorted_inodes, generate_incremental_control_files, DiffStats, DiffType, IncrementalDiff,

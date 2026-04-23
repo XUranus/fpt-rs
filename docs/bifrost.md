@@ -8,7 +8,7 @@ Bifrost has four main layers:
 
 1. Scanner: walks a source tree and writes metadata plus control files.
 2. Backup engine: consumes control files and performs copy, hardlink, delete, and mtime phases.
-3. Frame/orchestration layer: creates copy layout, runs scan and subtasks, writes manifests, and handles NFS post-job transfer.
+3. Frame/orchestration layer: creates copy layout, runs scan or restore-plan generation, runs subtasks, writes manifests, and handles NFS post-job transfer.
 4. CLI binaries: `fptcli`, `fsscan`, `fsbackup`, `fsdiff`, and helper tools.
 
 The main integrated workflow is driven by `fptcli`.
@@ -33,7 +33,7 @@ Where:
 
 - `D_REPO` stores backed-up data.
 - `M_REPO/meta` stores metadata and cache files.
-- `C_REPO/ctrl` stores control files such as `copy.txt`, `hardlink.txt`, `delete.txt`, and `mtime.txt`.
+- `C_REPO/ctrl` stores backup-time control files such as `copy.txt`, `hardlink.txt`, `delete.txt`, and `mtime.txt`.
 - `C_REPO/logs` stores routed logs.
 - `C_REPO/status` stores sentinel files used by the job orchestration layer.
 
@@ -45,6 +45,7 @@ Responsible for filesystem traversal and metadata generation.
 
 - `engine.rs`: traversal and metadata/control-file writing
 - `metadata/`: control-file, metadata, cache, diff, hardlink, delete, and mtime formats
+- `metadata/control_plan.rs`: metadata-driven control-plan generation for restore full/fine-grain and diff mode
 
 Outputs:
 
@@ -53,6 +54,12 @@ Outputs:
 - `dcache_*.dat`
 - `copy.txt` or `copy_*.txt` when copy-control sharding is enabled
 - optional `hardlink.txt`, `delete.txt`, `mtime.txt`
+
+Scanner/control planning notes:
+
+- backup still produces control files during scan
+- restore now generates fresh control files from `M_REPO/meta` instead of replaying the copy's original `C_REPO/ctrl`
+- fine-grain restore is implemented by generating a filtered restore plan from metadata and then running the normal restore subtasks against that generated plan
 
 Scanner notes:
 
@@ -96,6 +103,7 @@ The orchestration layer used by `fptcli`.
 - `prereq.rs`: repo creation and source validation
 - `scan.rs`: runs local or NFS scan
 - `backup_job.rs`: coordinates scan and subtasks
+- `restore_job.rs`: validates copy source, generates restore control plans from metadata, and runs restore subtasks
 - `postjob.rs`: writes manifest and uploads local repos when needed
 - `repo.rs`: copy layout helpers
 - `subtask.rs`: subtask selection and execution

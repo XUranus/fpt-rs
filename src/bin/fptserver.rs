@@ -323,6 +323,8 @@ struct RestoreTaskSpec {
     temp_dir: PathBuf,
     #[serde(default = "default_job_count")]
     jobs: usize,
+    #[serde(default)]
+    paths: Vec<String>,
     #[serde(default = "default_nfs_connections")]
     nfs_connections: usize,
     #[serde(default)]
@@ -1133,6 +1135,7 @@ fn run_restore_task(spec: &RestoreTaskSpec) -> Result<TaskStats, Box<dyn std::er
         policy: spec.policy.into(),
         temp_config: TempRepoConfig::new(spec.temp_dir.clone()),
         max_concurrent_subtasks: spec.jobs,
+        fine_grain_paths: spec.paths.clone(),
     };
     let result = FileRestoreJob::new(config).run()?;
     Ok(TaskStats::Transfer {

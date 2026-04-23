@@ -215,13 +215,14 @@ pub fn run_restore_subtask(
     config: &SubtaskConfig,
     repo: &RepoLayout,
     local_restore_target: &PathBuf,
+    restore_ctrl_dir: &PathBuf,
 ) -> Result<SubtaskStats, SubtaskError> {
     let restore_cfg = RestoreConfig::new(
         repo.d_repo.clone(),
         config.restore_source_base.clone(),
         local_restore_target.clone(),
         repo.meta_dir.clone(),
-        repo.ctrl_dir.clone(),
+        restore_ctrl_dir.clone(),
         config.control_file.clone(),
     )
     .aggregate_config(config.aggregate_config);

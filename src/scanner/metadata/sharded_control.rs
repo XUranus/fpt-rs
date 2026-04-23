@@ -42,7 +42,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::scanner::metadata::{ControlFileWriter, DirControlEntry, FileControlEntry};
+use crate::scanner::metadata::{ControlFileHeader, ControlFileWriter, DirControlEntry, FileControlEntry};
 
 /// Default maximum entries per control file shard for copy phase.
 /// With ~100 bytes per entry, this keeps shards under ~100MB.
@@ -118,6 +118,8 @@ pub struct ShardedControlFileManager {
     split_policy: ShardSplitPolicy,
     /// Maximum files per directory batch
     max_files_per_batch: u32,
+    /// Control-file header written to each shard.
+    header: ControlFileHeader,
     /// Active shard writers
     shards: HashMap<usize, ShardWriter>,
     /// Current entry count per shard
@@ -168,7 +170,22 @@ impl ShardedControlFileManager {
         } else {
             ShardSplitPolicy::other_default()
         };
-        Self::with_policy(ctrl_dir, base_name, num_shards, policy)
+        Self::with_policy_and_header(ctrl_dir, base_name, num_shards, policy, ControlFileHeader::default())
+    }
+
+    /// Creates a new manager with an explicit header for every shard file.
+    pub fn new_with_header(
+        ctrl_dir: PathBuf,
+        base_name: String,
+        num_shards: usize,
+        header: ControlFileHeader,
+    ) -> io::Result<Self> {
+        let policy = if base_name == "copy" {
+            ShardSplitPolicy::copy_default()
+        } else {
+            ShardSplitPolicy::other_default()
+        };
+        Self::with_policy_and_header(ctrl_dir, base_name, num_shards, policy, header)
     }
 
     /// Creates a new sharded control file manager with explicit split policy.
@@ -184,6 +201,22 @@ impl ShardedControlFileManager {
         num_shards: usize,
         split_policy: ShardSplitPolicy,
     ) -> io::Result<Self> {
+        Self::with_policy_and_header(
+            ctrl_dir,
+            base_name,
+            num_shards,
+            split_policy,
+            ControlFileHeader::default(),
+        )
+    }
+
+    pub fn with_policy_and_header(
+        ctrl_dir: PathBuf,
+        base_name: String,
+        num_shards: usize,
+        split_policy: ShardSplitPolicy,
+        header: ControlFileHeader,
+    ) -> io::Result<Self> {
         fs::create_dir_all(&ctrl_dir)?;
 
         Ok(Self {
@@ -192,6 +225,7 @@ impl ShardedControlFileManager {
             num_shards,
             split_policy,
             max_files_per_batch: DEFAULT_MAX_FILES_PER_BATCH,
+            header,
             shards: HashMap::new(),
             shard_entry_counts: HashMap::new(),
             shard_file_indices: HashMap::new(),
@@ -245,7 +279,7 @@ impl ShardedControlFileManager {
                 self.base_name, shard_id, file_index
             ));
 
-            let writer = ControlFileWriter::new(&path)?;
+            let writer = ControlFileWriter::new_with_header(&path, &self.header)?;
 
             self.shards.insert(
                 shard_id,

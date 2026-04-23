@@ -27,6 +27,7 @@ use crate::frame::subtask::{
     find_restore_control_files, run_restore_subtask, SubtaskConfig, SubtaskError,
 };
 use crate::frame::traits::{BackupRestoreJob, JobResult};
+use crate::scanner::metadata::{generate_control_plan, ControlPlanMode};
 
 // ---------------------------------------------------------------------------
 // RestoreJobConfig
@@ -44,6 +45,8 @@ pub struct RestoreJobConfig {
     pub temp_config: TempRepoConfig,
     /// Maximum concurrent restore subtasks.
     pub max_concurrent_subtasks: usize,
+    /// Optional fine-grained restore request paths.
+    pub fine_grain_paths: Vec<String>,
 }
 
 impl Default for RestoreJobConfig {
@@ -54,6 +57,7 @@ impl Default for RestoreJobConfig {
             policy: RestorePolicy::Replace,
             temp_config: TempRepoConfig::default(),
             max_concurrent_subtasks: 4,
+            fine_grain_paths: Vec::new(),
         }
     }
 }
@@ -183,7 +187,28 @@ impl BackupRestoreJob for FileRestoreJob {
             })
             .unwrap_or_default();
 
-        let ctrl_files = find_restore_control_files(&repo.ctrl_dir);
+        let restore_plan_root = cfg
+            .temp_config
+            .temp_base
+            .join(format!("RESTORE_PLAN_{}", Uuid::new_v4()));
+        let restore_ctrl_dir = restore_plan_root.join("ctrl");
+        let plan_mode = if cfg.fine_grain_paths.is_empty() {
+            ControlPlanMode::Full
+        } else {
+            ControlPlanMode::FineGrain {
+                paths: cfg.fine_grain_paths.clone(),
+            }
+        };
+        generate_control_plan(
+            &repo.meta_dir,
+            &restore_ctrl_dir,
+            &manifest.source,
+            plan_mode,
+            cfg.max_concurrent_subtasks.max(1),
+        )
+        .map_err(RestoreJobError::Io)?;
+
+        let ctrl_files = find_restore_control_files(&restore_ctrl_dir);
         log::info!("{} restore control file(s) found", ctrl_files.len());
 
         let local_restore_target: PathBuf = cfg
@@ -238,8 +263,14 @@ impl BackupRestoreJob for FileRestoreJob {
 
                 let repo_clone = repo.clone();
                 let local_target_clone = local_restore_target.clone();
+                let restore_ctrl_dir_clone = restore_ctrl_dir.clone();
                 let handle = thread::spawn(move || {
-                    run_restore_subtask(&subtask_cfg, &repo_clone, &local_target_clone)
+                    run_restore_subtask(
+                        &subtask_cfg,
+                        &repo_clone,
+                        &local_target_clone,
+                        &restore_ctrl_dir_clone,
+                    )
                 });
                 handles.push((subtask_uuid, handle));
             }
