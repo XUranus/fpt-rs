@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use log::warn;
 use tokio::sync::Mutex;
 
 use crate::smb::SmbLocation;
@@ -41,6 +42,7 @@ pub struct SmbCopyMetrics {
     pub srv_copy_ns: AtomicU64,
     pub srv_copy_max_ns: AtomicU64,
     pub srv_copy_bytes: AtomicU64,
+    pub srv_copy_fallback_count: AtomicU64,
     pub read_count: AtomicU64,
     pub read_ns: AtomicU64,
     pub read_max_ns: AtomicU64,
@@ -105,7 +107,7 @@ impl SmbCopyMetrics {
         let write_ns = self.write_ns.load(Ordering::Relaxed);
         let write_bytes = self.write_bytes.load(Ordering::Relaxed);
         format!(
-            "ensure_dir={} total={} avg={} max={}, source_open={} total={} avg={} max={}, target_open={} total={} avg={} max={}, srv_copy={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, read={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, write={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, active_max: copy={} read={} write={}, source_close={} total={} avg={} max={} deferred={}, target_close={} total={} avg={} max={} deferred={}",
+            "ensure_dir={} total={} avg={} max={}, source_open={} total={} avg={} max={}, target_open={} total={} avg={} max={}, srv_copy={} bytes={} avg_bytes={} total={} avg={} max={} rate={} fallback={}, read={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, write={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, active_max: copy={} read={} write={}, source_close={} total={} avg={} max={} deferred={}, target_close={} total={} avg={} max={} deferred={}",
             self.ensure_dir_count.load(Ordering::Relaxed),
             format_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed)),
             avg_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed), self.ensure_dir_count.load(Ordering::Relaxed)),
@@ -125,6 +127,7 @@ impl SmbCopyMetrics {
             avg_duration_ns(srv_copy_ns, srv_copy_count),
             format_duration_ns(self.srv_copy_max_ns.load(Ordering::Relaxed)),
             format_rate(srv_copy_bytes, srv_copy_ns),
+            self.srv_copy_fallback_count.load(Ordering::Relaxed),
             read_count,
             format_bytes(read_bytes),
             format_bytes(avg_u64(read_bytes, read_count)),
@@ -559,12 +562,15 @@ pub async fn copy_relative_file_streaming(
                 return Ok(());
             }
             Err(e) => {
-                let _ = source_file.close().await;
-                let _ = target_file.close().await;
-                return Err(format!(
-                    "srv_copy {} -> {}: {e}",
-                    source_unc, target_unc
-                ));
+                if let Some(metrics) = &metrics {
+                    metrics
+                        .srv_copy_fallback_count
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                warn!(
+                    "SMB srv_copy fallback for {} -> {}: {}",
+                    source_unc, target_unc, e
+                );
             }
         }
     }

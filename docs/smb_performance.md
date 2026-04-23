@@ -69,6 +69,25 @@ Result:
 - `write=0`
 - SMB data transfer leaves the client hot path
 
+### 2.1 Fall Back To Streaming When `srv_copy()` Is Rejected
+
+Some Samba setups accept `COPYCHUNK` for small files but reject it for larger files with errors such as:
+
+- `STATUS_INVALID_PARAMETER (0xc000000d)`
+
+Treating that as a hard failure made mixed-size SMB->SMB backups unreliable even though ordinary streaming copy still worked.
+
+Change:
+
+- keep `srv_copy()` as the preferred same-share fast path
+- if `srv_copy()` fails for a file, log a warning and fall back to the normal streaming read/write loop for that file
+- expose a `fallback=` counter in the SMB timing summary so mixed fast-path/fallback runs are visible in logs
+
+Result:
+
+- same-share SMB->SMB backup no longer fails just because the server rejects `COPYCHUNK` for some files
+- small files can still benefit from server-side copy while larger files continue via streaming fallback
+
 ### 3. Increase SMB Copy Concurrency
 
 After `srv_copy()` was enabled, the new bottleneck became per-file open + server-side copy latency. Higher concurrency improved throughput significantly on the local Samba server.
@@ -159,4 +178,4 @@ Possible future work:
 - reduce `mkdir_wait` further with a better directory scheduling strategy
 - reduce source/target open latency if the SMB client allows a cheaper access mask or create mode
 - benchmark whether `32` is close to the best task limit across more SMB servers
-- add server-side-copy-specific metrics and fallback-reason logging for unsupported servers
+- add more detailed server-side-copy fallback reason aggregation for unsupported servers
