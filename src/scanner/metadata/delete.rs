@@ -1,87 +1,30 @@
-//! # Delete Control File Format
-//!
-//! This module defines the control file format for recording files and directories
-//! that need to be deleted during incremental backup operations.
-//!
-//! ## Purpose
-//!
-//! During incremental backup, files/directories that existed in the previous backup
-//! but no longer exist in the current scan need to be deleted from the target.
-//! The delete control file records these entries.
-//!
-//! ## File Format
-//!
-//! The delete control file is a text-based format.
-//!
-//! ```text
-//! #BIFROST_DELETE_CTRL_FILE V1 FILES=<N> DIRS=<M> TIME=<UNIX_TIMESTAMP>
-//!
-//! D <PATH_LEN:8HEX> <PATH>
-//! F <PATH_LEN:8HEX> <PATH>
-//! ```
-//!
-//! Entry types:
-//! - `D`: Directory to delete
-//! - `F`: File to delete
-//!
-//! Example:
-//! ```text
-//! #BIFROST_DELETE_CTRL_FILE V1 FILES=2 DIRS=1 TIME=1700000000
-//!
-//! F 00000014 /home/user/old_file.txt
-//! F 00000018 /home/user/temp_file.dat
-//! D 00000012 /home/user/old_dir
-//! ```
-
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter};
 use std::path::Path;
 
-/// Represents an entry type in the delete control file.
+use crate::scanner::metadata::control_codec::{
+    create_record_writer, finish_record_writer, open_record_reader, put_bytes, put_u32, put_u8,
+    read_record, take_bytes, take_u32, take_u8, write_record, ControlFileHeader,
+};
+
+const DELETE_MAGIC: &str = "#BIFROST_DELETE_CTRL_FILE";
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeleteEntryType {
-    /// Directory entry
     Dir,
-    /// File entry
     File,
 }
-
-impl DeleteEntryType {
-    #[allow(dead_code)]
-    fn as_char(&self) -> char {
-        match self {
-            DeleteEntryType::Dir => 'D',
-            DeleteEntryType::File => 'F',
-        }
-    }
-
-    fn from_char(c: char) -> Option<Self> {
-        match c {
-            'D' | 'd' => Some(DeleteEntryType::Dir),
-            'F' | 'f' => Some(DeleteEntryType::File),
-            _ => None,
-        }
-    }
-}
-
-/// Represents an entry in the delete control file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeleteEntry {
-    /// Type of entry (file or directory)
     pub entry_type: DeleteEntryType,
-    /// Full path to the file/directory
     pub path: String,
 }
 
-/// Writer for delete control files.
 pub struct DeleteControlFileWriter {
-    fwriter: BufWriter<File>,
-    file_count: u64,
-    dir_count: u64,
+    writer: BufWriter<std::fs::File>,
+    header: ControlFileHeader,
 }
 
 impl DeleteControlFileWriter {
-    /// Creates a new delete control file and writes the header.
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::new_with_source(path, "local", "/")
     }
@@ -91,96 +34,84 @@ impl DeleteControlFileWriter {
         source_kind: &str,
         source_root: &str,
     ) -> io::Result<Self> {
-        let file = File::create(path)?;
-        let mut fwriter = BufWriter::new(file);
-        writeln!(
-            fwriter,
-            "#BIFROST_DELETE_CTRL_FILE V2 FILES=0 DIRS=0 TIME={} SOURCE_KIND={} SOURCE_ROOT={}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            source_kind,
-            source_root,
-        )?;
-        writeln!(fwriter)?; // Empty line after header
+        let header = ControlFileHeader {
+            source_kind: source_kind.to_string(),
+            source_root: source_root.to_string(),
+            ..ControlFileHeader::default()
+        };
         Ok(Self {
-            fwriter,
-            file_count: 0,
-            dir_count: 0,
+            writer: create_record_writer(path, DELETE_MAGIC, &header)?,
+            header,
         })
     }
 
-    /// Writes a file entry to delete.
     pub fn write_file(&mut self, path: &str) -> io::Result<()> {
-        let path_len = path.len() as u32;
-        writeln!(self.fwriter, "F {:08X} {}", path_len, path)?;
-        self.file_count += 1;
-        Ok(())
+        self.write_entry(&DeleteEntry {
+            entry_type: DeleteEntryType::File,
+            path: path.to_string(),
+        })
     }
 
-    /// Writes a directory entry to delete.
     pub fn write_dir(&mut self, path: &str) -> io::Result<()> {
-        let path_len = path.len() as u32;
-        writeln!(self.fwriter, "D {:08X} {}", path_len, path)?;
-        self.dir_count += 1;
+        self.write_entry(&DeleteEntry {
+            entry_type: DeleteEntryType::Dir,
+            path: path.to_string(),
+        })
+    }
+
+    pub fn write_entry(&mut self, entry: &DeleteEntry) -> io::Result<()> {
+        let path = entry.path.as_bytes();
+        let mut payload = Vec::with_capacity(1 + 3 + 4 + path.len());
+        put_u8(
+            &mut payload,
+            match entry.entry_type {
+                DeleteEntryType::Dir => 1,
+                DeleteEntryType::File => 2,
+            },
+        );
+        put_u8(&mut payload, 0);
+        put_u8(&mut payload, 0);
+        put_u8(&mut payload, 0);
+        put_u32(
+            &mut payload,
+            u32::try_from(path.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "delete path too long"))?,
+        );
+        put_bytes(&mut payload, path);
+        write_record(&mut self.writer, &payload)?;
+        match entry.entry_type {
+            DeleteEntryType::Dir => self.header.dir_count += 1,
+            DeleteEntryType::File => self.header.file_count += 1,
+        }
+        self.header.record_count += 1;
         Ok(())
     }
 
-    /// Writes a generic entry.
-    pub fn write_entry(&mut self, entry: &DeleteEntry) -> io::Result<()> {
-        match entry.entry_type {
-            DeleteEntryType::Dir => self.write_dir(&entry.path),
-            DeleteEntryType::File => self.write_file(&entry.path),
-        }
+    pub fn finish(self) -> io::Result<()> {
+        finish_record_writer(self.writer, DELETE_MAGIC, &self.header)
     }
 
-    /// Finishes writing and flushes all data to disk.
-    pub fn finish(mut self) -> io::Result<()> {
-        self.fwriter.flush()
-    }
-
-    /// Returns the current file count.
     pub fn file_count(&self) -> u64 {
-        self.file_count
+        self.header.file_count
     }
 
-    /// Returns the current directory count.
     pub fn dir_count(&self) -> u64 {
-        self.dir_count
+        self.header.dir_count
     }
 }
 
-/// Reader for delete control files.
 pub struct DeleteControlFileReader {
-    freader: BufReader<File>,
-    header: String,
+    freader: BufReader<std::fs::File>,
+    header: ControlFileHeader,
 }
 
 impl DeleteControlFileReader {
-    /// Opens an existing delete control file for reading.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let mut freader = BufReader::new(file);
-        let mut header = String::new();
-        freader.read_line(&mut header)?;
-
-        if !header.starts_with("#BIFROST_DELETE_CTRL_FILE") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid or missing delete control file header",
-            ));
-        }
-
-        // Skip the empty line after header
-        let mut empty_line = String::new();
-        freader.read_line(&mut empty_line)?;
-
+        let (freader, header) = open_record_reader(path, DELETE_MAGIC)?;
         Ok(Self { freader, header })
     }
 
-    /// Returns the header string.
-    pub fn header(&self) -> &str {
+    pub fn header(&self) -> &ControlFileHeader {
         &self.header
     }
 }
@@ -189,98 +120,65 @@ impl Iterator for DeleteControlFileReader {
     type Item = io::Result<DeleteEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match self.freader.read_line(&mut line) {
-                Ok(0) => return None, // EOF
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        continue; // Skip empty lines and comments
-                    }
-
-                    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-                    if tokens.len() < 3 {
-                        return Some(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Invalid line format: insufficient tokens",
-                        )));
-                    }
-
-                    let kind = tokens[0].chars().next().unwrap_or('\0');
-                    let entry_type = match DeleteEntryType::from_char(kind) {
-                        Some(t) => t,
-                        None => {
-                            return Some(Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "Unknown entry type (expected 'D' or 'F')",
-                            )));
-                        }
-                    };
-
-                    // Parse path length
-                    let path_len = match u32::from_str_radix(tokens[1], 16) {
-                        Ok(v) => v,
-                        Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
-                    };
-
-                    // Parse path (token 2)
-                    let path = tokens[2];
-                    if path.len() != path_len as usize {
-                        return Some(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Path length mismatch",
-                        )));
-                    }
-
-                    return Some(Ok(DeleteEntry {
-                        entry_type,
-                        path: path.to_string(),
-                    }));
-                }
-                Err(e) => return Some(Err(e)),
+        let payload = match read_record(&mut self.freader) {
+            Ok(Some(payload)) => payload,
+            Ok(None) => return None,
+            Err(err) => return Some(Err(err)),
+        };
+        let mut cursor = 0usize;
+        let entry_type = match take_u8(&payload, &mut cursor) {
+            Ok(1) => DeleteEntryType::Dir,
+            Ok(2) => DeleteEntryType::File,
+            Ok(_) => {
+                return Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown delete entry type",
+                )))
+            }
+            Err(err) => return Some(Err(err)),
+        };
+        for _ in 0..3 {
+            if let Err(err) = take_u8(&payload, &mut cursor) {
+                return Some(Err(err));
             }
         }
+        let path_len = match take_u32(&payload, &mut cursor) {
+            Ok(v) => v as usize,
+            Err(err) => return Some(Err(err)),
+        };
+        let path = match take_bytes(&payload, &mut cursor, path_len).and_then(|bytes| {
+            std::str::from_utf8(bytes)
+                .map(|s| s.to_string())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        }) {
+            Ok(path) => path,
+            Err(err) => return Some(Err(err)),
+        };
+        Some(Ok(DeleteEntry { entry_type, path }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_delete_control_file_roundtrip() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let path = temp_file.path().to_path_buf();
-
-        // Write test data
+        let path = std::env::temp_dir().join("bifrost_delete_test.dat");
         {
             let mut writer = DeleteControlFileWriter::new(&path).unwrap();
-
-            writer.write_file("/home/user/old_file.txt").unwrap();
-            writer.write_file("/home/user/temp.dat").unwrap();
-            writer.write_dir("/home/user/old_dir").unwrap();
-
+            writer.write_file(" weird\nfile.txt").unwrap();
+            writer.write_dir("/tmp/old_dir").unwrap();
             writer.finish().unwrap();
         }
 
-        // Read and verify
-        {
-            let reader = DeleteControlFileReader::open(&path).unwrap();
-            let entries: Vec<_> = reader.collect::<Result<Vec<_>, _>>().unwrap();
-
-            assert_eq!(entries.len(), 3);
-
-            assert_eq!(entries[0].entry_type, DeleteEntryType::File);
-            assert_eq!(entries[0].path, "/home/user/old_file.txt");
-
-            assert_eq!(entries[1].entry_type, DeleteEntryType::File);
-            assert_eq!(entries[1].path, "/home/user/temp.dat");
-
-            assert_eq!(entries[2].entry_type, DeleteEntryType::Dir);
-            assert_eq!(entries[2].path, "/home/user/old_dir");
-        }
+        let reader = DeleteControlFileReader::open(&path).unwrap();
+        assert_eq!(reader.header().file_count, 1);
+        assert_eq!(reader.header().dir_count, 1);
+        let entries: Vec<_> = reader.collect::<io::Result<Vec<_>>>().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, " weird\nfile.txt");
+        assert_eq!(entries[1].path, "/tmp/old_dir");
+        let _ = std::fs::remove_file(path);
     }
 }

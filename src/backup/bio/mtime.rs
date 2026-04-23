@@ -10,7 +10,7 @@
 //!
 //! ## Process
 //!
-//! 1. Read the mtime control file (`mtime.txt`)
+//! 1. Read the mtime control file
 //! 2. For each directory entry:
 //!    - Calculate the target path
 //!    - Set the directory's atime and mtime to the original values
@@ -27,6 +27,7 @@ use std::sync::Arc;
 use log::{debug, error, info, warn};
 
 use crate::failure::{retry_sync, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::frame::control_files::find_primary_control_file;
 use crate::scanner::metadata::MtimeControlFileReader;
 
 /// Statistics for the mtime backup phase.
@@ -95,7 +96,7 @@ pub fn process_mtime(
 
     // Read all directory entries from the control file
     let reader = MtimeControlFileReader::open(mtime_ctrl_path)?;
-    let logical_paths = reader.header().contains(" SOURCE_ROOT=");
+    let logical_paths = !reader.header().source_root.is_empty();
 
     for entry_result in reader {
         let entry = match entry_result {
@@ -257,7 +258,10 @@ pub fn run_mtime_phase(
     retry_policy: RetryPolicy,
     failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<MtimeStatsSnapshot> {
-    let mtime_ctrl_path = ctrl_dir.join("mtime.txt");
+    let Some(mtime_ctrl_path) = find_primary_control_file(ctrl_dir, "mtime") else {
+        info!("No mtime control file found under {:?}", ctrl_dir);
+        return Ok(MtimeStatsSnapshot::default());
+    };
     process_mtime(
         &mtime_ctrl_path,
         source_dir_base,

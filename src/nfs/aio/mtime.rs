@@ -1,6 +1,6 @@
 //! NFS mtime phase for the AIO pipeline.
 //!
-//! Reads the same `mtime.txt` control file as the BIO mtime phase and restores
+//! Reads the same mtime control file as the BIO mtime phase and restores
 //! directory modification times on the NFS target using `setattr` RPCs with
 //! `SET_TO_CLIENT_TIME`.
 
@@ -13,6 +13,7 @@ use nfs3_client::nfs3_types::nfs3::{
     Nfs3Result, SETATTR3args,
 };
 
+use crate::frame::control_files::find_primary_control_file;
 use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::scanner::metadata::MtimeControlFileReader;
@@ -28,7 +29,7 @@ pub struct NfsMtimeStats {
 
 /// Run the NFS mtime phase.
 ///
-/// Reads `ctrl_dir/mtime.txt` and calls `setattr` with `SET_TO_CLIENT_TIME`
+/// Reads the mtime control file from `ctrl_dir` and calls `setattr` with `SET_TO_CLIENT_TIME`
 /// on each directory's NFS target path to restore the original mtime.
 pub async fn run_nfs_mtime_phase(
     ctrl_dir: &Path,
@@ -37,13 +38,11 @@ pub async fn run_nfs_mtime_phase(
     pool: Arc<NfsConnectionPool>,
     dir_cache: FileHandleCache,
 ) -> NfsMtimeStats {
-    let ctrl_path = ctrl_dir.join("mtime.txt");
     let mut stats = NfsMtimeStats::default();
-
-    if !ctrl_path.exists() {
-        info!("NFS mtime phase: no mtime.txt found, skipping");
+    let Some(ctrl_path) = find_primary_control_file(ctrl_dir, "mtime") else {
+        info!("NFS mtime phase: no mtime control file found, skipping");
         return stats;
-    }
+    };
 
     info!("NFS mtime phase: processing {:?}", ctrl_path);
 
@@ -52,7 +51,7 @@ pub async fn run_nfs_mtime_phase(
     let reader = match MtimeControlFileReader::open(&ctrl_path) {
         Ok(r) => r,
         Err(e) => {
-            error!("NFS mtime phase: cannot open mtime.txt: {e}");
+            error!("NFS mtime phase: cannot open mtime control file: {e}");
             return stats;
         }
     };

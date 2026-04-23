@@ -1,6 +1,6 @@
 //! NFS hardlink phase for the AIO pipeline.
 //!
-//! Reads the same `hardlink.txt` control file as the BIO hardlink phase and
+//! Reads the same hardlink control file as the BIO hardlink phase and
 //! creates NFS hard links for all files in each inode group (except the first,
 //! which was already written by the copy phase).
 //!
@@ -13,6 +13,7 @@ use std::sync::Arc;
 use log::{debug, error, info, warn};
 use nfs3_client::nfs3_types::nfs3::{diropargs3, filename3, nfs_fh3, LINK3args, Nfs3Result};
 
+use crate::frame::control_files::find_primary_control_file;
 use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
 use crate::nfs::aio::writer::{get_or_create_dir, DirHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
@@ -29,7 +30,7 @@ pub struct NfsHardlinkStats {
 
 /// Run the NFS hardlink phase.
 ///
-/// For each inode group in `ctrl_dir/hardlink.txt`, the first file (already
+/// For each inode group in the hardlink control file in `ctrl_dir`, the first file (already
 /// written by the copy phase) is the "primary"; all subsequent files in the
 /// group are created as hard links via the NFS `link` RPC.
 pub async fn run_nfs_hardlink_phase(
@@ -40,13 +41,11 @@ pub async fn run_nfs_hardlink_phase(
     src_cache: FileHandleCache,
     dst_dir_cache: DirHandleCache,
 ) -> NfsHardlinkStats {
-    let ctrl_path = ctrl_dir.join("hardlink.txt");
     let mut stats = NfsHardlinkStats::default();
-
-    if !ctrl_path.exists() {
-        info!("NFS hardlink phase: no hardlink.txt found, skipping");
+    let Some(ctrl_path) = find_primary_control_file(ctrl_dir, "hardlink") else {
+        info!("NFS hardlink phase: no hardlink control file found, skipping");
         return stats;
-    }
+    };
 
     info!("NFS hardlink phase: processing {:?}", ctrl_path);
 
@@ -55,7 +54,7 @@ pub async fn run_nfs_hardlink_phase(
     let reader = match HardlinkControlFileReader::open(&ctrl_path) {
         Ok(r) => r,
         Err(e) => {
-            error!("NFS hardlink phase: cannot open hardlink.txt: {e}");
+            error!("NFS hardlink phase: cannot open hardlink control file: {e}");
             return stats;
         }
     };

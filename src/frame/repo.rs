@@ -14,7 +14,7 @@
 //!   M_REPO/
 //!     meta/             ← meta_*.dat, fcache_*.dat, dcache_*.dat  (BIO, local)
 //!   C_REPO/
-//!     ctrl/             ← copy.txt, hardlink.txt, delete.txt, mtime.txt
+//!     ctrl/             ← *_*.control.bin files
 //!     logs/             ← backup.log, scan.log, <subtask-uuid>.log
 //!     status/           ← SCAN_*.RUNNING/DONE, SUBTASK_*.RUNNING/DONE/FAILED
 //! ```
@@ -27,6 +27,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+use crate::frame::control_files::primary_control_file_path;
 
 // ---------------------------------------------------------------------------
 // RepoLayout
@@ -153,9 +155,9 @@ impl RepoLayout {
         self.logs_dir.join(format!("{subtask_uuid}.log"))
     }
 
-    /// Path to `C_REPO/ctrl/copy.txt`.
+    /// Path to the primary copy control file.
     pub fn copy_ctrl(&self) -> PathBuf {
-        self.ctrl_dir.join("copy.txt")
+        primary_control_file_path(&self.ctrl_dir, "copy")
     }
 }
 

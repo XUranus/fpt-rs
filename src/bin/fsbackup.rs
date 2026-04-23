@@ -47,7 +47,7 @@ struct Args {
     #[arg(long, short = 'c', required = true, value_name = "FILE")]
     control_file: PathBuf,
 
-    /// Control directory containing hardlink.txt etc. (defaults to control file's parent dir)
+    /// Control directory containing `*.control.bin` files (defaults to control file's parent dir)
     #[arg(long, value_name = "DIR")]
     ctrl_dir: Option<PathBuf>,
 

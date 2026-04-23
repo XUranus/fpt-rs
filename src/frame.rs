@@ -11,7 +11,7 @@
 //! │   (Restore: pre-fetch M_REPO + C_REPO from remote copy if needed.)     │
 //! ├─────────────────────────────────────────────────────────────────────────┤
 //! │ Phase 2 – Scan (backup only)                                            │
-//! │   Traverse source (local FS or NFS); write meta_*.dat, copy.txt …      │
+//! │   Traverse source (local FS or NFS); write meta_*.dat, copy_*.control.bin … │
 //! │   to the LOCAL M_REPO / C_REPO via FileScanner.                        │
 //! ├─────────────────────────────────────────────────────────────────────────┤
 //! │ Phase 3 – Subtasks                                                      │
@@ -59,6 +59,7 @@
 
 pub mod backup_impls;
 pub mod backup_job;
+pub mod control_files;
 pub mod lifecycle;
 pub mod location;
 pub(crate) mod postjob;

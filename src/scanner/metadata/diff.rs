@@ -8,7 +8,7 @@
 //! the previous backup's dcache/fcache to identify:
 //! - New files/directories (NN)
 //! - Modified files (DM, MM)
-//! - Deleted files/directories (for delete.txt)
+//! - Deleted files/directories (for `delete_<hash>.control.bin`)
 //!
 //! ## Algorithm
 //!
@@ -18,8 +18,8 @@
 //!    - If only in current: new directory
 //!    - If only in previous: deleted directory
 //! 3. For changed directories, load and diff their files using the same heap approach
-//! 4. Generate copy.txt with only NN/MM/DM entries (files to copy)
-//! 5. Generate delete.txt with deleted entries
+//! 4. Generate `copy_<hash>.control.bin` with only NN/MM/DM entries (files to copy)
+//! 5. Generate `delete_<hash>.control.bin` with deleted entries
 
 use std::collections::BTreeMap;
 use std::io;
@@ -30,6 +30,7 @@ use crate::scanner::metadata::{
     DirCacheEntry, DirCacheRandomReader, DirControlEntry, DirDiff, FileCacheEntry,
     FileCacheRandomReader, FileControlEntry, FileDiff, FixedSize, MetaRepoReader,
 };
+use crate::frame::control_files::primary_control_file_path;
 
 /// Represents the type of difference detected.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -133,8 +134,8 @@ impl IncrementalDiff {
     /// Performs the diff and generates control files using heap-based merge.
     ///
     /// Generates:
-    /// - copy.txt: Contains only NN (new) and MM/DM (modified) entries
-    /// - delete.txt: Contains deleted entries
+    /// - `copy_<hash>.control.bin`: contains only NN (new) and MM/DM (modified) entries
+    /// - `delete_<hash>.control.bin`: contains deleted entries
     pub fn generate_control_files(
         &self,
         copy_file_path: &Path,
@@ -482,7 +483,7 @@ impl DirectoryFileDiff {
 /// # Arguments
 /// * `prev_meta_dir` - Path to previous backup's metadata directory (None for full backup)
 /// * `curr_meta_dir` - Path to current scan's metadata directory
-/// * `ctrl_dir` - Output directory for copy.txt and delete.txt
+/// * `ctrl_dir` - Output directory for copy/delete control files
 ///
 /// # Returns
 /// Statistics about the differences found.
@@ -495,8 +496,8 @@ pub fn generate_incremental_control_files(
 ) -> io::Result<DiffStats> {
     std::fs::create_dir_all(ctrl_dir)?;
 
-    let copy_file_path = ctrl_dir.join("copy.txt");
-    let delete_file_path = ctrl_dir.join("delete.txt");
+    let copy_file_path = primary_control_file_path(ctrl_dir, "copy");
+    let delete_file_path = primary_control_file_path(ctrl_dir, "delete");
 
     let diff = IncrementalDiff::from_dirs(prev_meta_dir, curr_meta_dir)?;
     diff.generate_control_files(&copy_file_path, &delete_file_path, source_kind, source_root)

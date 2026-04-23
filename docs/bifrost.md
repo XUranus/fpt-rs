@@ -78,6 +78,7 @@ Scanner notes:
 - each writer owns its own metadata namespace and cache files
 - metadata locators encode `(writer_shard, segment)` into the stored `meta_fid`
 - copy control files can be sliced into multiple `copy_*.txt` shards so backup can schedule multiple copy subtasks in parallel
+- all control files now use a V3 fixed-header plus binary-record format with a 4 KiB backpatched header, so final entry counts are recorded and paths with spaces/newlines are supported
 - optional scanner path filters can prune traversal and emitted entries by logical path pattern; see [scanner_filter.md](scanner_filter.md)
 
 ### `src/backup/`
@@ -173,7 +174,13 @@ Structured per-entry failure logs are optional and are written to `C_REPO/logs` 
 - `fsscan`: scan-only tool
 - `fsbackup`: backup executor against existing control files
 - `fsdiff`: compare source and target trees
-- `cacheinspect`, `metainspect`, `vdbench`: helper tools
+- `metainspect`, `vdbench`: helper tools
+  - `metainspect` now inspects metadata files, cache files, and control files
+  - it can auto-detect type from the input file, so the explicit flags are optional
+  - examples:
+    - `./target/release/metainspect dcache_0.dat --csv`
+    - `./target/release/metainspect copy.txt --json`
+    - `./target/release/metainspect meta_0_0.dat --tab`
 
 ## Related Docs
 

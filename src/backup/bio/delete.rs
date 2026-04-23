@@ -10,7 +10,7 @@
 //!
 //! ## Process
 //!
-//! 1. Read the delete control file (`delete.txt`)
+//! 1. Read the delete control file
 //! 2. For each entry:
 //!    - Calculate the target path
 //!    - Delete the file or directory
@@ -28,6 +28,7 @@ use std::sync::Arc;
 use log::{debug, error, info, warn};
 
 use crate::failure::{retry_sync, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::frame::control_files::find_primary_control_file;
 use crate::scanner::metadata::{DeleteControlFileReader, DeleteEntryType};
 
 /// Statistics for the delete backup phase.
@@ -103,7 +104,7 @@ pub fn process_deletes(
 
     // Read all entries from the control file
     let reader = DeleteControlFileReader::open(delete_ctrl_path)?;
-    let logical_paths = reader.header().contains(" SOURCE_ROOT=");
+    let logical_paths = !reader.header().source_root.is_empty();
 
     for entry_result in reader {
         let entry = match entry_result {
@@ -284,7 +285,10 @@ pub fn run_delete_phase(
     retry_policy: RetryPolicy,
     failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<DeleteStatsSnapshot> {
-    let delete_ctrl_path = ctrl_dir.join("delete.txt");
+    let Some(delete_ctrl_path) = find_primary_control_file(ctrl_dir, "delete") else {
+        info!("No delete control file found under {:?}", ctrl_dir);
+        return Ok(DeleteStatsSnapshot::default());
+    };
     process_deletes(
         &delete_ctrl_path,
         source_dir_base,

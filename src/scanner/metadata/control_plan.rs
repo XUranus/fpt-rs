@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::frame::control_files::primary_control_file_path;
 use crate::scanner::metadata::{
     dir_cache_path, file_cache_path, ControlFileHeader, ControlFileWriter, DirCacheEntry,
     DirCacheRandomReader, DirControlEntry, DirDiff, FileCacheEntry, FileCacheRandomReader,
@@ -114,10 +115,10 @@ pub fn generate_control_plan(
             )?;
             Ok(GeneratedControlPlan {
                 ctrl_dir: ctrl_dir.to_path_buf(),
-                copy_files: vec![ctrl_dir.join("copy.txt")],
+                copy_files: vec![primary_control_file_path(ctrl_dir, "copy")],
                 hardlink_file: None,
                 mtime_file: None,
-                delete_file: Some(ctrl_dir.join("delete.txt")),
+                delete_file: Some(primary_control_file_path(ctrl_dir, "delete")),
             })
         }
     }
@@ -148,13 +149,13 @@ fn generate_restore_plan(
         copy_shard_count,
         copy_header.clone(),
     )?;
-    let hardlink_path = ctrl_dir.join("hardlink.txt");
+    let hardlink_path = primary_control_file_path(ctrl_dir, "hardlink");
     let mut hardlink_writer = HardlinkControlFileWriter::new_with_source(
         &hardlink_path,
         &layout.source_kind,
         &layout.logical_root,
     )?;
-    let mtime_path = ctrl_dir.join("mtime.txt");
+    let mtime_path = primary_control_file_path(ctrl_dir, "mtime");
     let mut mtime_writer = MtimeControlFileWriter::new_with_source(
         &mtime_path,
         &layout.source_kind,
@@ -241,7 +242,7 @@ fn generate_restore_plan(
     let copy_files = if emitted_any_copy {
         let mut files = sharded_copy.finish()?;
         if files.is_empty() {
-            let copy_path = ctrl_dir.join("copy.txt");
+            let copy_path = primary_control_file_path(ctrl_dir, "copy");
             ControlFileWriter::new_with_header(&copy_path, &copy_header)?.finish()?;
             files.push(copy_path);
         }

@@ -1,4 +1,5 @@
 mod control_plan;
+mod control_codec;
 mod delete;
 mod diff;
 mod filecache;
@@ -12,6 +13,7 @@ mod cache_storage;
 mod meta_storage;
 
 pub use filemeta::{DirMeta, FileMeta, MetaCommon};
+pub use control_codec::ControlFileHeader;
 
 pub use meta_storage::{
     decode_meta_file_id, encode_meta_file_id, meta_file_path, MetaEntryLocator, MetaFileReader,
@@ -27,8 +29,8 @@ pub use cache_storage::{
 };
 
 pub use filecontrol::{
-    ControlEntry, ControlFileHeader, ControlFileReader, ControlFileWriter, DirControlEntry,
-    DirDiff, FileControlEntry, FileDiff,
+    ControlEntry, ControlFileReader, ControlFileWriter, DirControlEntry, DirDiff,
+    FileControlEntry, FileDiff,
 };
 
 pub use hardlink::{

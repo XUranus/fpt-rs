@@ -91,6 +91,14 @@ Behavior:
   copy subtasks
 - restore also discovers `copy_*.txt`
 
+Current control-file codec notes:
+
+- each control file starts with a fixed `4096` byte header
+- the header is rewritten on `finish()` so final counts are accurate
+- records after the header are binary length-prefixed payloads
+- this avoids line-oriented parsing problems for paths containing spaces,
+  newlines, carriage returns, or other special characters
+
 ## Full Scan Path
 
 When scanner sharding is enabled:

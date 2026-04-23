@@ -1,89 +1,107 @@
 # Control Files
 
-Bifrost uses text control files to describe what the backup and restore engines should do.
+Bifrost control files are execution plans generated from metadata. They are not
+the durable source of truth for a copy.
 
-Important rule:
+Important rules:
 
 - backup control files are generated from scan output
-- restore control files are now generated fresh from `M_REPO/meta` for each restore request
-- restore no longer treats the copy's old `C_REPO/ctrl` as authoritative input
-
-This means control files should be treated as disposable execution plans, not durable source-of-truth metadata.
+- restore control files are generated fresh from `M_REPO/meta`
+- restore does not treat the copy's old `C_REPO/ctrl` as authoritative input
 
 ## Main Files
 
 Under `C_REPO/ctrl/` you will typically see:
 
 - `copy.txt`
-- `copy_<SHARD>.txt` or `copy_<SHARD>_<ROLLOVER>.txt` when control sharding is enabled
+- `copy_<SHARD>_<ROLLOVER>.txt` when copy sharding is enabled
 - `hardlink.txt`
 - `delete.txt`
 - `mtime.txt`
 
-For restore, generated control files may also live in a temporary restore-plan directory under the configured temp root instead of reusing the copy's original `C_REPO/ctrl`.
+## V3 Format
+
+All control files now use the same storage model:
+
+1. a fixed-size `4096` byte header at offset `0`
+2. binary length-prefixed records after the header
+
+The header is ASCII text, ends with `\n`, and is padded with `\0` up to 4 KiB.
+This makes it:
+
+- human-readable in hex or plain-text viewers
+- safe to rewrite in place on `finish()`
+- able to store final counts instead of placeholder zeroes
+
+Common header fields:
+
+```text
+#BIFROST_<TYPE>_CTRL_FILE V3
+HEADER_SIZE=4096
+FILE_COUNT=<N>
+DIR_COUNT=<N>
+INODE_COUNT=<N>
+RECORD_COUNT=<N>
+TIME=<UNIX_TIMESTAMP>
+SOURCE_KIND="<json string>"
+SOURCE_ROOT="<json string>"
+END
+```
+
+Notes:
+
+- `SOURCE_KIND` and `SOURCE_ROOT` are JSON-escaped strings in the header
+- path-bearing records are binary, not line-oriented text
+- paths are stored as UTF-8 logical paths with explicit byte lengths
+- names containing spaces, `\n`, `\r`, tabs, and other special characters are supported
 
 ## `copy.txt`
 
-Source implementation: `src/scanner/metadata/filecontrol.rs`
+Source implementation: [src/scanner/metadata/filecontrol.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/filecontrol.rs)
 
-Header:
+Record types:
 
-```text
-#BIFROST_BACKUP_CTRL_FILE V1 FILE=0 DIRS=0 TIME=<UNIX_TIMESTAMP>
-```
+- directory record
+- file record
 
-Important note:
+Directory record payload:
 
-- the current writer initializes `FILE=0 DIRS=0`
-- these counts are placeholders and are not rewritten on finish
+- diff code
+- metadata locator: `meta_fid`, `meta_offset`
+- `files_count`
+- batch metadata fields
+- `path_len`
+- UTF-8 path bytes
 
-Entry formats:
+File record payload:
 
-```text
-F <DIFF> <META_FID:8HEX> <META_OFFSET:8HEX> -------- <NAME_LEN:8HEX> <NAME>
-D <DIFF> <META_FID:8HEX> <META_OFFSET:8HEX> <FILES_COUNT:8HEX> <PATH_LEN:8HEX> <PATH>
-```
+- diff code
+- metadata locator: `meta_fid`, `meta_offset`
+- `name_len`
+- UTF-8 file-name bytes
 
 File diff codes:
 
-- `NN`: new
-- `DM`: data modified
-- `MM`: metadata modified
-- `DD`: deleted
+- `New`
+- `DataModified`
+- `MetaModified`
+- `Deleted`
 
 Directory diff codes:
 
-- `NN`: new
-- `MM`: metadata modified
-- `DD`: deleted
+- `New`
+- `MetaModified`
+- `Deleted`
 
-Example:
+### Batch Metadata
 
-```text
-#BIFROST_BACKUP_CTRL_FILE V1 FILE=0 DIRS=0 TIME=1700000000
-D NN 00000000 000001A0 00000002 00000005 /home
-F NN 00000000 00000200 -------- 00000008 .bashrc
-F DM 00000000 00000300 -------- 00000009 notes.txt
-```
-
-### Paths With Spaces
-
-The format includes explicit path-length fields. The reader uses those lengths to reconstruct names and paths correctly, including entries containing spaces.
-
-### Batch Markers
-
-Directory entries may include an extra batch suffix when a large directory is split across batches:
-
-```text
-D NN ... /data/huge BATCH=0/5
-D NN ... /data/huge BATCH=1/5 CONT
-D NN ... /data/huge BATCH=2/5 CONT LAST
-```
+Directory records still reserve batch metadata so very large directories can be
+split across multiple logical batches inside one shard. The current consumers do
+not need to inspect that metadata directly.
 
 ### Sharded Copy Control Files
 
-When scanner control sharding is enabled, the scanner emits multiple copy control
-files instead of a single `copy.txt`:
+When scanner control sharding is enabled, the scanner emits:
 
 ```text
 copy_00000000_0000.txt
@@ -91,93 +109,80 @@ copy_00000001_0000.txt
 copy_0000000A_0001.txt
 ```
 
-Important properties:
+Properties:
 
-- the shard id is derived from the directory path hash
-- one directory and all of its file entries always stay in the same copy shard
+- shard id is derived from the directory path hash
+- one directory and all of its file entries always stay in the same shard
 - rollover may create multiple files for the same shard id
-- backup already discovers and runs all `copy_*.txt` files as parallel subtasks
+- backup discovers and executes all `copy_*.txt` files
 - restore also discovers generated `copy_*.txt` files
+
+## `delete.txt`
+
+Source implementation: [src/scanner/metadata/delete.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/delete.rs)
+
+Record payload:
+
+- entry type: file or directory
+- `path_len`
+- UTF-8 logical path bytes
+
+## `hardlink.txt`
+
+Source implementation: [src/scanner/metadata/hardlink.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/hardlink.rs)
+
+Record types:
+
+- inode-group record
+- file-in-group record
+
+Inode record payload:
+
+- inode
+- device
+- link count
+
+File record payload:
+
+- metadata locator: `meta_fid`, `meta_offset`
+- `path_len`
+- UTF-8 logical path bytes
+
+## `mtime.txt`
+
+Source implementation: [src/scanner/metadata/mtime.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/mtime.rs)
+
+Record payload:
+
+- mode
+- uid
+- gid
+- `path_len`
+- atime
+- mtime
+- UTF-8 logical path bytes
+
+This phase restores directory metadata after copy, hardlink, and delete have
+modified timestamps.
 
 ## Restore Plan Generation
 
-Restore now uses metadata-driven control-plan generation with three modes:
+Restore uses metadata-driven control-plan generation with three modes:
 
-- `FULL`: generate a complete restore plan from `M_REPO/meta`
-- `DIFF`: generate incremental backup controls from previous and current metadata
-- `FINEGRAIN`: generate restore controls only for requested paths
+- `FULL`
+- `DIFF`
+- `FINEGRAIN`
 
 Fine-grain matching rules:
 
 - file request: exact logical-path match
 - directory request: subtree prefix match
 
-Example:
-
-- requested file `/d2/d3/f1` restores only that file
-- requested directory `/d1` restores `/d1` and everything below it
-
-For fine-grain restore, the generated copy plan includes:
+For fine-grain restore, the generated plan includes:
 
 - exact requested files
 - requested directory subtrees
-- ancestor directories needed to materialize deep file restores
-
-The generated hardlink plan only recreates hardlinks among the selected files. A partially selected hardlink group falls back to ordinary file copy for the remaining selected file members.
-
-## `delete.txt`
-
-Source implementation: `src/scanner/metadata/delete.rs`
-
-Header:
-
-```text
-#BIFROST_DELETE_CTRL_FILE V1 FILES=<N> DIRS=<M> TIME=<UNIX_TIMESTAMP>
-```
-
-Entries:
-
-```text
-F <PATH_LEN:8HEX> <PATH>
-D <PATH_LEN:8HEX> <PATH>
-```
-
-## `hardlink.txt`
-
-Source implementation: `src/scanner/metadata/hardlink.rs`
-
-Header:
-
-```text
-#BIFROST_HARDLINK_CTRL_FILE V1 FILES=<N> INODES=<M> TIME=<UNIX_TIMESTAMP>
-```
-
-Entries:
-
-```text
-I <INODE:16HEX> <DEVICE:16HEX> <LINK_COUNT:8HEX>
-F <META_FID:8HEX> <META_OFFSET:8HEX> <PATH_LEN:8HEX> <PATH>
-```
-
-`I` starts a hardlink group and the following `F` lines belong to that group.
-
-## `mtime.txt`
-
-Source implementation: `src/scanner/metadata/mtime.rs`
-
-Header:
-
-```text
-#BIFROST_MTIME_CTRL_FILE V1 DIRS=<N> TIME=<UNIX_TIMESTAMP>
-```
-
-Entries:
-
-```text
-D <PATH_LEN:8HEX> <PATH> <MODE:8HEX> <UID:8HEX> <GID:8HEX> <ATIME:16HEX> <MTIME:16HEX>
-```
-
-This phase restores directory metadata after copy, hardlink, and delete have already modified directory timestamps.
+- ancestor directories needed to materialize deep restores
 
 ## Relationship To Metadata Files
 
@@ -188,12 +193,9 @@ This phase restores directory metadata after copy, hardlink, and delete have alr
 
 Those point into `M_REPO/meta/meta_*.dat`.
 
-With multi-writer scanner output, metadata files are now physically named:
+With multi-writer scanner output, metadata files are physically named:
 
 - `meta_<WRITER_SHARD>_<SEGMENT>.dat`
 
-The `META_FID` stored in control files is still a single 32-bit value. Bifrost
-encodes the writer shard and segment into that value and resolves the physical
-file name internally.
-
-See [metafile.md](metafile.md) for metadata-file format details.
+`META_FID` still stores one 32-bit id. Bifrost encodes `(writer_shard, segment)`
+into that id and resolves the physical metadata file internally.

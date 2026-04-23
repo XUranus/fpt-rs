@@ -4,6 +4,7 @@ use std::path::Path;
 
 use log::{debug, error, info, warn};
 
+use crate::frame::control_files::find_primary_control_file;
 use crate::scanner::metadata::{DeleteControlFileReader, DeleteEntryType};
 use crate::smb::SmbLocation;
 
@@ -22,13 +23,11 @@ pub async fn run_smb_delete_phase(
     target_prefix: &str,
     location: &SmbLocation,
 ) -> SmbDeleteStats {
-    let ctrl_path = ctrl_dir.join("delete.txt");
     let mut stats = SmbDeleteStats::default();
-
-    if !ctrl_path.exists() {
-        info!("SMB delete phase: no delete.txt found, skipping");
+    let Some(ctrl_path) = find_primary_control_file(ctrl_dir, "delete") else {
+        info!("SMB delete phase: no delete control file found, skipping");
         return stats;
-    }
+    };
 
     let client = match crate::smb::aio::connect_client(location).await {
         Ok(client) => client,
@@ -41,7 +40,7 @@ pub async fn run_smb_delete_phase(
     let reader = match DeleteControlFileReader::open(&ctrl_path) {
         Ok(r) => r,
         Err(e) => {
-            error!("SMB delete phase: cannot open delete.txt: {e}");
+            error!("SMB delete phase: cannot open delete control file: {e}");
             let _ = client.close().await;
             return stats;
         }

@@ -92,7 +92,8 @@ pub struct TargetDirOption {
 
     /// Optional: Previous metadata directory for incremental backup.
     /// If provided, the scanner will generate incremental control files
-    /// (copy.txt with only new/modified entries, delete.txt for deleted files).
+    /// (`copy_<hash>.control.bin` with only new/modified entries,
+    /// `delete_<hash>.control.bin` for deleted files).
     pub prev_meta_dir: Option<PathBuf>,
 }
 

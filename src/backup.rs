@@ -3,6 +3,7 @@ use crate::backup::{
     bio::hardlink::HardlinkStatsSnapshot, bio::mtime::MtimeStatsSnapshot, stats::BackupStats,
 };
 use crate::failure::{FailureLogConfig, FailureRecorder, RetryPolicy};
+use crate::frame::control_files::classify_control_file_name;
 use log::info;
 use std::{
     path::PathBuf,
@@ -1061,19 +1062,19 @@ fn run_restore_task(
         .unwrap_or_default()
         .to_string();
 
-    if control_name == "hardlink.txt" {
+    if classify_control_file_name(&control_name) == Some("hardlink") {
         if option.restore_hardlinks {
             run_restore_hardlink_phase(&option)?;
         }
         return Ok(());
     }
 
-    if control_name == "delete.txt" {
+    if classify_control_file_name(&control_name) == Some("delete") {
         run_restore_delete_phase(&option)?;
         return Ok(());
     }
 
-    if control_name == "mtime.txt" {
+    if classify_control_file_name(&control_name) == Some("mtime") {
         if option.restore_mtime {
             run_restore_mtime_phase(&option)?;
         }

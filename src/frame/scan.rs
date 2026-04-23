@@ -7,7 +7,7 @@
 //! ## Output
 //!
 //! Both the local and NFS scanners write metadata files (`meta_*.dat`) and
-//! control files (`copy.txt`, `hardlink.txt`, …) to the **local** M_REPO and
+//! control files (`*_*.control.bin`) to the **local** M_REPO and
 //! C_REPO directories inside the [`RepoLayout`].  The rest of the pipeline
 //! (subtasks, post-job) can therefore always use standard BIO I/O.
 //!

@@ -1,6 +1,6 @@
 //! Subtask execution phase of the job framework.
 //!
-//! Each subtask corresponds to one control file (`copy.txt`, `copy_N.txt`, …).
+//! Each subtask corresponds to one copy control file (`copy_<hash>.control.bin`, …).
 //! [`run_backup_subtask`] and [`run_restore_subtask`] select the right
 //! [`FileBackup`] / [`FileRestore`] implementation at runtime, delegate to it,
 //! and return unified [`SubtaskStats`].
@@ -253,60 +253,27 @@ pub fn run_restore_subtask(
 // Control file discovery helpers
 // ---------------------------------------------------------------------------
 
-/// Collect backup control files (copy.txt and shards) from `ctrl_dir`.
+/// Collect backup copy control files from `ctrl_dir`.
 pub fn find_backup_control_files(ctrl_dir: &PathBuf) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let copy_file = ctrl_dir.join("copy.txt");
-    if copy_file.exists() {
-        files.push(copy_file);
-    }
-
-    if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
-        let mut shards: Vec<PathBuf> = entries
-            .flatten()
-            .filter(|e| {
-                let n = e.file_name();
-                let s = n.to_string_lossy();
-                s.starts_with("copy_") && s.ends_with(".txt")
-            })
-            .map(|e| e.path())
-            .collect();
-        shards.sort();
-        files.extend(shards);
-    }
-    files
+    discover_control_files(ctrl_dir, "copy")
 }
 
 /// Collect all restore control files (copy, hardlink, delete, mtime) from `ctrl_dir`.
 pub fn find_restore_control_files(ctrl_dir: &PathBuf) -> Vec<(PathBuf, &'static str)> {
-    let phases = [
-        ("copy.txt", "copy"),
-        ("hardlink.txt", "hardlink"),
-        ("delete.txt", "delete"),
-        ("mtime.txt", "mtime"),
-    ];
     let mut files = Vec::new();
-    for (name, tag) in &phases {
-        let p = ctrl_dir.join(name);
-        if p.exists() {
-            files.push((p, *tag));
-        }
-    }
     if let Ok(entries) = std::fs::read_dir(ctrl_dir) {
-        let mut shards: Vec<PathBuf> = entries
-            .flatten()
-            .filter(|e| {
-                let n = e.file_name();
-                let s = n.to_string_lossy();
-                s.starts_with("copy_") && s.ends_with(".txt")
-            })
-            .map(|e| e.path())
-            .collect();
-        shards.sort();
-        for p in shards {
-            files.push((p, "copy"));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let tag = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(classify_control_file_name);
+            if let Some(tag) = tag {
+                files.push((path, tag));
+            }
         }
     }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
     files
 }
 
@@ -333,3 +300,4 @@ fn map_restore_err(e: crate::frame::restore_impls::RestoreTaskError) -> SubtaskE
         }
     }
 }
+use crate::frame::control_files::{classify_control_file_name, discover_control_files};

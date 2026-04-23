@@ -18,6 +18,7 @@ use crate::scanner::{
     options::ScanOption,
     ScanWorkerContext,
 };
+use crate::frame::control_files::primary_control_file_path;
 
 pub mod bio;
 // mod aio;
@@ -163,7 +164,7 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
     // Ensure ctrl_dir exists
     fs::create_dir_all(&ctrl_dir)?;
 
-    let mtime_file_path = ctrl_dir.join("mtime.txt");
+    let mtime_file_path = primary_control_file_path(&ctrl_dir, "mtime");
 
     // Check if incremental backup is requested
     if let Some(ref prev_meta_dir) = target_option.prev_meta_dir {
@@ -195,7 +196,7 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
             }
         }
 
-        // Still generate mtime.txt for all directories (needed for mtime phase)
+        // Still generate the mtime control file for all directories (needed for mtime phase)
         let meta_reader = MetaRepoReader::new(meta_dir).unwrap();
         let mut mtime_writer = MtimeControlFileWriter::new_with_source(
             mtime_file_path,
@@ -241,7 +242,10 @@ pub fn generate_control_files(scan_option: &ScanOption) -> Result<(), io::Error>
     let mut copy_writer = if scan_option.shard_option.enabled {
         None
     } else {
-        Some(ControlFileWriter::new_with_header(ctrl_dir.join("copy.txt"), &ctrl_header).unwrap())
+        Some(
+            ControlFileWriter::new_with_header(primary_control_file_path(&ctrl_dir, "copy"), &ctrl_header)
+                .unwrap(),
+        )
     };
     let mut sharded_copy = if scan_option.shard_option.enabled {
         Some(
@@ -352,7 +356,7 @@ fn split_copy_control_file(
         ControlEntry, ControlFileReader, ShardSplitPolicy, ShardedControlFileManager,
     };
 
-    let copy_path = scan_option.target_dir.ctrl_dir.join("copy.txt");
+    let copy_path = primary_control_file_path(&scan_option.target_dir.ctrl_dir, "copy");
     if !copy_path.exists() {
         return Ok(());
     }

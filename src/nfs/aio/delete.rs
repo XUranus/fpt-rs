@@ -1,6 +1,6 @@
 //! NFS delete phase for the AIO pipeline.
 //!
-//! Reads the same `delete.txt` control file as the BIO delete phase and removes
+//! Reads the same delete control file as the BIO delete phase and removes
 //! the corresponding files and directories from the NFS target using `remove`
 //! and `rmdir` RPCs.
 
@@ -12,6 +12,7 @@ use nfs3_client::nfs3_types::nfs3::{
     diropargs3, filename3, nfs_fh3, nfsstat3, Nfs3Result, REMOVE3args, RMDIR3args,
 };
 
+use crate::frame::control_files::find_primary_control_file;
 use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
@@ -29,7 +30,7 @@ pub struct NfsDeleteStats {
 
 /// Run the NFS delete phase.
 ///
-/// Reads `ctrl_dir/delete.txt` and calls `remove` / `rmdir` on the NFS target
+/// Reads the delete control file from `ctrl_dir` and calls `remove` / `rmdir` on the NFS target
 /// for each entry whose source path (relative to `source_dir_base`) exists.
 pub async fn run_nfs_delete_phase(
     ctrl_dir: &Path,
@@ -38,13 +39,11 @@ pub async fn run_nfs_delete_phase(
     pool: Arc<NfsConnectionPool>,
     dir_cache: FileHandleCache,
 ) -> NfsDeleteStats {
-    let delete_ctrl_path = ctrl_dir.join("delete.txt");
     let mut stats = NfsDeleteStats::default();
-
-    if !delete_ctrl_path.exists() {
-        info!("NFS delete phase: no delete.txt found, skipping");
+    let Some(delete_ctrl_path) = find_primary_control_file(ctrl_dir, "delete") else {
+        info!("NFS delete phase: no delete control file found, skipping");
         return stats;
-    }
+    };
 
     info!("NFS delete phase: processing {:?}", delete_ctrl_path);
 
@@ -53,7 +52,7 @@ pub async fn run_nfs_delete_phase(
     let reader = match DeleteControlFileReader::open(&delete_ctrl_path) {
         Ok(r) => r,
         Err(e) => {
-            error!("NFS delete phase: failed to open delete.txt: {e}");
+            error!("NFS delete phase: failed to open delete control file: {e}");
             return stats;
         }
     };

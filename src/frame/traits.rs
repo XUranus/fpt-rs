@@ -126,7 +126,7 @@ pub struct JobResult {
 /// Uniform interface for filesystem scanning (local or NFS).
 ///
 /// Implementors traverse a source, write metadata files (`meta_*.dat`) and
-/// control files (`copy.txt`, `hardlink.txt`, …) into the **local** M_REPO
+/// control files (`*_*.control.bin`) into the **local** M_REPO
 /// and C_REPO directories, then return aggregate statistics.
 ///
 /// ## Implementations

@@ -29,6 +29,9 @@ use std::{
 };
 
 use crate::failure::FailureRecorder;
+use crate::frame::control_files::{
+    classify_control_file_name, find_primary_control_file, primary_control_file_path,
+};
 use crate::scanner::metadata::HardlinkIndex;
 
 use crate::{
@@ -242,7 +245,7 @@ impl Scanner {
                     if let Some(index) = hardlink_index_clone {
                         if let Ok(idx) = index.lock() {
                             let hardlink_ctrl_path =
-                                scan_option.target_dir.ctrl_dir.join("hardlink.txt");
+                                primary_control_file_path(&scan_option.target_dir.ctrl_dir, "hardlink");
                             if let Err(e) = idx.write_to_file_with_source(
                                 &hardlink_ctrl_path,
                                 &scan_option.control_path.source_kind,
@@ -319,7 +322,7 @@ impl RunningScan {
 ///    local-FS scanner), producing `meta_*.dat`, `fcache_*.dat`, and
 ///    `dcache_*.dat` files.
 /// 4. After all items are consumed, the standard control-file generator
-///    runs and emits `copy.txt` (and optionally `hardlink.txt`, etc.).
+///    runs and emits copy control files (and optionally hardlink/delete/mtime control files).
 ///
 /// Returns `(total_files, total_dirs, total_size_bytes)` on success.
 #[cfg(feature = "nfs")]
@@ -433,7 +436,7 @@ pub async fn run_nfs_scan(
     }
 
     if !scan_opt_arc.stats_only {
-        // Generate control files (copy.txt, hardlink.txt, etc.)
+        // Generate control files (copy/hardlink/delete/mtime)
         engine::generate_control_files(&scan_opt_arc)
             .map_err(|e| format!("generate_control_files failed: {e}"))?;
         normalize_control_artifacts(&scan_opt_arc)
@@ -545,6 +548,7 @@ fn normalize_control_artifacts(scan_option: &ScanOption) -> Result<(), String> {
     normalize_copy_controls(scan_option)?;
     normalize_delete_control_file(scan_option)?;
     normalize_mtime_control_file(scan_option)?;
+    normalize_hardlink_control_file(scan_option)?;
     Ok(())
 }
 
@@ -558,9 +562,7 @@ fn normalize_copy_controls(scan_option: &ScanOption) -> Result<(), String> {
     for entry in entries {
         let path = entry.map_err(|e| e.to_string())?.path();
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if !file_name.starts_with("copy")
-            || path.extension().and_then(|e| e.to_str()) != Some("txt")
-        {
+        if classify_control_file_name(file_name) != Some("copy") {
             continue;
         }
 
@@ -601,10 +603,9 @@ fn normalize_copy_controls(scan_option: &ScanOption) -> Result<(), String> {
 fn normalize_delete_control_file(scan_option: &ScanOption) -> Result<(), String> {
     use crate::scanner::metadata::{DeleteControlFileReader, DeleteControlFileWriter};
 
-    let path = scan_option.target_dir.ctrl_dir.join("delete.txt");
-    if !path.exists() {
+    let Some(path) = find_primary_control_file(&scan_option.target_dir.ctrl_dir, "delete") else {
         return Ok(());
-    }
+    };
 
     let reader = DeleteControlFileReader::open(&path).map_err(|e| e.to_string())?;
     let entries: Vec<_> = reader
@@ -633,10 +634,9 @@ fn normalize_delete_control_file(scan_option: &ScanOption) -> Result<(), String>
 fn normalize_mtime_control_file(scan_option: &ScanOption) -> Result<(), String> {
     use crate::scanner::metadata::{MtimeControlFileReader, MtimeControlFileWriter};
 
-    let path = scan_option.target_dir.ctrl_dir.join("mtime.txt");
-    if !path.exists() {
+    let Some(path) = find_primary_control_file(&scan_option.target_dir.ctrl_dir, "mtime") else {
         return Ok(());
-    }
+    };
 
     let reader = MtimeControlFileReader::open(&path).map_err(|e| e.to_string())?;
     let entries: Vec<_> = reader
@@ -663,10 +663,9 @@ fn normalize_hardlink_control_file(scan_option: &ScanOption) -> Result<(), Strin
         HardlinkControlFileReader, HardlinkControlFileWriter, HardlinkEntry, HardlinkFileEntry,
     };
 
-    let path = scan_option.target_dir.ctrl_dir.join("hardlink.txt");
-    if !path.exists() {
+    let Some(path) = find_primary_control_file(&scan_option.target_dir.ctrl_dir, "hardlink") else {
         return Ok(());
-    }
+    };
     let reader = HardlinkControlFileReader::open(&path).map_err(|e| e.to_string())?;
     let entries: Vec<_> = reader
         .collect::<Result<_, _>>()

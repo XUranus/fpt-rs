@@ -1,195 +1,60 @@
-//! # Backup Control File Format
-//!
-//! This module defines a **human-readable, line-oriented control file format**
-//! used to describe file and directory changes between backup versions.
-//!
-//! The control file enables efficient incremental backup and recovery by listing:
-//! - Which files/directories are **new**, **modified**, or **deleted**.
-//! - Where their full metadata is stored in the metadata repository (`meta_fid`, `meta_offset`).
-//!
-//! ## File Format
-//!
-//! The file begins with a header line:
-//! ```text
-//! #BIFROST_BACKUP_CTRL_FILE V1 FILE=<N> DIRS=<M> TIME=<UNIX_TIMESTAMP>
-//! ```
-//!
-//! Each subsequent line represents one entry:
-//! - **File entry**:  
-//!   `F <DIFF> <META_FID:8HEX> <META_OFFSET:8HEX> -------- <NAME_LEN:8HEX> <NAME>`
-//! - **Directory entry**:  
-//!   `D <DIFF> <META_FID:8HEX> <META_OFFSET:8HEX> <FILES_COUNT:8HEX> <PATH_LEN:8HEX> <PATH>`
-//!
-//! Where:
-//! - `<DIFF>` is a 2-character code (e.g., `"NN"` for new, `"DM"` for data modified).
-//! - All numeric fields are written as **8-digit uppercase hexadecimal**.
-//! - The `--------` placeholder in file entries maintains column alignment.
-//!
-//! Example:
-//! ```text
-//! #BIFROST_BACKUP_CTRL_FILE V1 FILE=2 DIRS=1 TIME=1700000000
-//! D NN 00000000 000001A0 00000002 00000005 /home
-//! F NN 00000000 00000200 -------- 00000008 .bashrc
-//! F DM 00000000 00000300 -------- 00000009 notes.txt
-//! ```
-
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter};
 use std::path::Path;
+
+use crate::scanner::metadata::control_codec::{
+    create_record_writer, finish_record_writer, open_record_reader, put_bytes, put_u16, put_u32,
+    put_u8, read_record, take_bytes, take_u16, take_u32, take_u8, write_record, ControlFileHeader,
+};
+
+const COPY_MAGIC: &str = "#BIFROST_BACKUP_CTRL_FILE";
+const RECORD_TYPE_DIR: u8 = 1;
+const RECORD_TYPE_FILE: u8 = 2;
 
 /// Represents the type of change detected for a file.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
 pub enum FileDiff {
-    /// The file is new (did not exist in the previous backup).
     New,
-    /// The file's data has changed (content hash differs).
     DataModified,
-    /// The file's metadata has changed (permissions, timestamps, etc.), but content is unchanged.
     MetaModified,
-    /// The file was deleted (exists in previous backup but not current scan).
     Deleted,
 }
-
 /// Represents the type of change detected for a directory.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
 pub enum DirDiff {
-    /// The directory is new.
     New,
-    /// The directory's metadata has changed (e.g., permissions), but its contents are unchanged.
     MetaModified,
-    /// The directory was deleted.
     Deleted,
 }
 
-/// A control entry for a file, describing its change status and metadata location.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
 pub struct FileControlEntry {
-    /// Base name of the file.
     pub name: String,
-    /// Type of change detected.
     pub diff: FileDiff,
-    /// ID of the metadata file containing the full `FileMeta`.
     pub meta_fid: u32,
-    /// Byte offset within the metadata file where `FileMeta` starts.
     pub meta_offset: u32,
 }
 
-/// A control entry for a directory, describing its change status and metadata location.
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
 pub struct DirControlEntry {
-    /// Full path of the directory.
     pub path: String,
-    /// Type of change detected.
     pub diff: DirDiff,
-    /// ID of the metadata file containing the full `DirMeta`.
     pub meta_fid: u32,
-    /// Byte offset within the metadata file where `DirMeta` starts.
     pub meta_offset: u32,
-    /// Number of files directly contained in this directory.
     pub files_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ControlFileHeader {
-    pub version: u32,
-    pub file_count: u64,
-    pub dir_count: u64,
-    pub time: u64,
-    pub source_kind: String,
-    pub source_root: String,
+pub enum ControlEntry {
+    Dir(DirControlEntry),
+    File(FileControlEntry),
 }
 
-impl Default for ControlFileHeader {
-    fn default() -> Self {
-        Self {
-            version: 2,
-            file_count: 0,
-            dir_count: 0,
-            time: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            source_kind: "local".to_string(),
-            source_root: "/".to_string(),
-        }
-    }
-}
-
-impl FileDiff {
-    /// Returns the short string representation of this diff type.
-    ///
-    /// Mapping:
-    /// - `New` → `"NN"`
-    /// - `DataModified` → `"DM"`
-    /// - `MetaModified` → `"MM"`
-    /// - `Deleted` → `"DD"`
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::New => "NN",
-            Self::DataModified => "DM",
-            Self::MetaModified => "MM",
-            Self::Deleted => "DD",
-        }
-    }
-
-    /// Parses a short string representation into a `FileDiff`.
-    ///
-    /// Returns `None` if the input is not one of: `"NN"`, `"DM"`, `"MM"`, `"DD"`.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "NN" => Some(Self::New),
-            "DM" => Some(Self::DataModified),
-            "MM" => Some(Self::MetaModified),
-            "DD" => Some(Self::Deleted),
-            _ => None,
-        }
-    }
-}
-
-impl DirDiff {
-    /// Returns the short string representation of this diff type.
-    ///
-    /// Mapping:
-    /// - `New` → `"NN"`
-    /// - `MetaModified` → `"MM"`
-    /// - `Deleted` → `"DD"`
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::New => "NN",
-            Self::MetaModified => "MM",
-            Self::Deleted => "DD",
-        }
-    }
-
-    /// Parses a short string representation into a `DirDiff`.
-    ///
-    /// Returns `None` if the input is not one of: `"NN"`, `"MM"`, `"DD"`.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "NN" => Some(Self::New),
-            "MM" => Some(Self::MetaModified),
-            "DD" => Some(Self::Deleted),
-            _ => None,
-        }
-    }
-}
-
-/// Writer for backup control files.
-///
-/// Appends file and directory entries in human-readable text format.
-/// Not thread-safe. Use external synchronization if needed.
 pub struct ControlFileWriter {
-    fwriter: BufWriter<File>,
-    file_count: u64,
-    dir_count: u64,
+    writer: BufWriter<std::fs::File>,
+    header: ControlFileHeader,
 }
 
 impl ControlFileWriter {
-    /// Creates a new control file and writes the header.
-    ///
-    /// The file is created or truncated. The header includes placeholder counts
-    /// (`FILE=0 DIRS=0`) since final counts are not known at creation time.
     pub fn new<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         Self::new_with_header(path, &ControlFileHeader::default())
     }
@@ -198,330 +63,272 @@ impl ControlFileWriter {
         path: P,
         header: &ControlFileHeader,
     ) -> io::Result<Self> {
-        let file = File::create(path)?; // ✅ Use create(), not open()
-        let mut fwriter = BufWriter::new(file);
-        writeln!(
-            fwriter,
-            "#BIFROST_BACKUP_CTRL_FILE V{} FILE={} DIRS={} TIME={} SOURCE_KIND={} SOURCE_ROOT={}",
-            header.version,
-            header.file_count,
-            header.dir_count,
-            header.time,
-            header.source_kind,
-            header.source_root,
-        )?;
         Ok(Self {
-            fwriter,
-            file_count: 0,
-            dir_count: 0,
+            writer: create_record_writer(path, COPY_MAGIC, header)?,
+            header: header.clone(),
         })
     }
 
-    /// Writes a file control entry.
     pub fn write_file(&mut self, entry: &FileControlEntry) -> io::Result<()> {
-        let path_len = entry.name.len() as u32;
-        writeln!(
-            self.fwriter,
-            "F {} {:08X} {:08X} -------- {:08X} {}",
-            entry.diff.as_str(),
-            entry.meta_fid,
-            entry.meta_offset,
-            path_len,
-            entry.name
-        )?;
-        self.file_count += 1;
+        let name = entry.name.as_bytes();
+        let mut payload = Vec::with_capacity(1 + 1 + 2 + 4 + 4 + 4 + name.len());
+        put_u8(&mut payload, RECORD_TYPE_FILE);
+        put_u8(&mut payload, encode_file_diff(&entry.diff));
+        put_u16(&mut payload, 0);
+        put_u32(&mut payload, entry.meta_fid);
+        put_u32(&mut payload, entry.meta_offset);
+        put_u32(
+            &mut payload,
+            u32::try_from(name.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name too long"))?,
+        );
+        put_bytes(&mut payload, name);
+        write_record(&mut self.writer, &payload)?;
+        self.header.file_count += 1;
+        self.header.record_count += 1;
         Ok(())
     }
 
-    /// Writes a directory control entry.
     pub fn write_dir(&mut self, entry: &DirControlEntry) -> io::Result<()> {
-        let path_len = entry.path.len() as u32;
-        writeln!(
-            self.fwriter,
-            "D {} {:08X} {:08X} {:08X} {:08X} {}",
-            entry.diff.as_str(),
-            entry.meta_fid,
-            entry.meta_offset,
-            entry.files_count,
-            path_len,
-            entry.path
-        )?;
-        self.dir_count += 1;
-        Ok(())
+        self.write_dir_record(entry, 0, 1, false, true)
     }
 
-    /// Writes a directory control entry with batch information.
-    ///
-    /// For large directories split across multiple batches:
-    /// ```text
-    /// D NN 00000000 00000100 00000064 00000010 /data/huge BATCH=0/5
-    /// D NN 00000000 00000100 00000064 00000010 /data/huge BATCH=1/5 CONT
-    /// D NN 00000000 00000100 00000064 00000010 /data/huge BATCH=2/5 CONT LAST
-    /// ```
     pub fn write_dir_with_batch(
         &mut self,
         entry: &DirControlEntry,
         batch: crate::scanner::metadata::sharded_control::BatchInfo,
     ) -> io::Result<()> {
-        let path_len = entry.path.len() as u32;
-        let batch_marker = format!(
-            "BATCH={}/{}{}{}",
+        self.write_dir_record(
+            entry,
             batch.batch_num,
             batch.total_batches,
-            if batch.is_continuation { " CONT" } else { "" },
-            if batch.is_last { " LAST" } else { "" }
+            batch.is_continuation,
+            batch.is_last,
+        )
+    }
+
+    fn write_dir_record(
+        &mut self,
+        entry: &DirControlEntry,
+        batch_num: u32,
+        batch_total: u32,
+        is_continuation: bool,
+        is_last: bool,
+    ) -> io::Result<()> {
+        let path = entry.path.as_bytes();
+        let mut payload = Vec::with_capacity(1 + 1 + 2 + 4 * 6 + path.len());
+        let mut flags = 0u8;
+        if is_continuation {
+            flags |= 0x01;
+        }
+        if is_last {
+            flags |= 0x02;
+        }
+        if batch_total > 1 {
+            flags |= 0x04;
+        }
+        put_u8(&mut payload, RECORD_TYPE_DIR);
+        put_u8(&mut payload, encode_dir_diff(&entry.diff));
+        put_u16(&mut payload, flags as u16);
+        put_u32(&mut payload, entry.meta_fid);
+        put_u32(&mut payload, entry.meta_offset);
+        put_u32(&mut payload, entry.files_count);
+        put_u32(&mut payload, batch_num);
+        put_u32(&mut payload, batch_total);
+        put_u32(
+            &mut payload,
+            u32::try_from(path.len())
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "directory path too long"))?,
         );
-        writeln!(
-            self.fwriter,
-            "D {} {:08X} {:08X} {:08X} {:08X} {} {}",
-            entry.diff.as_str(),
-            entry.meta_fid,
-            entry.meta_offset,
-            entry.files_count,
-            path_len,
-            entry.path,
-            batch_marker
-        )?;
-        self.dir_count += 1;
+        put_bytes(&mut payload, path);
+        write_record(&mut self.writer, &payload)?;
+        self.header.dir_count += 1;
+        self.header.record_count += 1;
         Ok(())
     }
 
-    /// Finishes writing and flushes all data to disk.
-    ///
-    /// Note: The header is **not updated** with final counts. For accurate counts,
-    /// consider post-processing the file or using a different format.
-    pub fn finish(mut self) -> io::Result<()> {
-        self.fwriter.flush()
+    pub fn finish(self) -> io::Result<()> {
+        finish_record_writer(self.writer, COPY_MAGIC, &self.header)
+    }
+
+    pub fn file_count(&self) -> u64 {
+        self.header.file_count
+    }
+
+    pub fn dir_count(&self) -> u64 {
+        self.header.dir_count
     }
 }
 
-/// A parsed control entry from the file.
-#[derive(Debug)]
-pub enum ControlEntry {
-    /// A file entry.
-    File(FileControlEntry),
-    /// A directory entry.
-    Dir(DirControlEntry),
-}
-
-/// Reader for backup control files.
-///
-/// Parses the control file line by line, skipping empty lines and comments.
-/// Not thread-safe.
 pub struct ControlFileReader {
-    freader: BufReader<File>,
+    reader: BufReader<std::fs::File>,
     header: ControlFileHeader,
 }
 
 impl ControlFileReader {
-    /// Opens an existing control file for reading.
-    ///
-    /// Validates that the first line is a valid header.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = File::open(path)?;
-        let mut freader = BufReader::new(file);
-        let mut header = String::new();
-        freader.read_line(&mut header)?;
-
-        if !header.starts_with("#BIFROST_BACKUP_CTRL_FILE") {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Invalid or missing header",
-            ));
-        }
-
-        let header = parse_control_header(&header)?;
-
-        Ok(Self { freader, header })
+        let (reader, header) = open_record_reader(path, COPY_MAGIC)?;
+        Ok(Self { reader, header })
     }
 
     pub fn header(&self) -> &ControlFileHeader {
         &self.header
     }
-
-    /// Splits the next control-file line into a fixed number of prefix fields and the raw tail.
-    ///
-    /// The tail keeps embedded spaces intact so filenames and paths can be reconstructed using
-    /// the explicit length field written by `ControlFileWriter`.
-    fn split_prefix_fields<'a>(
-        line: &'a str,
-        field_count: usize,
-    ) -> io::Result<(Vec<&'a str>, &'a str)> {
-        let bytes = line.as_bytes();
-        let mut fields = Vec::with_capacity(field_count);
-        let mut idx = 0;
-
-        while fields.len() < field_count {
-            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                idx += 1;
-            }
-            if idx >= bytes.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Invalid line format: insufficient tokens",
-                ));
-            }
-
-            let start = idx;
-            while idx < bytes.len() && !bytes[idx].is_ascii_whitespace() {
-                idx += 1;
-            }
-            fields.push(&line[start..idx]);
-        }
-
-        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-            idx += 1;
-        }
-
-        Ok((fields, &line[idx..]))
-    }
-}
-
-fn parse_control_header(header: &str) -> io::Result<ControlFileHeader> {
-    let tokens: Vec<&str> = header.split_whitespace().collect();
-    if tokens.len() < 5 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid control header",
-        ));
-    }
-
-    let version = tokens[1]
-        .strip_prefix('V')
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(1);
-
-    let mut kv = HashMap::new();
-    for token in tokens.iter().skip(2) {
-        if let Some((k, v)) = token.split_once('=') {
-            kv.insert(k, v);
-        }
-    }
-
-    Ok(ControlFileHeader {
-        version,
-        file_count: kv.get("FILE").and_then(|v| v.parse().ok()).unwrap_or(0),
-        dir_count: kv.get("DIRS").and_then(|v| v.parse().ok()).unwrap_or(0),
-        time: kv.get("TIME").and_then(|v| v.parse().ok()).unwrap_or(0),
-        source_kind: kv
-            .get("SOURCE_KIND")
-            .copied()
-            .unwrap_or("local")
-            .to_string(),
-        source_root: kv.get("SOURCE_ROOT").copied().unwrap_or("/").to_string(),
-    })
 }
 
 impl Iterator for ControlFileReader {
     type Item = io::Result<ControlEntry>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match self.freader.read_line(&mut line) {
-                Ok(0) => return None, // EOF
-                Ok(_) => {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with('#') {
-                        continue; // Skip empty lines and comments
-                    }
+        let payload = match read_record(&mut self.reader) {
+            Ok(Some(payload)) => payload,
+            Ok(None) => return None,
+            Err(err) => return Some(Err(err)),
+        };
+        let mut cursor = 0usize;
+        let record_type = match take_u8(&payload, &mut cursor) {
+            Ok(v) => v,
+            Err(err) => return Some(Err(err)),
+        };
+        let diff = match take_u8(&payload, &mut cursor) {
+            Ok(v) => v,
+            Err(err) => return Some(Err(err)),
+        };
+        let flags = match take_u16(&payload, &mut cursor) {
+            Ok(v) => v,
+            Err(err) => return Some(Err(err)),
+        };
+        let meta_fid = match take_u32(&payload, &mut cursor) {
+            Ok(v) => v,
+            Err(err) => return Some(Err(err)),
+        };
+        let meta_offset = match take_u32(&payload, &mut cursor) {
+            Ok(v) => v,
+            Err(err) => return Some(Err(err)),
+        };
 
-                    let (tokens, tail) = match Self::split_prefix_fields(trimmed, 6) {
-                        Ok(parts) => parts,
-                        Err(err) => return Some(Err(err)),
-                    };
-
-                    let kind = tokens[0];
-                    let diff_code = tokens[1];
-
-                    // Parse common fields
-                    let meta_fid = match u32::from_str_radix(tokens[2], 16) {
-                        Ok(v) => v,
-                        Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
-                    };
-                    let meta_offset = match u32::from_str_radix(tokens[3], 16) {
-                        Ok(v) => v,
-                        Err(e) => return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e))),
-                    };
-
-                    return match kind {
-                        "F" => {
-                            let path_len = match u32::from_str_radix(tokens[5], 16) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
-                                }
-                            };
-                            if tail.len() < path_len as usize {
-                                return Some(Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "File path shorter than declared length",
-                                )));
-                            }
-                            let path = &tail[..path_len as usize];
-                            let diff = match FileDiff::from_str(diff_code) {
-                                Some(d) => d,
-                                None => {
-                                    return Some(Err(io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "Unknown file diff code",
-                                    )))
-                                }
-                            };
-                            Some(Ok(ControlEntry::File(FileControlEntry {
-                                name: path.to_string(),
-                                diff,
-                                meta_fid,
-                                meta_offset,
-                            })))
-                        }
-                        "D" => {
-                            let files_count = match u32::from_str_radix(tokens[4], 16) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
-                                }
-                            };
-                            let path_len = match u32::from_str_radix(tokens[5], 16) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    return Some(Err(io::Error::new(io::ErrorKind::InvalidData, e)))
-                                }
-                            };
-                            if tail.len() < path_len as usize {
-                                return Some(Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "Directory path shorter than declared length",
-                                )));
-                            }
-                            let path = &tail[..path_len as usize];
-                            let diff = match DirDiff::from_str(diff_code) {
-                                Some(d) => d,
-                                None => {
-                                    return Some(Err(io::Error::new(
-                                        io::ErrorKind::InvalidData,
-                                        "Unknown directory diff code",
-                                    )))
-                                }
-                            };
-                            Some(Ok(ControlEntry::Dir(DirControlEntry {
-                                path: path.to_string(),
-                                diff,
-                                meta_fid,
-                                meta_offset,
-                                files_count,
-                            })))
-                        }
-                        _ => Some(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "Unknown entry type",
-                        ))),
-                    };
-                }
-                Err(e) => return Some(Err(e)),
+        let entry = match record_type {
+            RECORD_TYPE_FILE => {
+                let path_len = match take_u32(&payload, &mut cursor) {
+                    Ok(v) => v as usize,
+                    Err(err) => return Some(Err(err)),
+                };
+                let name = match take_bytes(&payload, &mut cursor, path_len)
+                    .and_then(|bytes| {
+                        std::str::from_utf8(bytes)
+                            .map(|s| s.to_string())
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+                    }) {
+                    Ok(name) => name,
+                    Err(err) => return Some(Err(err)),
+                };
+                let diff = match decode_file_diff(diff) {
+                    Ok(d) => d,
+                    Err(err) => return Some(Err(err)),
+                };
+                ControlEntry::File(FileControlEntry {
+                    name,
+                    diff,
+                    meta_fid,
+                    meta_offset,
+                })
             }
-        }
+            RECORD_TYPE_DIR => {
+                let files_count = match take_u32(&payload, &mut cursor) {
+                    Ok(v) => v,
+                    Err(err) => return Some(Err(err)),
+                };
+                if flags & 0x04 != 0 {
+                    if let Err(err) = take_u32(&payload, &mut cursor) {
+                        return Some(Err(err));
+                    }
+                    if let Err(err) = take_u32(&payload, &mut cursor) {
+                        return Some(Err(err));
+                    }
+                } else {
+                    if let Err(err) = take_u32(&payload, &mut cursor) {
+                        return Some(Err(err));
+                    }
+                    if let Err(err) = take_u32(&payload, &mut cursor) {
+                        return Some(Err(err));
+                    }
+                }
+                let path_len = match take_u32(&payload, &mut cursor) {
+                    Ok(v) => v as usize,
+                    Err(err) => return Some(Err(err)),
+                };
+                let path = match take_bytes(&payload, &mut cursor, path_len)
+                    .and_then(|bytes| {
+                        std::str::from_utf8(bytes)
+                            .map(|s| s.to_string())
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+                    }) {
+                    Ok(path) => path,
+                    Err(err) => return Some(Err(err)),
+                };
+                let diff = match decode_dir_diff(diff) {
+                    Ok(d) => d,
+                    Err(err) => return Some(Err(err)),
+                };
+                ControlEntry::Dir(DirControlEntry {
+                    path,
+                    diff,
+                    meta_fid,
+                    meta_offset,
+                    files_count,
+                })
+            }
+            _ => {
+                return Some(Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown copy control record type",
+                )))
+            }
+        };
+
+        Some(Ok(entry))
+    }
+}
+
+fn encode_file_diff(diff: &FileDiff) -> u8 {
+    match diff {
+        FileDiff::New => 1,
+        FileDiff::DataModified => 2,
+        FileDiff::MetaModified => 3,
+        FileDiff::Deleted => 4,
+    }
+}
+
+fn decode_file_diff(value: u8) -> io::Result<FileDiff> {
+    match value {
+        1 => Ok(FileDiff::New),
+        2 => Ok(FileDiff::DataModified),
+        3 => Ok(FileDiff::MetaModified),
+        4 => Ok(FileDiff::Deleted),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unknown file diff code",
+        )),
+    }
+}
+
+fn encode_dir_diff(diff: &DirDiff) -> u8 {
+    match diff {
+        DirDiff::New => 1,
+        DirDiff::MetaModified => 2,
+        DirDiff::Deleted => 3,
+    }
+}
+
+fn decode_dir_diff(value: u8) -> io::Result<DirDiff> {
+    match value {
+        1 => Ok(DirDiff::New),
+        2 => Ok(DirDiff::MetaModified),
+        3 => Ok(DirDiff::Deleted),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unknown dir diff code",
+        )),
     }
 }
 
@@ -531,7 +338,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn control_file_reader_preserves_spaces_in_paths() {
+    fn control_file_reader_roundtrip_weird_paths() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -541,7 +348,7 @@ mod tests {
         let mut writer = ControlFileWriter::new(&path).unwrap();
         writer
             .write_dir(&DirControlEntry {
-                path: "/tmp/source dir".to_string(),
+                path: " /tmp/source\n dir".to_string(),
                 diff: DirDiff::MetaModified,
                 meta_fid: 1,
                 meta_offset: 2,
@@ -550,7 +357,7 @@ mod tests {
             .unwrap();
         writer
             .write_file(&FileControlEntry {
-                name: "file with spaces.txt".to_string(),
+                name: " leading\nfile.txt".to_string(),
                 diff: FileDiff::New,
                 meta_fid: 4,
                 meta_offset: 5,
@@ -558,18 +365,18 @@ mod tests {
             .unwrap();
         writer.finish().unwrap();
 
-        let entries: Vec<_> = ControlFileReader::open(&path)
-            .unwrap()
-            .collect::<io::Result<Vec<_>>>()
-            .unwrap();
+        let reader = ControlFileReader::open(&path).unwrap();
+        assert_eq!(reader.header().dir_count, 1);
+        assert_eq!(reader.header().file_count, 1);
+        let entries: Vec<_> = reader.collect::<io::Result<Vec<_>>>().unwrap();
 
         assert!(matches!(
             &entries[0],
-            ControlEntry::Dir(DirControlEntry { path, .. }) if path == "/tmp/source dir"
+            ControlEntry::Dir(DirControlEntry { path, .. }) if path == " /tmp/source\n dir"
         ));
         assert!(matches!(
             &entries[1],
-            ControlEntry::File(FileControlEntry { name, .. }) if name == "file with spaces.txt"
+            ControlEntry::File(FileControlEntry { name, .. }) if name == " leading\nfile.txt"
         ));
 
         let _ = std::fs::remove_file(path);

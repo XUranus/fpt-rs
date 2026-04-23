@@ -3,8 +3,8 @@
 //! This module provides scalable control file handling for extremely large filesets
 //! (100+ billion files). It supports:
 //!
-//! 1. **Sharded Control Files**: Control files are split into multiple shards
-//!    (e.g., `copy_00000000.txt`, `copy_00000001.txt`) for parallel processing.
+//! 1. **Sharded Control Files**: Control files are split into multiple shard files
+//!    (e.g., `copy_<hash>.control.bin`) for parallel processing.
 //!
 //! 2. **Batch Processing**: Large directories are split across multiple batches
 //!    with markers (BATCH=n/m) to handle billions of files per directory.
@@ -42,6 +42,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::frame::control_files::{classify_control_file_name, sharded_copy_control_file_name};
 use crate::scanner::metadata::{
     ControlFileHeader, ControlFileWriter, DirControlEntry, FileControlEntry,
 };
@@ -282,10 +283,15 @@ impl ShardedControlFileManager {
             // Get next file index for this shard
             let file_index = self.shard_file_indices.get(&shard_id).copied().unwrap_or(0);
 
-            let path = self.ctrl_dir.join(format!(
-                "{}_{:08X}_{:04X}.txt",
-                self.base_name, shard_id, file_index
-            ));
+            let path = if self.base_name == "copy" {
+                self.ctrl_dir
+                    .join(sharded_copy_control_file_name(shard_id, file_index))
+            } else {
+                self.ctrl_dir.join(format!(
+                    "{}_{:08X}_{:04X}.control.bin",
+                    self.base_name, shard_id, file_index
+                ))
+            };
 
             let writer = ControlFileWriter::new_with_header(&path, &self.header)?;
 
@@ -442,8 +448,7 @@ pub fn discover_sharded_controls(
             let path = entry.path();
             let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-            // Match pattern: {base_name}_{shard_id}_{file_index}.txt
-            if file_name.starts_with(&format!("{}_", base_name)) && file_name.ends_with(".txt") {
+            if classify_control_file_name(file_name) == Some(base_name) {
                 shard_files.push(path);
             }
         }
@@ -452,26 +457,9 @@ pub fn discover_sharded_controls(
     // Sort by path for consistent ordering
     shard_files.sort();
 
-    // Extract num_shards from file names
-    let num_shards = shard_files
-        .iter()
-        .filter_map(|p| {
-            p.file_name().and_then(|n| n.to_str()).and_then(|name| {
-                let parts: Vec<_> = name.split('_').collect();
-                if parts.len() >= 2 {
-                    u32::from_str_radix(parts[1], 16).ok()
-                } else {
-                    None
-                }
-            })
-        })
-        .max()
-        .map(|max_id| max_id as usize + 1)
-        .unwrap_or(0);
-
     Ok(ShardedControlInfo {
         base_name: base_name.to_string(),
-        num_shards,
+        num_shards: shard_files.len(),
         shard_files,
     })
 }

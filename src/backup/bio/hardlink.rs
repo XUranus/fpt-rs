@@ -10,7 +10,7 @@
 //!
 //! ## Process
 //!
-//! 1. Read the hardlink control file (`hardlink.txt`)
+//! 1. Read the hardlink control file
 //! 2. For each inode group:
 //!    - Skip the first file (already copied during the copy phase)
 //!    - Create hardlinks for subsequent files pointing to the first file
@@ -29,6 +29,7 @@ use std::sync::Arc;
 use log::{debug, error, info, warn};
 
 use crate::failure::{retry_sync, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::frame::control_files::find_primary_control_file;
 use crate::scanner::metadata::{HardlinkControlFileReader, HardlinkEntry, MetaRepoReader};
 
 /// Statistics for the hardlink backup phase.
@@ -153,7 +154,7 @@ fn read_hardlink_groups(
     target_dir_base: &Path,
 ) -> io::Result<Vec<HardlinkGroup>> {
     let reader = HardlinkControlFileReader::open(hardlink_ctrl_path)?;
-    let logical_paths = reader.header().contains(" SOURCE_ROOT=");
+    let logical_paths = !reader.header().source_root.is_empty();
     let meta_repo = MetaRepoReader::new(meta_dir)?;
 
     let mut groups: Vec<HardlinkGroup> = Vec::new();
@@ -493,7 +494,10 @@ pub fn run_hardlink_phase(
     retry_policy: RetryPolicy,
     failure_recorder: Option<&FailureRecorder>,
 ) -> io::Result<HardlinkStatsSnapshot> {
-    let hardlink_ctrl_path = ctrl_dir.join("hardlink.txt");
+    let Some(hardlink_ctrl_path) = find_primary_control_file(ctrl_dir, "hardlink") else {
+        info!("No hardlink control file found under {:?}", ctrl_dir);
+        return Ok(HardlinkStatsSnapshot::default());
+    };
     process_hardlinks(
         &hardlink_ctrl_path,
         meta_dir,

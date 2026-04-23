@@ -4,6 +4,7 @@ use std::path::Path;
 
 use log::{debug, error, info, warn};
 
+use crate::frame::control_files::find_primary_control_file;
 use crate::scanner::metadata::MtimeControlFileReader;
 use crate::smb::SmbLocation;
 
@@ -21,13 +22,11 @@ pub async fn run_smb_mtime_phase(
     target_prefix: &str,
     location: &SmbLocation,
 ) -> SmbMtimeStats {
-    let ctrl_path = ctrl_dir.join("mtime.txt");
     let mut stats = SmbMtimeStats::default();
-
-    if !ctrl_path.exists() {
-        info!("SMB mtime phase: no mtime.txt found, skipping");
+    let Some(ctrl_path) = find_primary_control_file(ctrl_dir, "mtime") else {
+        info!("SMB mtime phase: no mtime control file found, skipping");
         return stats;
-    }
+    };
 
     let client = match crate::smb::aio::connect_client(location).await {
         Ok(client) => client,
@@ -40,7 +39,7 @@ pub async fn run_smb_mtime_phase(
     let reader = match MtimeControlFileReader::open(&ctrl_path) {
         Ok(r) => r,
         Err(e) => {
-            error!("SMB mtime phase: cannot open mtime.txt: {e}");
+            error!("SMB mtime phase: cannot open mtime control file: {e}");
             let _ = client.close().await;
             return stats;
         }
