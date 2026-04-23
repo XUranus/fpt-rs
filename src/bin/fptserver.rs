@@ -628,8 +628,12 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn get_tasks(State(state): State<AppState>) -> Result<Json<Vec<TaskStatusSnapshot>>, ApiError> {
-    Ok(Json(list_task_snapshots(state).await.map_err(ApiError::server)?))
+async fn get_tasks(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<TaskStatusSnapshot>>, ApiError> {
+    Ok(Json(
+        list_task_snapshots(state).await.map_err(ApiError::server)?,
+    ))
 }
 
 async fn get_task(
@@ -665,8 +669,13 @@ async fn get_task_logs(
     fs::read_to_string(&task.log_file).map_err(ApiError::server)
 }
 
-async fn spawn_task(state: AppState, request: TaskRequest) -> Result<TaskStatusSnapshot, (i64, String)> {
-    enforce_limits(&state, request.kind()).await.map_err(|e| (-32001, e))?;
+async fn spawn_task(
+    state: AppState,
+    request: TaskRequest,
+) -> Result<TaskStatusSnapshot, (i64, String)> {
+    enforce_limits(&state, request.kind())
+        .await
+        .map_err(|e| (-32001, e))?;
 
     let task_id = Uuid::new_v4().to_string();
     let task_dir = state.config.runtime_dir.join(&task_id);
@@ -750,16 +759,16 @@ async fn enforce_limits(state: &AppState, kind: TaskKind) -> Result<(), String> 
         .count();
     let running_subtasks = snapshots
         .iter()
-        .filter(|task| matches!(task.kind, TaskKind::Backup | TaskKind::Restore) && is_active_state(task.state))
+        .filter(|task| {
+            matches!(task.kind, TaskKind::Backup | TaskKind::Restore) && is_active_state(task.state)
+        })
         .count();
 
     match kind {
-        TaskKind::Scan if running_scanners >= state.config.max_scanners_count => {
-            Err(format!(
-                "scanner limit reached: {running_scanners}/{}",
-                state.config.max_scanners_count
-            ))
-        }
+        TaskKind::Scan if running_scanners >= state.config.max_scanners_count => Err(format!(
+            "scanner limit reached: {running_scanners}/{}",
+            state.config.max_scanners_count
+        )),
         TaskKind::Backup | TaskKind::Restore
             if running_subtasks >= state.config.max_subtasks_count =>
         {
@@ -828,11 +837,25 @@ async fn reconcile_task_exit(
 }
 
 async fn stop_task(state: AppState, task_id: &str) -> Result<TaskStatusSnapshot, (i64, String)> {
-    signal_task(state, task_id, libc::SIGTERM, TaskState::Stopping, "stop requested").await
+    signal_task(
+        state,
+        task_id,
+        libc::SIGTERM,
+        TaskState::Stopping,
+        "stop requested",
+    )
+    .await
 }
 
 async fn kill_task(state: AppState, task_id: &str) -> Result<TaskStatusSnapshot, (i64, String)> {
-    signal_task(state, task_id, libc::SIGKILL, TaskState::Killed, "kill requested").await
+    signal_task(
+        state,
+        task_id,
+        libc::SIGKILL,
+        TaskState::Killed,
+        "kill requested",
+    )
+    .await
 }
 
 async fn signal_task(
@@ -877,13 +900,21 @@ async fn signal_task(
     Ok(task.snapshot.clone())
 }
 
-async fn get_task_snapshot(state: AppState, task_id: &str) -> Result<TaskStatusSnapshot, io::Error> {
+async fn get_task_snapshot(
+    state: AppState,
+    task_id: &str,
+) -> Result<TaskStatusSnapshot, io::Error> {
     refresh_task_snapshot(&state, task_id).await?;
     let tasks = state.tasks.read().await;
     tasks
         .get(task_id)
         .map(|task| task.snapshot.clone())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("task not found: {task_id}")))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("task not found: {task_id}"),
+            )
+        })
 }
 
 async fn list_task_snapshots(state: AppState) -> Result<Vec<TaskStatusSnapshot>, io::Error> {
@@ -895,7 +926,8 @@ async fn list_task_snapshots(state: AppState) -> Result<Vec<TaskStatusSnapshot>,
         refresh_task_snapshot(&state, &id).await?;
     }
     let tasks = state.tasks.read().await;
-    let mut list: Vec<TaskStatusSnapshot> = tasks.values().map(|task| task.snapshot.clone()).collect();
+    let mut list: Vec<TaskStatusSnapshot> =
+        tasks.values().map(|task| task.snapshot.clone()).collect();
     list.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(list)
 }
@@ -1181,7 +1213,9 @@ fn parse_data_location(
         #[cfg(feature = "smb")]
         {
             let _ = (connections, uid, gid);
-            Ok(DataLocation::smb(bifrost::smb::SmbLocation::from_url(spec)?))
+            Ok(DataLocation::smb(bifrost::smb::SmbLocation::from_url(
+                spec,
+            )?))
         }
         #[cfg(not(feature = "smb"))]
         {
@@ -1219,7 +1253,10 @@ fn read_json_file<T: DeserializeOwned>(path: &FsPath) -> io::Result<T> {
 }
 
 fn is_active_state(state: TaskState) -> bool {
-    matches!(state, TaskState::Created | TaskState::Starting | TaskState::Running | TaskState::Stopping)
+    matches!(
+        state,
+        TaskState::Created | TaskState::Starting | TaskState::Running | TaskState::Stopping
+    )
 }
 
 fn default_operation_retries() -> u32 {

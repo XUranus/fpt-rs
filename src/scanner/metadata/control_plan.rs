@@ -94,7 +94,13 @@ pub fn generate_control_plan(
         }
         ControlPlanMode::FineGrain { paths } => {
             let selection = classify_fine_grain_selection(curr_meta_dir, source_spec, &paths)?;
-            generate_restore_plan(curr_meta_dir, ctrl_dir, source_spec, Some(selection), copy_shards)
+            generate_restore_plan(
+                curr_meta_dir,
+                ctrl_dir,
+                source_spec,
+                Some(selection),
+                copy_shards,
+            )
         }
         ControlPlanMode::Diff { prev_meta_dir } => {
             std::fs::create_dir_all(ctrl_dir)?;
@@ -289,7 +295,10 @@ fn classify_fine_grain_selection(
 
     let mut requested_dirs = HashSet::new();
     let mut requested_files = HashSet::new();
-    let mut unresolved: HashSet<String> = normalized_requests.iter().map(|(_, norm)| norm.clone()).collect();
+    let mut unresolved: HashSet<String> = normalized_requests
+        .iter()
+        .map(|(_, norm)| norm.clone())
+        .collect();
 
     for dir in &dirs {
         if unresolved.remove(&dir.logical_path) {
@@ -320,7 +329,10 @@ fn classify_fine_grain_selection(
         }
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("fine-grain restore path(s) not found in metadata: {}", missing.join(", ")),
+            format!(
+                "fine-grain restore path(s) not found in metadata: {}",
+                missing.join(", ")
+            ),
         ));
     }
 
@@ -437,7 +449,10 @@ fn normalize_metadata_path(layout: &SourceLayout, path: &str) -> String {
         .strip_prefix(&layout.physical_base)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| physical.clone());
-    normalize_logical_string(&format!("/{}", rel.to_string_lossy().trim_start_matches('/')))
+    normalize_logical_string(&format!(
+        "/{}",
+        rel.to_string_lossy().trim_start_matches('/')
+    ))
 }
 
 fn normalize_requested_path(layout: &SourceLayout, raw: &str) -> String {
@@ -494,18 +509,13 @@ fn path_prefix_matches(prefix: &str, candidate: &str) -> bool {
     let candidate = normalize_logical_string(candidate);
     prefix == "/"
         || candidate == prefix
-        || candidate
-            .strip_prefix(&(prefix.clone() + "/"))
-            .is_some()
+        || candidate.strip_prefix(&(prefix.clone() + "/")).is_some()
 }
 
 fn path_is_ancestor(dir_path: &str, file_path: &str) -> bool {
     let dir_path = normalize_logical_string(dir_path);
     let file_path = normalize_logical_string(file_path);
-    dir_path == "/"
-        || file_path
-            .strip_prefix(&(dir_path.clone() + "/"))
-            .is_some()
+    dir_path == "/" || file_path.strip_prefix(&(dir_path.clone() + "/")).is_some()
 }
 
 #[cfg(test)]

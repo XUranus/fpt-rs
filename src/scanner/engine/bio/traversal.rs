@@ -92,8 +92,8 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
     let mut dir_result = DirBatchScanResult::default();
     let depth = dir_entry.depth;
     let path_filters = scan_option.meta_option.path_filters.as_ref();
-    let current_logical_path =
-        path_filters.map(|_| logical_path_from_physical(&scan_option.control_path, &dir_entry.path));
+    let current_logical_path = path_filters
+        .map(|_| logical_path_from_physical(&scan_option.control_path, &dir_entry.path));
 
     if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
         if !filters.should_descend_dir(logical_path) {
@@ -188,15 +188,17 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     continue;
                 }
 
-                let logical_path =
-                    path_filters.map(|_| logical_path_from_physical(&scan_option.control_path, &path));
+                let logical_path = path_filters
+                    .map(|_| logical_path_from_physical(&scan_option.control_path, &path));
 
                 if file_type.is_symlink() {
                     // Handle symlinks - always record them as files, but only follow if configured
                     debug!("Processing symlink: {:?}", path);
                     match retry_scan_io(context, || fstat::stat_file(&path)) {
                         Ok((file_meta, _)) => {
-                            if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                            if let (Some(filters), Some(ref lp)) =
+                                (path_filters, logical_path.as_ref())
+                            {
                                 if !filters.should_emit_file(lp) {
                                     continue;
                                 }
@@ -210,7 +212,9 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                             if scan_option.meta_option.follow_symlinks {
                                 if let Ok(target_meta) = std::fs::metadata(&path) {
                                     if target_meta.is_dir() {
-                                        if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
+                                        if let (Some(filters), Some(ref lp)) =
+                                            (path_filters, logical_path.as_ref())
+                                        {
                                             if !filters.should_descend_dir(lp) {
                                                 continue;
                                             }

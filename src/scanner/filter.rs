@@ -230,7 +230,10 @@ impl SegmentPattern {
 }
 
 fn compile_patterns(patterns: Vec<String>) -> Result<Vec<PathPattern>, String> {
-    patterns.into_iter().map(|pattern| compile_pattern(&pattern)).collect()
+    patterns
+        .into_iter()
+        .map(|pattern| compile_pattern(&pattern))
+        .collect()
 }
 
 fn compile_pattern(pattern: &str) -> Result<PathPattern, String> {
@@ -247,14 +250,19 @@ fn compile_pattern(pattern: &str) -> Result<PathPattern, String> {
 
 pub fn logical_path_from_physical(control: &ControlPathOption, physical_path: &Path) -> String {
     let logical_root = PathBuf::from(&control.source_root);
-    if !physical_path.starts_with(&control.physical_base) && physical_path.starts_with(&logical_root) {
+    if !physical_path.starts_with(&control.physical_base)
+        && physical_path.starts_with(&logical_root)
+    {
         return normalize_logical_path(&physical_path.to_string_lossy());
     }
     let rel = physical_path
         .strip_prefix(&control.physical_base)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| physical_path.to_path_buf());
-    normalize_logical_path(&format!("/{}", rel.to_string_lossy().trim_start_matches('/')))
+    normalize_logical_path(&format!(
+        "/{}",
+        rel.to_string_lossy().trim_start_matches('/')
+    ))
 }
 
 fn split_logical_path(path: &str) -> Vec<&str> {
@@ -297,14 +305,10 @@ mod tests {
 
     #[test]
     fn dir_include_selects_subtree_and_ancestors() {
-        let filters = ScanPathFilterSet::compile(
-            vec!["/dir/*/*/dir1".to_string()],
-            vec![],
-            vec![],
-            vec![],
-        )
-        .unwrap()
-        .unwrap();
+        let filters =
+            ScanPathFilterSet::compile(vec!["/dir/*/*/dir1".to_string()], vec![], vec![], vec![])
+                .unwrap()
+                .unwrap();
         assert!(filters.should_descend_dir("/"));
         assert!(filters.should_descend_dir("/dir"));
         assert!(filters.should_descend_dir("/dir/a"));

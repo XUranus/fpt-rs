@@ -42,7 +42,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::scanner::metadata::{ControlFileHeader, ControlFileWriter, DirControlEntry, FileControlEntry};
+use crate::scanner::metadata::{
+    ControlFileHeader, ControlFileWriter, DirControlEntry, FileControlEntry,
+};
 
 /// Default maximum entries per control file shard for copy phase.
 /// With ~100 bytes per entry, this keeps shards under ~100MB.
@@ -170,7 +172,13 @@ impl ShardedControlFileManager {
         } else {
             ShardSplitPolicy::other_default()
         };
-        Self::with_policy_and_header(ctrl_dir, base_name, num_shards, policy, ControlFileHeader::default())
+        Self::with_policy_and_header(
+            ctrl_dir,
+            base_name,
+            num_shards,
+            policy,
+            ControlFileHeader::default(),
+        )
     }
 
     /// Creates a new manager with an explicit header for every shard file.

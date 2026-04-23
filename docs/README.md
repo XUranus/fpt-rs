@@ -20,6 +20,7 @@ Start here if you are new to the repository:
 12. [scanner_filter.md](scanner_filter.md) for scanner include/exclude path matching and traversal-pruning behavior.
 13. [runtime_memory.md](runtime_memory.md) for scan/backup/restore memory hotspots and runtime knobs.
 14. [fptserver.md](fptserver.md) for the RPC server, worker process model, and task APIs.
+15. [code_organization.md](code_organization.md) for module layout and parameter-grouping conventions.
 
 Reference docs:
 

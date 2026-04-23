@@ -468,7 +468,9 @@ async fn validate_smb_target_writable(loc: &crate::smb::SmbLocation) -> Result<(
                 if deleted {
                     Ok(())
                 } else {
-                    Err(format!("delete temp magic directory {magic_dir}: not found"))
+                    Err(format!(
+                        "delete temp magic directory {magic_dir}: not found"
+                    ))
                 }
             })
     }

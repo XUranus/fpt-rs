@@ -88,21 +88,11 @@ struct Args {
     #[arg(long, value_name = "NAME")]
     skip: Vec<String>,
 
-    /// Include directories whose logical path matches this pattern. Repeatable.
-    #[arg(long, value_name = "PATTERN")]
-    include_dir_pattern: Vec<String>,
+    #[command(flatten)]
+    path_filters: PathFilterArgs,
 
-    /// Include files whose logical path matches this pattern. Repeatable.
-    #[arg(long, value_name = "PATTERN")]
-    include_file_pattern: Vec<String>,
-
-    /// Exclude directories whose logical path matches this pattern. Repeatable.
-    #[arg(long, value_name = "PATTERN")]
-    exclude_dir_pattern: Vec<String>,
-
-    /// Exclude files whose logical path matches this pattern. Repeatable.
-    #[arg(long, value_name = "PATTERN")]
-    exclude_file_pattern: Vec<String>,
+    #[command(flatten)]
+    retry: RetryArgs,
 
     /// Previous metadata directory for incremental scan
     #[arg(long, value_name = "DIR")]
@@ -164,7 +154,41 @@ struct Args {
     /// Structured failure log format.
     #[arg(long, value_enum, value_name = "FMT")]
     failure_log_format: Option<FailureLogFormatArg>,
+}
 
+#[derive(clap::Args, Debug, Clone, Default)]
+struct PathFilterArgs {
+    /// Include directories whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    include_dir_pattern: Vec<String>,
+
+    /// Include files whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    include_file_pattern: Vec<String>,
+
+    /// Exclude directories whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    exclude_dir_pattern: Vec<String>,
+
+    /// Exclude files whose logical path matches this pattern. Repeatable.
+    #[arg(long, value_name = "PATTERN")]
+    exclude_file_pattern: Vec<String>,
+}
+
+impl PathFilterArgs {
+    fn compile(&self) -> Result<Option<ScanPathFilterSet>, std::io::Error> {
+        ScanPathFilterSet::compile(
+            self.include_dir_pattern.clone(),
+            self.include_file_pattern.clone(),
+            self.exclude_dir_pattern.clone(),
+            self.exclude_file_pattern.clone(),
+        )
+        .map_err(std::io::Error::other)
+    }
+}
+
+#[derive(clap::Args, Debug, Clone, Copy)]
+struct RetryArgs {
     /// Number of retries for scan operations before recording failure.
     #[arg(long, default_value = "3", value_name = "COUNT")]
     operation_retries: u32,
@@ -184,6 +208,20 @@ struct Args {
     /// Deterministic jitter ratio for retry delays, range 0.0..1.0.
     #[arg(long, default_value = "0.0", value_name = "RATIO")]
     retry_jitter: f64,
+}
+
+impl RetryArgs {
+    fn policy(self) -> RetryPolicy {
+        RetryPolicy::new(
+            self.operation_retries,
+            Duration::from_millis(self.retry_delay_ms),
+        )
+        .with_backoff(
+            self.retry_backoff,
+            Duration::from_millis(self.retry_max_delay_ms),
+        )
+        .with_jitter(self.retry_jitter)
+    }
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -250,15 +288,6 @@ fn build_scan_option(
     args: &Args,
     location: &DataLocation,
 ) -> Result<ScanOption, Box<dyn std::error::Error>> {
-    let retry_policy = RetryPolicy::new(
-        args.operation_retries,
-        Duration::from_millis(args.retry_delay_ms),
-    )
-    .with_backoff(
-        args.retry_backoff,
-        Duration::from_millis(args.retry_max_delay_ms),
-    )
-    .with_jitter(args.retry_jitter);
     let mut opt = ScanOption::new(args.ctrl_dir.clone(), args.meta_dir.clone())
         .worker_count(args.workers)
         .writer_count(args.writers)
@@ -281,16 +310,9 @@ fn build_scan_option(
             location.kind_name(),
         )
         .stats_only(args.stats_only)
-        .retry_policy(retry_policy);
+        .retry_policy(args.retry.policy());
 
-    let path_filters = ScanPathFilterSet::compile(
-        args.include_dir_pattern.clone(),
-        args.include_file_pattern.clone(),
-        args.exclude_dir_pattern.clone(),
-        args.exclude_file_pattern.clone(),
-    )
-    .map_err(std::io::Error::other)?;
-    opt = opt.path_filters(path_filters);
+    opt = opt.path_filters(args.path_filters.compile()?);
 
     if let Some(format) = args.failure_log_format {
         let format: FailureLogFormat = format.into();

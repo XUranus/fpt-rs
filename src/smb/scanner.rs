@@ -204,9 +204,10 @@ impl SmbScanner {
 
     async fn scan_one_dir(&self, task: DirTask, scan_option: &ScanOption) -> DirScanOutput {
         let path_filters = scan_option.meta_option.path_filters.as_ref();
-        let current_logical_path =
-            path_filters.map(|_| logical_path_from_physical(&scan_option.control_path, task.path.as_ref()));
-        if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
+        let current_logical_path = path_filters
+            .map(|_| logical_path_from_physical(&scan_option.control_path, task.path.as_ref()));
+        if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref())
+        {
             if !filters.should_descend_dir(logical_path) {
                 return DirScanOutput {
                     batch: None,
@@ -369,11 +370,13 @@ impl SmbScanner {
 
                 let child_path = format!("{}/{}", task.path, name);
                 let child_unc = task.unc.clone().with_add_path(&name);
-                let child_logical = path_filters
-                    .map(|_| logical_path_from_physical(&scan_option.control_path, child_path.as_ref()));
+                let child_logical = path_filters.map(|_| {
+                    logical_path_from_physical(&scan_option.control_path, child_path.as_ref())
+                });
 
                 if entry.file_attributes.directory() && !entry.file_attributes.reparse_point() {
-                    if let (Some(filters), Some(logical)) = (path_filters, child_logical.as_deref()) {
+                    if let (Some(filters), Some(logical)) = (path_filters, child_logical.as_deref())
+                    {
                         if !filters.should_descend_dir(logical) {
                             continue;
                         }
@@ -409,7 +412,8 @@ impl SmbScanner {
         }
 
         drop(dir);
-        if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref()) {
+        if let (Some(filters), Some(logical_path)) = (path_filters, current_logical_path.as_deref())
+        {
             if !filters.should_emit_dir(logical_path) && batch.files.is_empty() {
                 return DirScanOutput {
                     batch: None,

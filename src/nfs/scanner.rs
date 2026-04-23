@@ -26,11 +26,11 @@ use nfs3_client::nfs3_types::nfs3::{
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
-use crate::scanner::filter::{logical_path_from_physical, ScanPathFilterSet};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
 use crate::nfs::fstat::{nfs_fattr3_to_dir_meta, nfs_fattr3_to_file_meta};
 use crate::nfs::NfsLocation;
+use crate::scanner::filter::{logical_path_from_physical, ScanPathFilterSet};
 use crate::scanner::models::DirBatchScanResult;
 use crate::scanner::options::{ControlPathOption, ScanOption};
 
@@ -49,6 +49,43 @@ pub struct NfsScanner {
     sem: Arc<Semaphore>,
     retry_policy: RetryPolicy,
     failure_recorder: Option<FailureRecorder>,
+}
+
+/// Immutable scan settings shared by every NFS traversal worker.
+#[derive(Clone)]
+struct NfsScanShared {
+    control_path: ControlPathOption,
+    path_filters: Option<ScanPathFilterSet>,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
+}
+
+/// Channel and progress handles used by one NFS worker.
+#[derive(Clone)]
+struct NfsWorkerChannels {
+    work_rx: async_channel::Receiver<(nfs_fh3, String)>,
+    work_tx: async_channel::Sender<(nfs_fh3, String)>,
+    result_tx: mpsc::Sender<DirBatchScanResult>,
+    in_flight: Arc<AtomicUsize>,
+}
+
+/// Complete runtime context for one NFS worker task.
+struct NfsWorkerRuntime {
+    pool: Arc<NfsConnectionPool>,
+    sem: Arc<Semaphore>,
+    channels: NfsWorkerChannels,
+    shared: NfsScanShared,
+}
+
+/// Parameters needed to scan one NFS directory.
+struct NfsDirScan<'a> {
+    pool: &'a NfsConnectionPool,
+    sem: &'a Semaphore,
+    dir_fh: nfs_fh3,
+    dir_path: &'a str,
+    work_tx: &'a async_channel::Sender<(nfs_fh3, String)>,
+    result_tx: &'a mpsc::Sender<DirBatchScanResult>,
+    shared: &'a NfsScanShared,
 }
 
 impl NfsScanner {
@@ -99,8 +136,12 @@ impl NfsScanner {
         scan_option: &ScanOption,
         tx: mpsc::Sender<DirBatchScanResult>,
     ) -> Result<(), NfsError> {
-        let control_path = scan_option.control_path.clone();
-        let path_filters = scan_option.meta_option.path_filters.clone();
+        let shared = NfsScanShared {
+            control_path: scan_option.control_path.clone(),
+            path_filters: scan_option.meta_option.path_filters.clone(),
+            retry_policy: self.retry_policy,
+            failure_recorder: self.failure_recorder.clone(),
+        };
         // Shared work queue: (dir_fh, dir_path)
         let (work_tx, work_rx) = async_channel::unbounded::<(nfs_fh3, String)>();
         let in_flight = Arc::new(AtomicUsize::new(0));
@@ -120,24 +161,20 @@ impl NfsScanner {
             let work_tx = work_tx.clone();
             let work_rx = work_rx.clone();
             let in_flight = Arc::clone(&in_flight);
-            let retry_policy = self.retry_policy;
-            let failure_recorder = self.failure_recorder.clone();
-            let control_path = control_path.clone();
-            let path_filters = path_filters.clone();
+            let shared = shared.clone();
 
             handles.push(tokio::spawn(async move {
-                scan_worker(
+                scan_worker(NfsWorkerRuntime {
                     pool,
                     sem,
-                    work_rx,
-                    work_tx,
-                    tx,
-                    in_flight,
-                    retry_policy,
-                    failure_recorder,
-                    control_path,
-                    path_filters,
-                )
+                    channels: NfsWorkerChannels {
+                        work_rx,
+                        work_tx,
+                        result_tx: tx,
+                        in_flight,
+                    },
+                    shared,
+                })
                 .await
             }));
         }
@@ -171,25 +208,21 @@ impl NfsScanner {
 /// One scan worker task.  Repeatedly receives `(dir_fh, dir_path)` from the
 /// queue, reads the directory with `readdirplus`, emits a [`DirBatchScanResult`],
 /// and pushes subdirectories back into the queue.
-async fn scan_worker(
-    pool: Arc<NfsConnectionPool>,
-    sem: Arc<Semaphore>,
-    work_rx: async_channel::Receiver<(nfs_fh3, String)>,
-    work_tx: async_channel::Sender<(nfs_fh3, String)>,
-    result_tx: mpsc::Sender<DirBatchScanResult>,
-    in_flight: Arc<AtomicUsize>,
-    retry_policy: RetryPolicy,
-    failure_recorder: Option<FailureRecorder>,
-    control_path: ControlPathOption,
-    path_filters: Option<ScanPathFilterSet>,
-) -> Result<(), NfsError> {
+async fn scan_worker(runtime: NfsWorkerRuntime) -> Result<(), NfsError> {
+    let NfsWorkerRuntime {
+        pool,
+        sem,
+        channels,
+        shared,
+    } = runtime;
+
     loop {
         // Try to get a work item; exit cleanly when queue is empty and drained.
-        let (dir_fh, dir_path) = match work_rx.try_recv() {
+        let (dir_fh, dir_path) = match channels.work_rx.try_recv() {
             Ok(item) => item,
             Err(async_channel::TryRecvError::Empty) => {
                 // If nothing is in-flight, we're done.
-                if in_flight.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                if channels.in_flight.load(std::sync::atomic::Ordering::SeqCst) == 0 {
                     break;
                 }
                 // Otherwise yield and retry.
@@ -199,23 +232,24 @@ async fn scan_worker(
             Err(async_channel::TryRecvError::Closed) => break,
         };
 
-        in_flight.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        channels
+            .in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        let result = scan_one_dir(
-            &pool,
-            &sem,
+        let result = scan_one_dir(NfsDirScan {
+            pool: &pool,
+            sem: &sem,
             dir_fh,
-            &dir_path,
-            &work_tx,
-            &result_tx,
-            retry_policy,
-            failure_recorder.clone(),
-            &control_path,
-            path_filters.as_ref(),
-        )
+            dir_path: &dir_path,
+            work_tx: &channels.work_tx,
+            result_tx: &channels.result_tx,
+            shared: &shared,
+        })
         .await;
 
-        in_flight.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        channels
+            .in_flight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
 
         if let Err(e) = result {
             log::error!("NFS scan error for {dir_path}: {e}");
@@ -228,27 +262,27 @@ async fn scan_worker(
 
 /// Read a single directory and send a [`DirBatchScanResult`] for it.
 /// Subdirectories are pushed into `work_tx` for recursive processing.
-async fn scan_one_dir(
-    pool: &NfsConnectionPool,
-    sem: &Semaphore,
-    dir_fh: nfs_fh3,
-    dir_path: &str,
-    work_tx: &async_channel::Sender<(nfs_fh3, String)>,
-    result_tx: &mpsc::Sender<DirBatchScanResult>,
-    retry_policy: RetryPolicy,
-    failure_recorder: Option<FailureRecorder>,
-    control_path: &ControlPathOption,
-    path_filters: Option<&ScanPathFilterSet>,
-) -> Result<(), NfsError> {
+async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
+    let NfsDirScan {
+        pool,
+        sem,
+        dir_fh,
+        dir_path,
+        work_tx,
+        result_tx,
+        shared,
+    } = request;
+    let path_filters = shared.path_filters.as_ref();
+
     if let Some(filters) = path_filters {
-        let logical_dir = logical_path_from_physical(control_path, dir_path.as_ref());
+        let logical_dir = logical_path_from_physical(&shared.control_path, dir_path.as_ref());
         if !filters.should_descend_dir(&logical_dir) {
             return Ok(());
         }
     }
     // Get directory attributes via getattr.
     let dir_attrs = {
-        let res = retry_nfs(retry_policy, || async {
+        let res = retry_nfs(shared.retry_policy, || async {
             let _permit = sem
                 .acquire()
                 .await
@@ -265,12 +299,12 @@ async fn scan_one_dir(
             Nfs3Result::Ok(ok) => ok.obj_attributes,
             Nfs3Result::Err((stat, _)) => {
                 record_nfs_failure(
-                    failure_recorder.as_ref(),
+                    shared.failure_recorder.as_ref(),
                     "getattr_dir",
                     FailureItemType::Directory,
                     dir_path,
                     format!("NFS error {stat:?}"),
-                    retry_policy.max_retries + 1,
+                    shared.retry_policy.max_retries + 1,
                 );
                 return Err(NfsError::Nfs(stat, format!("getattr on {dir_path}")));
             }
@@ -287,7 +321,7 @@ async fn scan_one_dir(
 
     loop {
         log::debug!("NFS READDIRPLUS: dir={dir_path} cookie={cookie:?}");
-        let res = retry_nfs(retry_policy, || async {
+        let res = retry_nfs(shared.retry_policy, || async {
             let _permit = sem
                 .acquire()
                 .await
@@ -309,12 +343,12 @@ async fn scan_one_dir(
             Nfs3Result::Ok(ok) => ok,
             Nfs3Result::Err((stat, _)) => {
                 record_nfs_failure(
-                    failure_recorder.as_ref(),
+                    shared.failure_recorder.as_ref(),
                     "readdirplus",
                     FailureItemType::Directory,
                     dir_path,
                     format!("NFS error {stat:?}"),
-                    retry_policy.max_retries + 1,
+                    shared.retry_policy.max_retries + 1,
                 );
                 return Err(NfsError::Nfs(stat, format!("readdirplus on {dir_path}")));
             }
@@ -334,7 +368,7 @@ async fn scan_one_dir(
 
             let child_path = format!("{dir_path}/{name}");
             let child_logical = path_filters
-                .map(|_| logical_path_from_physical(control_path, child_path.as_ref()));
+                .map(|_| logical_path_from_physical(&shared.control_path, child_path.as_ref()));
 
             // Get fattr3 for this entry (present in readdirplus, may be absent).
             let attrs = match &entry.name_attributes {
@@ -343,7 +377,7 @@ async fn scan_one_dir(
                     // Fallback: getattr on the file handle if available.
                     match entry.name_handle.clone() {
                         Nfs3Option::Some(fh) => {
-                            match retry_nfs(retry_policy, || async {
+                            match retry_nfs(shared.retry_policy, || async {
                                 let _permit = sem
                                     .acquire()
                                     .await
@@ -359,12 +393,12 @@ async fn scan_one_dir(
                                 Nfs3Result::Err((stat, _)) => {
                                     log::warn!("NFS getattr failed for {child_path}: {stat}");
                                     record_nfs_failure(
-                                        failure_recorder.as_ref(),
+                                        shared.failure_recorder.as_ref(),
                                         "getattr_entry",
                                         FailureItemType::Unknown,
                                         &child_path,
                                         format!("NFS error {stat:?}"),
-                                        retry_policy.max_retries + 1,
+                                        shared.retry_policy.max_retries + 1,
                                     );
                                     continue;
                                 }
@@ -382,7 +416,9 @@ async fn scan_one_dir(
 
             match attrs.type_ {
                 ftype3::NF3DIR => {
-                    if let (Some(filters), Some(ref logical)) = (path_filters, child_logical.as_ref()) {
+                    if let (Some(filters), Some(ref logical)) =
+                        (path_filters, child_logical.as_ref())
+                    {
                         if !filters.should_descend_dir(logical) {
                             continue;
                         }
@@ -414,7 +450,9 @@ async fn scan_one_dir(
                     }
                 }
                 ftype3::NF3REG => {
-                    if let (Some(filters), Some(ref logical)) = (path_filters, child_logical.as_ref()) {
+                    if let (Some(filters), Some(ref logical)) =
+                        (path_filters, child_logical.as_ref())
+                    {
                         if !filters.should_emit_file(logical) {
                             continue;
                         }
@@ -423,7 +461,9 @@ async fn scan_one_dir(
                     files.push(nfs_fattr3_to_file_meta(&attrs, &name, None));
                 }
                 ftype3::NF3LNK => {
-                    if let (Some(filters), Some(ref logical)) = (path_filters, child_logical.as_ref()) {
+                    if let (Some(filters), Some(ref logical)) =
+                        (path_filters, child_logical.as_ref())
+                    {
                         if !filters.should_emit_file(logical) {
                             continue;
                         }
@@ -431,17 +471,17 @@ async fn scan_one_dir(
                     log::debug!("NFS scan: symlink entry {child_path}");
                     // Resolve symlink target.
                     let target = if let Nfs3Option::Some(fh) = entry.name_handle.clone() {
-                        match readlink_target(pool, &fh, retry_policy).await {
+                        match readlink_target(pool, &fh, shared.retry_policy).await {
                             Ok(t) => Some(t),
                             Err(e) => {
                                 log::warn!("NFS readlink failed for {child_path}: {e}");
                                 record_nfs_failure(
-                                    failure_recorder.as_ref(),
+                                    shared.failure_recorder.as_ref(),
                                     "readlink",
                                     FailureItemType::Symlink,
                                     &child_path,
                                     e.to_string(),
-                                    retry_policy.max_retries + 1,
+                                    shared.retry_policy.max_retries + 1,
                                 );
                                 None
                             }
@@ -477,7 +517,7 @@ async fn scan_one_dir(
         complete: true,
     };
     if let Some(filters) = path_filters {
-        let logical_dir = logical_path_from_physical(control_path, dir_path.as_ref());
+        let logical_dir = logical_path_from_physical(&shared.control_path, dir_path.as_ref());
         if !filters.should_emit_dir(&logical_dir) && result.files.is_empty() {
             return Ok(());
         }
