@@ -72,7 +72,7 @@ if let Some((dir, files)) = agg_state.add_file(&dir_path, pending) {
 442 errors of the following form in `backup.log`:
 
 ```
-[ERROR] bifrost::backup::bio::copy - Failed to create final blob for dir /opt/dataset/ds2/d1/d2/d2/d2: Index error: SQLite error: unable to open database file
+[ERROR] fpt::backup::bio::copy - Failed to create final blob for dir /opt/dataset/ds2/d1/d2/d2/d2: Index error: SQLite error: unable to open database file
 ```
 
 ### Root Cause

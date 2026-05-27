@@ -2,7 +2,7 @@ extern crate libc;
 
 use std::{path::PathBuf, time::Duration};
 
-use bifrost::{
+use fpt::{
     backup::{BackupOption, BackupTask},
     scanner::{options::ScanOption, Scanner},
 };
@@ -62,8 +62,8 @@ fn main() {
     setup_logger().unwrap();
 
     let mut scanner: Scanner = ScanOption::new(
-        PathBuf::from("/tmp/bifrost/ctrl"),
-        PathBuf::from("/tmp/bifrost/meta"),
+        PathBuf::from("/tmp/fpt/ctrl"),
+        PathBuf::from("/tmp/fpt/meta"),
     )
     .follow_symlinks(false)
     .scan_hidden(false)
@@ -73,7 +73,7 @@ fn main() {
     .into();
 
     scanner
-        .enqueue_path(PathBuf::from("/home/xuranus/workspace/bifrost/mnt/source"))
+        .enqueue_path(PathBuf::from("/home/xuranus/workspace/fpt/mnt/source"))
         .unwrap();
     let scan = scanner.start().unwrap();
     while !scan.complete() {
@@ -82,14 +82,14 @@ fn main() {
     }
     println!("Scan complete");
 
-    //    let mut w = bifrost::scanner::fsidx_storage::FileCacheWriter::new("/tmp/bifrost", "wxx").unwrap();
-    //    let res = w.write(&bifrost::scanner::fsidx_storage::FileCacheEntry::default()).unwrap();
+    //    let mut w = fpt::scanner::fsidx_storage::FileCacheWriter::new("/tmp/fpt", "wxx").unwrap();
+    //    let res = w.write(&fpt::scanner::fsidx_storage::FileCacheEntry::default()).unwrap();
     //    println!("{:#?}", res);
 
-    //    let res = w.write(&bifrost::scanner::fsidx_storage::FileCacheEntry::default()).unwrap();
+    //    let res = w.write(&fpt::scanner::fsidx_storage::FileCacheEntry::default()).unwrap();
     //    println!("{:#?}", res);
 
-    // let mut r = bifrost::scanner::fsidx_storage::FileCacheReader::new("/tmp/bifrost", "wxx").unwrap();
+    // let mut r = fpt::scanner::fsidx_storage::FileCacheReader::new("/tmp/fpt", "wxx").unwrap();
     // let res = r.read(0, 5).unwrap();
     // print!("{:#?}", res);
 
@@ -102,10 +102,10 @@ fn main() {
     // why the output is not /tmp/target/home/xuranus/dataset/dir1/dir11/11.txt
 
     let source_dir_base = PathBuf::from("/");
-    let target_dir_base = PathBuf::from("/home/xuranus/workspace/bifrost/mnt/target");
-    let meta_dir = PathBuf::from("/tmp/bifrost/meta");
-    let ctrl_dir = PathBuf::from("/tmp/bifrost/ctrl");
-    let control_file = PathBuf::from("/tmp/bifrost/meta/ctrl.txt");
+    let target_dir_base = PathBuf::from("/home/xuranus/workspace/fpt/mnt/target");
+    let meta_dir = PathBuf::from("/tmp/fpt/meta");
+    let ctrl_dir = PathBuf::from("/tmp/fpt/ctrl");
+    let control_file = PathBuf::from("/tmp/fpt/meta/ctrl.txt");
 
     let fsbackup: BackupTask = BackupOption::new(
         source_dir_base,

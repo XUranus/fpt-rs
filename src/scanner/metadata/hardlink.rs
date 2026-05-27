@@ -6,7 +6,7 @@ use crate::scanner::metadata::control_codec::{
     put_u8, read_record, take_bytes, take_u32, take_u64, take_u8, write_record, ControlFileHeader,
 };
 
-const HARDLINK_MAGIC: &str = "#BIFROST_HARDLINK_CTRL_FILE";
+const HARDLINK_MAGIC: &str = "#FPT_HARDLINK_CTRL_FILE";
 const RECORD_TYPE_INODE: u8 = 1;
 const RECORD_TYPE_FILE: u8 = 2;
 

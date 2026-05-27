@@ -252,7 +252,7 @@ pub struct AggregateStats {
 
 /// Generate a unique blob filename using timestamp and counter.
 pub fn generate_blob_name(counter: u64) -> String {
-    format!("{:016x}.bifrost.blob", counter)
+    format!("{:016x}.fpt.blob", counter)
 }
 
 /// Snowflake-like unique ID generator for blob filenames.
@@ -265,13 +265,13 @@ pub struct SnowflakeIdGenerator {
     sequence: u16,
     /// Process ID (10 bits)
     process_id: u16,
-    /// Custom epoch (milliseconds) - Bifrost project start date
+    /// Custom epoch (milliseconds) - Fpt project start date
     epoch: u64,
 }
 
 impl SnowflakeIdGenerator {
     /// Custom epoch: 2024-01-01 00:00:00 UTC in milliseconds
-    const BIFROST_EPOCH: u64 = 1704067200000;
+    const FPT_EPOCH: u64 = 1704067200000;
 
     /// Maximum sequence number (12 bits)
     const MAX_SEQUENCE: u16 = 4095;
@@ -283,7 +283,7 @@ impl SnowflakeIdGenerator {
             last_timestamp: 0,
             sequence: 0,
             process_id: process_id & 0x3FF, // 10 bits
-            epoch: Self::BIFROST_EPOCH,
+            epoch: Self::FPT_EPOCH,
         }
     }
 
@@ -351,7 +351,7 @@ impl SnowflakeIdGenerator {
 
     /// Generates a unique blob filename.
     pub fn generate_blob_name(&mut self) -> String {
-        format!("{:016x}.bifrost.blob", self.next_id())
+        format!("{:016x}.fpt.blob", self.next_id())
     }
 }
 

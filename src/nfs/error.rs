@@ -1,4 +1,4 @@
-//! NFS error types for Bifrost.
+//! NFS error types for Fpt.
 //!
 //! [`NfsError`] wraps transport errors from `nfs3_client` and NFS-level status
 //! codes from `nfs3_types`, providing a unified error type for the NFS module.

@@ -6,7 +6,7 @@ use crate::scanner::metadata::control_codec::{
     read_record, take_bytes, take_u32, take_u64, write_record, ControlFileHeader,
 };
 
-const MTIME_MAGIC: &str = "#BIFROST_MTIME_CTRL_FILE";
+const MTIME_MAGIC: &str = "#FPT_MTIME_CTRL_FILE";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MtimeDirEntry {
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_mtime_control_file_roundtrip() {
-        let path = std::env::temp_dir().join("bifrost_mtime_test.dat");
+        let path = std::env::temp_dir().join("fpt_mtime_test.dat");
         {
             let mut writer = MtimeControlFileWriter::new(&path).unwrap();
             writer

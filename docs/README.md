@@ -1,12 +1,12 @@
 # Documentation Guide
 
-This directory contains the implementation-facing documentation for Bifrost. The top-level project `README.md` is only a quick start; the detailed behavior, formats, and module layout are documented here.
+This directory contains the implementation-facing documentation for Fpt. The top-level project `README.md` is only a quick start; the detailed behavior, formats, and module layout are documented here.
 
 ## Reading Order
 
 Start here if you are new to the repository:
 
-1. [bifrost.md](bifrost.md) for the current architecture overview.
+1. [fpt.md](fpt.md) for the current architecture overview.
 2. [fptcli.md](fptcli.md) for user-facing backup and restore usage.
 3. [nfs.md](nfs.md) if you are touching NFS-backed scan/backup paths.
 4. [smb.md](smb.md) for the SMB transport design and rollout plan.
@@ -33,7 +33,7 @@ Reference docs:
 ## Current Conventions
 
 - Docs should describe the current implementation, not an aspirational design.
-- High-level concepts belong in `README.md` or `bifrost.md`.
+- High-level concepts belong in `README.md` or `fpt.md`.
 - Format details belong in dedicated docs under `docs/`.
 - If a behavior differs between local and NFS paths, document both explicitly.
 
@@ -50,7 +50,7 @@ Build into the default output directory:
 Build into a custom directory:
 
 ```bash
-python3 docs/build_wiki.py /tmp/bifrost-wiki
+python3 docs/build_wiki.py /tmp/fpt-wiki
 ```
 
 The output keeps the markdown files as markdown, preserves the `bugfix/` subtree, and generates:

@@ -1,6 +1,6 @@
 # Task Lifecycle API
 
-Bifrost exposes a common lifecycle trait for scanner, backup, and restore
+Fpt exposes a common lifecycle trait for scanner, backup, and restore
 orchestration:
 
 ```rust

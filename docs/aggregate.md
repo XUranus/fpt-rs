@@ -1,6 +1,6 @@
 # Aggregate Backup
 
-Aggregated backup packs small files into blob files instead of writing each file as an individual target object. Bifrost now supports two aggregate layouts.
+Aggregated backup packs small files into blob files instead of writing each file as an individual target object. Fpt now supports two aggregate layouts.
 
 ## Layouts
 
@@ -17,11 +17,11 @@ Example:
 ```text
 D_REPO/
 ├── .AGGR_DIR/
-│   ├── 0876ed2b6a013000.bifrost.blob
+│   ├── 0876ed2b6a013000.fpt.blob
 │   └── AGGREGATE_IDX.sqlite
 └── a/
     └── .AGGR_DIR/
-        ├── 0876ed2b6a023000.bifrost.blob
+        ├── 0876ed2b6a023000.fpt.blob
         └── AGGREGATE_IDX.sqlite
 ```
 
@@ -40,9 +40,9 @@ D_REPO/
 └── .AGGR/
     ├── AGGREGATE_INDEX.bidx
     ├── shard-000/
-    │   └── 0876ed8f6b003000.bifrost.blob
+    │   └── 0876ed8f6b003000.fpt.blob
     └── shard-001/
-        └── 0876ed8f6b013000.bifrost.blob
+        └── 0876ed8f6b013000.fpt.blob
 ```
 
 ## Config

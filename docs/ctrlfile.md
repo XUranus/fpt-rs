@@ -1,6 +1,6 @@
 # Control Files
 
-Bifrost control files are execution plans generated from metadata. They are not
+Fpt control files are execution plans generated from metadata. They are not
 the durable source of truth for a copy.
 
 Important rules:
@@ -36,7 +36,7 @@ This makes it:
 Common header fields:
 
 ```text
-#BIFROST_<TYPE>_CTRL_FILE V3
+#FPT_<TYPE>_CTRL_FILE V3
 HEADER_SIZE=4096
 FILE_COUNT=<N>
 DIR_COUNT=<N>
@@ -57,7 +57,7 @@ Notes:
 
 ## `copy.txt`
 
-Source implementation: [src/scanner/metadata/filecontrol.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/filecontrol.rs)
+Source implementation: [src/scanner/metadata/filecontrol.rs](/home/xuranus/workspace/fpt/src/scanner/metadata/filecontrol.rs)
 
 Record types:
 
@@ -119,7 +119,7 @@ Properties:
 
 ## `delete.txt`
 
-Source implementation: [src/scanner/metadata/delete.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/delete.rs)
+Source implementation: [src/scanner/metadata/delete.rs](/home/xuranus/workspace/fpt/src/scanner/metadata/delete.rs)
 
 Record payload:
 
@@ -129,7 +129,7 @@ Record payload:
 
 ## `hardlink.txt`
 
-Source implementation: [src/scanner/metadata/hardlink.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/hardlink.rs)
+Source implementation: [src/scanner/metadata/hardlink.rs](/home/xuranus/workspace/fpt/src/scanner/metadata/hardlink.rs)
 
 Record types:
 
@@ -150,7 +150,7 @@ File record payload:
 
 ## `mtime.txt`
 
-Source implementation: [src/scanner/metadata/mtime.rs](/home/xuranus/workspace/bifrost/src/scanner/metadata/mtime.rs)
+Source implementation: [src/scanner/metadata/mtime.rs](/home/xuranus/workspace/fpt/src/scanner/metadata/mtime.rs)
 
 Record payload:
 
@@ -197,5 +197,5 @@ With multi-writer scanner output, metadata files are physically named:
 
 - `meta_<WRITER_SHARD>_<SEGMENT>.dat`
 
-`META_FID` still stores one 32-bit id. Bifrost encodes `(writer_shard, segment)`
+`META_FID` still stores one 32-bit id. Fpt encodes `(writer_shard, segment)`
 into that id and resolves the physical metadata file internally.

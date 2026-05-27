@@ -1,6 +1,6 @@
-# Bifrost
+# Fpt
 
-Bifrost is a Rust backup engine for large filesystems. It combines scanning, metadata generation, file-copy orchestration, and restore flows for both local filesystems and NFS targets/sources. The main user-facing CLI is `fptcli`; the lower-level tools `fsscan`, `fsbackup`, and `fsdiff` remain available for split workflows and debugging.
+Fpt is a Rust backup engine for large filesystems. It combines scanning, metadata generation, file-copy orchestration, and restore flows for both local filesystems and NFS targets/sources. The main user-facing CLI is `fptcli`; the lower-level tools `fsscan`, `fsbackup`, and `fsdiff` remain available for split workflows and debugging.
 
 This `README.md` stays intentionally short. Detailed format, pipeline, and module documentation lives under [docs/](docs/README.md).
 
@@ -38,29 +38,20 @@ Run with NFS feature enabled:
 cargo test --features nfs
 ```
 
-Run the Python integration suite:
+Run the pytest-based integration suite:
 
 ```bash
-python scripts/test/test_all.py --keep-logs
+cargo build --release
+python -m pytest tests/smoke/ -v   # smoke tests
+python -m pytest tests/perf/ -v    # performance tests
+python -m pytest tests/ -v         # all tests
 ```
 
-Run the local/NFS/SMB smoke matrix:
+Run a specific test:
 
 ```bash
-scripts/smoke_matrix.sh
-```
-
-For a quick local-only check:
-
-```bash
-TEST_ROOT_DIR=/tmp/bifrost-smoke TEST_BUILD=0 TEST_TRANSPORTS=local TEST_AGGREGATE_LAYOUTS=shard scripts/smoke_matrix.sh
-```
-
-Useful targeted integration tests:
-
-```bash
-python scripts/test/test_special_files.py --keep-on-failure
-python scripts/test/test_incremental_backup.py --keep-on-failure
+python -m pytest tests/smoke/test_hardlinks.py -v
+python -m pytest tests/ -k "test_transport_matrix" -v
 ```
 
 ## Main CLI
@@ -185,7 +176,7 @@ Start with [docs/README.md](docs/README.md).
 Important docs:
 
 - [docs/fptcli.md](docs/fptcli.md): `fptcli` backup and restore usage
-- [docs/bifrost.md](docs/bifrost.md): architecture overview
+- [docs/fpt.md](docs/fpt.md): architecture overview
 - [docs/nfs.md](docs/nfs.md): NFS support and module layout
 - [docs/smb.md](docs/smb.md): SMB feasibility, design, and rollout plan
 - [docs/aggregate.md](docs/aggregate.md): aggregated backup format

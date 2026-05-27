@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bifrost now supports backing up and restoring hardlinked files. When multiple files share the same inode (hardlinks), Bifrost will:
+Fpt now supports backing up and restoring hardlinked files. When multiple files share the same inode (hardlinks), Fpt will:
 
 1. **During Scan**: Detect and record all files that share the same inode
 2. **During Backup (Copy Phase)**: Copy the first file in each hardlink group normally
@@ -20,7 +20,7 @@ Bifrost now supports backing up and restoring hardlinked files. When multiple fi
 The hardlink control file (`hardlink.txt`) uses a text-based format:
 
 ```text
-#BIFROST_HARDLINK_CTRL_FILE V1 FILES=<N> INODES=<M> TIME=<UNIX_TIMESTAMP>
+#FPT_HARDLINK_CTRL_FILE V1 FILES=<N> INODES=<M> TIME=<UNIX_TIMESTAMP>
 
 I <INODE:16HEX> <DEVICE:16HEX> <LINK_COUNT:8HEX>
 F <META_FID:8HEX> <META_OFFSET:8HEX> <PATH_LEN:8HEX> <PATH>
@@ -42,7 +42,7 @@ F <META_FID:8HEX> <META_OFFSET:8HEX> <PATH_LEN:8HEX> <PATH>
 ### Example
 
 ```text
-#BIFROST_HARDLINK_CTRL_FILE V1 FILES=3 INODES=1 TIME=1700000000
+#FPT_HARDLINK_CTRL_FILE V1 FILES=3 INODES=1 TIME=1700000000
 
 I 000000000000ABCD 0000000000000801 00000003
 F 00000000 00000100 00000014 /home/user/file1.txt
@@ -83,10 +83,10 @@ This will:
 
 ### Integrated Testing
 
-Use the `bifrost_test.sh` script with hardlink options:
+Use the `fpt_test.sh` script with hardlink options:
 
 ```bash
-./scripts/bifrost_test.sh \
+./scripts/fpt_test.sh \
     --scan-hardlinks \
     --backup-hardlinks \
     -i /source/path \

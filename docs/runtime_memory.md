@@ -1,6 +1,6 @@
 # Runtime Memory Configuration
 
-This document describes where Bifrost currently uses memory during scan,
+This document describes where Fpt currently uses memory during scan,
 backup, and restore, and which runtime knobs control the peak memory footprint.
 
 It documents the current implementation, not a future budget-based memory
@@ -29,8 +29,8 @@ The scanner uses a spillable queue for pending directories.
 
 Implementation:
 
-- [src/scanner.rs](/home/xuranus/workspace/bifrost/src/scanner.rs:56)
-- [src/scanner/options.rs](/home/xuranus/workspace/bifrost/src/scanner/options.rs:151)
+- [src/scanner.rs](/home/xuranus/workspace/fpt/src/scanner.rs:56)
+- [src/scanner/options.rs](/home/xuranus/workspace/fpt/src/scanner/options.rs:151)
 
 Relevant settings:
 
@@ -62,7 +62,7 @@ Completed directory scan results are pushed into a bounded in-memory
 
 Implementation:
 
-- [src/scanner.rs](/home/xuranus/workspace/bifrost/src/scanner.rs:69)
+- [src/scanner.rs](/home/xuranus/workspace/fpt/src/scanner.rs:69)
 
 Current bound:
 
@@ -80,7 +80,7 @@ pushing it downstream.
 
 Implementation:
 
-- [src/scanner/engine/bio/traversal.rs](/home/xuranus/workspace/bifrost/src/scanner/engine/bio/traversal.rs:82)
+- [src/scanner/engine/bio/traversal.rs](/home/xuranus/workspace/fpt/src/scanner/engine/bio/traversal.rs:82)
 
 Important consequence:
 
@@ -98,8 +98,8 @@ The scanner has:
 
 Implementation:
 
-- [src/scanner/options.rs](/home/xuranus/workspace/bifrost/src/scanner/options.rs:35)
-- [src/scanner/engine.rs](/home/xuranus/workspace/bifrost/src/scanner/engine.rs:26)
+- [src/scanner/options.rs](/home/xuranus/workspace/fpt/src/scanner/options.rs:35)
+- [src/scanner/engine.rs](/home/xuranus/workspace/fpt/src/scanner/engine.rs:26)
 
 Effects:
 
@@ -114,7 +114,7 @@ SMB scanning also uses a query-directory buffer.
 
 Implementation:
 
-- [src/scanner/options.rs](/home/xuranus/workspace/bifrost/src/scanner/options.rs:58)
+- [src/scanner/options.rs](/home/xuranus/workspace/fpt/src/scanner/options.rs:58)
 
 Default:
 
@@ -133,8 +133,8 @@ Local common backup allocates one copy buffer per copy worker thread.
 
 Implementation:
 
-- [src/backup/bio/local_copy.rs](/home/xuranus/workspace/bifrost/src/backup/bio/local_copy.rs:56)
-- [src/backup/local_executor.rs](/home/xuranus/workspace/bifrost/src/backup/local_executor.rs:98)
+- [src/backup/bio/local_copy.rs](/home/xuranus/workspace/fpt/src/backup/bio/local_copy.rs:56)
+- [src/backup/local_executor.rs](/home/xuranus/workspace/fpt/src/backup/local_executor.rs:98)
 
 The buffer size is:
 
@@ -155,7 +155,7 @@ There is also a bounded job queue:
 
 Implementation:
 
-- [src/backup/bio/local_copy.rs](/home/xuranus/workspace/bifrost/src/backup/bio/local_copy.rs:48)
+- [src/backup/bio/local_copy.rs](/home/xuranus/workspace/fpt/src/backup/bio/local_copy.rs:48)
 
 ### Generic Async NFS / SMB Copy
 
@@ -164,7 +164,7 @@ block reads and writes.
 
 Implementation:
 
-- [src/backup/aio/transport.rs](/home/xuranus/workspace/bifrost/src/backup/aio/transport.rs:16)
+- [src/backup/aio/transport.rs](/home/xuranus/workspace/fpt/src/backup/aio/transport.rs:16)
 
 Approximate memory:
 
@@ -194,7 +194,7 @@ This value is specified in KiB and then clamped to:
 
 Implementation:
 
-- [src/frame/backup_impls.rs](/home/xuranus/workspace/bifrost/src/frame/backup_impls.rs:104)
+- [src/frame/backup_impls.rs](/home/xuranus/workspace/fpt/src/frame/backup_impls.rs:104)
 
 ## Aggregate Mode Memory
 
@@ -203,8 +203,8 @@ blob files in memory before flushing them.
 
 Implementation:
 
-- [src/backup/aio/aggregation.rs](/home/xuranus/workspace/bifrost/src/backup/aio/aggregation.rs:165)
-- [src/backup/local_executor.rs](/home/xuranus/workspace/bifrost/src/backup/local_executor.rs:93)
+- [src/backup/aio/aggregation.rs](/home/xuranus/workspace/fpt/src/backup/aio/aggregation.rs:165)
+- [src/backup/local_executor.rs](/home/xuranus/workspace/fpt/src/backup/local_executor.rs:93)
 
 Relevant knobs:
 
@@ -286,7 +286,7 @@ Where:
 
 ## Current Gaps
 
-Bifrost does not yet provide:
+Fpt does not yet provide:
 
 - one unified `--memory-limit` knob
 - automatic derivation of workers/buffer sizes from a target memory budget

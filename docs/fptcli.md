@@ -259,7 +259,7 @@ Log files under `C_REPO/logs/` currently use:
 
 ## Related Docs
 
-- [bifrost.md](bifrost.md)
+- [fpt.md](fpt.md)
 - [nfs.md](nfs.md)
 - [aggregate.md](aggregate.md)
 - [logging.md](logging.md)

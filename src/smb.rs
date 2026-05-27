@@ -1,4 +1,4 @@
-//! SMB backup/restore support scaffolding for Bifrost.
+//! SMB backup/restore support scaffolding for Fpt.
 //!
 //! This module currently provides the SMB location/connect-string abstraction
 //! that future scan/backup/restore implementations will use. The actual SMB
@@ -12,7 +12,7 @@ pub(crate) mod scanner;
 
 /// Connection information for a single SMB share root.
 ///
-/// Internally Bifrost stores the share root and an optional sub-path beneath
+/// Internally Fpt stores the share root and an optional sub-path beneath
 /// that root. This mirrors the existing NFS split between export and sub-path.
 #[derive(Clone)]
 pub struct SmbLocation {

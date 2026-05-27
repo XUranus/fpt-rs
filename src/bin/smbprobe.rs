@@ -9,14 +9,14 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    bifrost::logging::init(2);
+    fpt::logging::init(2);
 
-    let location = bifrost::smb::SmbLocation::from_url(&cli.target)?;
+    let location = fpt::smb::SmbLocation::from_url(&cli.target)?;
     println!("target={}", location.display_string());
     println!("share_unc={}", location.share_unc_path()?);
     println!("root_unc={}", location.root_unc_path()?);
 
-    let client = smb_client::Client::new(bifrost::smb::client_config(&location));
+    let client = smb_client::Client::new(fpt::smb::client_config(&location));
     let share_root = location.share_unc_path()?;
     let username = location.username.clone().unwrap_or_default();
     let password = location.password.clone().unwrap_or_default();

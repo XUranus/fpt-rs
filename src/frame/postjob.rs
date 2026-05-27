@@ -162,7 +162,7 @@ impl<'a> BackupPostJob<'a> {
                 log::info!("Post-job: uploading M_REPO and C_REPO to NFS target");
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .thread_name("bifrost-nfs-post")
+                    .thread_name("fpt-nfs-post")
                     .build()
                     .map_err(|e| PostJobError::Io(e))?;
 
@@ -220,7 +220,7 @@ impl<'a> BackupPostJob<'a> {
                 log::info!("Post-job: uploading M_REPO and C_REPO to SMB target");
                 let rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
-                    .thread_name("bifrost-smb-post")
+                    .thread_name("fpt-smb-post")
                     .build()
                     .map_err(PostJobError::Io)?;
 

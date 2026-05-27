@@ -1,6 +1,6 @@
 # Scanner Path Filters
 
-Bifrost scanner can optionally filter traversal and emitted metadata/control entries by logical path pattern.
+Fpt scanner can optionally filter traversal and emitted metadata/control entries by logical path pattern.
 
 This applies to:
 

@@ -231,12 +231,12 @@ impl Default for ScanOption {
             writer_count: 4,
             meta_option: MetaScanOption::default(),
             target_dir: TargetDirOption {
-                ctrl_dir: PathBuf::from("/tmp/bifrost/ctrl"),
-                meta_dir: PathBuf::from("/tmp/bifrost/meta"),
+                ctrl_dir: PathBuf::from("/tmp/fpt/ctrl"),
+                meta_dir: PathBuf::from("/tmp/fpt/meta"),
                 prev_meta_dir: None,
             },
             queue_option: QueueOption {
-                temp_dir: PathBuf::from("/tmp/bifrost/cache"),
+                temp_dir: PathBuf::from("/tmp/fpt/cache"),
                 memory_upper_bound: 100_000,
                 memory_lower_bound: 50_000,
                 spill_load_batch_size: 20_000,

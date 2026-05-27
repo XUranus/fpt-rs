@@ -53,8 +53,8 @@ pub struct ScannerConfig {
 impl Default for ScannerConfig {
     fn default() -> Self {
         Self {
-            ctrl_dir: PathBuf::from("/tmp/bifrost/ctrl"),
-            meta_dir: PathBuf::from("/tmp/bifrost/meta"),
+            ctrl_dir: PathBuf::from("/tmp/fpt/ctrl"),
+            meta_dir: PathBuf::from("/tmp/fpt/meta"),
             worker_count: 4,
             writer_count: 1,
             prev_meta_dir: None,
@@ -304,7 +304,7 @@ mod nfs_impl {
 
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .thread_name("bifrost-nfs-scan")
+                .thread_name("fpt-nfs-scan")
                 .build()
                 .map_err(NfsScanError::Runtime)?;
 
@@ -381,7 +381,7 @@ mod smb_impl {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .worker_threads(self.config.worker_count.max(1))
-                .thread_name("bifrost-smb-scan")
+                .thread_name("fpt-smb-scan")
                 .build()
                 .map_err(SmbScanError::Runtime)?;
 

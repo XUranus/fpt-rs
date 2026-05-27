@@ -38,7 +38,7 @@ fn parse_size(s: &str) -> Result<u64, String> {
 }
 
 #[derive(Parser, Clone)]
-#[command(name = "vdbench", version = "1.0", author = "Bifrost")]
+#[command(name = "vdbench", version = "1.0", author = "Fpt")]
 struct Opts {
     /// Directory depth (number of levels)
     #[arg(short, long, default_value_t = 1)]

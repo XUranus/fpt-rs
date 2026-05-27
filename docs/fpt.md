@@ -1,10 +1,10 @@
-# Bifrost Architecture
+# Fpt Architecture
 
-This document describes the current structure of Bifrost as implemented in the repository today.
+This document describes the current structure of Fpt as implemented in the repository today.
 
 ## Overview
 
-Bifrost has four main layers:
+Fpt has four main layers:
 
 1. Scanner: walks a source tree and writes metadata plus control files.
 2. Backup engine: consumes control files and performs copy, hardlink, delete, and mtime phases.
@@ -157,7 +157,7 @@ For aggregated-format backup, only the copy phase runs.
 
 ## Logging Model
 
-Bifrost uses a shared routed logger.
+Fpt uses a shared routed logger.
 
 - scanner and NFS scan logs go to `C_REPO/logs/scan.log`
 - frame/orchestration logs go to `C_REPO/logs/frame.log`

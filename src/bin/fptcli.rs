@@ -11,14 +11,14 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use bifrost::backup::aggregate::{AggregateConfig, AggregateLayout};
-use bifrost::backup::RestorePolicy;
-use bifrost::failure::{FailureLogFormat, RetryPolicy};
-use bifrost::frame::{
+use fpt::backup::aggregate::{AggregateConfig, AggregateLayout};
+use fpt::backup::RestorePolicy;
+use fpt::failure::{FailureLogFormat, RetryPolicy};
+use fpt::frame::{
     traits::BackupRestoreJob, BackupJob, BackupJobConfig, DataLocation, RestoreJob,
     RestoreJobConfig, ScanConfig, TempRepoConfig,
 };
-use bifrost::scanner::ScanPathFilterSet;
+use fpt::scanner::ScanPathFilterSet;
 
 /// File Protection Tool CLI
 #[derive(Parser, Debug)]
@@ -142,7 +142,7 @@ enum Commands {
         #[arg(long, value_name = "GID")]
         nfs_gid: Option<u32>,
 
-        /// Temporary working directory for staging metadata/control files (default: /tmp/bifrost)
+        /// Temporary working directory for staging metadata/control files (default: /tmp/fpt)
         #[arg(long, value_name = "DIR")]
         temp_dir: Option<PathBuf>,
 
@@ -202,7 +202,7 @@ enum Commands {
         #[arg(long, value_name = "GID")]
         nfs_gid: Option<u32>,
 
-        /// Temporary working directory for staging metadata/control files (default: /tmp/bifrost)
+        /// Temporary working directory for staging metadata/control files (default: /tmp/fpt)
         #[arg(long, value_name = "DIR")]
         temp_dir: Option<PathBuf>,
 
@@ -318,7 +318,7 @@ fn parse_nfs_location(
     uid: Option<u32>,
     gid: Option<u32>,
 ) -> Result<DataLocation, Box<dyn std::error::Error>> {
-    let mut loc = bifrost::nfs::NfsLocation::from_url(url)
+    let mut loc = fpt::nfs::NfsLocation::from_url(url)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
         .connection_count(connections);
     // CLI flags override any uid/gid already set via URL query params
@@ -349,7 +349,7 @@ fn parse_data_location(
         {
             let _ = (connections, uid, gid);
             Ok(DataLocation::smb(
-                bifrost::smb::SmbLocation::from_url(spec)
+                fpt::smb::SmbLocation::from_url(spec)
                     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
             ))
         }
@@ -476,9 +476,9 @@ fn cmd_backup(
     let summary_format_tag = config.format_tag.clone();
 
     // Initialize logger.  BackupJob will add module→file routes after prereq.
-    bifrost::logging::init(verbose);
+    fpt::logging::init(verbose);
     if let Some(ref p) = log_file {
-        bifrost::logging::add_file(p);
+        fpt::logging::add_file(p);
     }
 
     let started_at = Instant::now();
@@ -561,9 +561,9 @@ fn cmd_restore(
         println!("Mode           : fine-grained ({} path(s))", paths.len());
     }
 
-    bifrost::logging::init(verbose);
+    fpt::logging::init(verbose);
     if let Some(ref p) = log_file {
-        bifrost::logging::add_file(p);
+        fpt::logging::add_file(p);
     }
 
     let started_at = Instant::now();
@@ -659,7 +659,7 @@ fn format_bytes(bytes: u64) -> String {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === File Descriptor Limit Initialization ===
     //
-    // Bifrost's aggregate backup engine opens many file descriptors simultaneously:
+    // Fpt's aggregate backup engine opens many file descriptors simultaneously:
     //   - Source file handles held open by reader I/O threads while FCBs are in-flight
     //   - Target blob files being written
     //   - SQLite database connections (one per-operation, but they overlap under concurrency)

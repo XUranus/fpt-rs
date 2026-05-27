@@ -1,4 +1,4 @@
-//! Conversion helpers from SMB directory/file information to Bifrost metadata.
+//! Conversion helpers from SMB directory/file information to Fpt metadata.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

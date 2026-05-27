@@ -1,4 +1,4 @@
-//! Async NFS directory scanner for Bifrost.
+//! Async NFS directory scanner for Fpt.
 //!
 //! [`NfsScanner`] recursively traverses an NFS export starting from a root file
 //! handle, collecting file and directory metadata via `readdirplus` RPCs.  It

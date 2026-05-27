@@ -15,7 +15,7 @@ This was reproduced with files around `4 MiB` and a dataset size around `20 GiB`
 
 ## Affected Components
 
-- [src/smb/aio.rs](/home/xuranus/workspace/bifrost/src/smb/aio.rs)
+- [src/smb/aio.rs](/home/xuranus/workspace/fpt/src/smb/aio.rs)
 - `fptcli backup` on `local -> SMB`
 - potentially any SMB copy path that reused the same fixed-size write loop
 
@@ -33,7 +33,7 @@ That means the top-level job was only waiting for the backup subtask thread to f
 
 ### The Real Failure Pattern
 
-Before the fix, Bifrost used hard-coded SMB I/O chunk sizes:
+Before the fix, Fpt used hard-coded SMB I/O chunk sizes:
 
 - read chunk: `1 MiB`
 - write chunk: `1 MiB`
@@ -60,7 +60,7 @@ The stall still reproduced with:
 - `--smb-connections 1`
 - one effective SMB copy task at a time
 
-That ruled out Bifrost-side task fan-out as the primary cause for this bug.
+That ruled out Fpt-side task fan-out as the primary cause for this bug.
 
 ## The Fix
 
@@ -78,11 +78,11 @@ The SMB client already exposes negotiated connection information through `smb-rs
 - `max_read_size`
 - `max_write_size`
 
-The Bifrost SMB I/O helpers now query those values from the active client connection.
+The Fpt SMB I/O helpers now query those values from the active client connection.
 
 ### 3. Clamp To A Conservative Safe Ceiling
 
-Even after querying negotiated limits, Bifrost does **not** drive the write loop at the maximum advertised size.
+Even after querying negotiated limits, Fpt does **not** drive the write loop at the maximum advertised size.
 
 Instead it clamps to:
 
@@ -100,7 +100,7 @@ write completion, not on SMB reads.
 
 The change was applied in:
 
-- [src/smb/aio.rs](/home/xuranus/workspace/bifrost/src/smb/aio.rs)
+- [src/smb/aio.rs](/home/xuranus/workspace/fpt/src/smb/aio.rs)
 
 Key behavior changes:
 
@@ -150,4 +150,4 @@ If a future server still stalls even with `256 KiB` write chunks, the next step 
 - add write-completion timeout diagnostics around pending async writes
 - fall back to even smaller writes, such as `64 KiB`, after a pending write exceeds a threshold
 
-At that point the remaining bug would be in SMB client request/completion behavior rather than in Bifrost's backup orchestration.
+At that point the remaining bug would be in SMB client request/completion behavior rather than in Fpt's backup orchestration.

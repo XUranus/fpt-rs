@@ -38,7 +38,7 @@ The delete control file (`delete.txt`) records files and directories that need t
 ### Format
 
 ```
-#BIFROST_DELETE_CTRL_FILE V1 FILES=<N> DIRS=<M> TIME=<UNIX_TIMESTAMP>
+#FPT_DELETE_CTRL_FILE V1 FILES=<N> DIRS=<M> TIME=<UNIX_TIMESTAMP>
 
 D <PATH_LEN:8HEX> <PATH>
 F <PATH_LEN:8HEX> <PATH>
@@ -51,7 +51,7 @@ F <PATH_LEN:8HEX> <PATH>
 ### Example
 
 ```
-#BIFROST_DELETE_CTRL_FILE V1 FILES=2 DIRS=1 TIME=1700000000
+#FPT_DELETE_CTRL_FILE V1 FILES=2 DIRS=1 TIME=1700000000
 
 F 00000014 /home/user/old_file.txt
 F 00000018 /home/user/temp_file.dat
@@ -92,7 +92,7 @@ The incremental diff algorithm compares current and previous cache files:
 ### Scanner Module
 
 ```rust
-use bifrost::scanner::metadata::{
+use fpt::scanner::metadata::{
     IncrementalDiff, DiffStats, DiffType,
     DeleteControlFileWriter, DeleteEntry, DeleteEntryType,
 };
@@ -115,7 +115,7 @@ let stats = diff.generate_control_files(
 ### Delete Phase
 
 ```rust
-use bifrost::backup::bio::delete;
+use fpt::backup::bio::delete;
 
 // Run delete phase
 let stats = delete::run_delete_phase(
@@ -157,10 +157,10 @@ println!("Files deleted: {}, Dirs deleted: {}",
 
 ```bash
 # Full backup
-./scripts/bifrost_test.sh -i /source/path -o /target/path
+./scripts/fpt_test.sh -i /source/path -o /target/path
 
 # Incremental backup with delete phase
-./scripts/bifrost_test.sh -i /source/path -o /target/path --backup-delete
+./scripts/fpt_test.sh -i /source/path -o /target/path --backup-delete
 ```
 
 ## Statistics

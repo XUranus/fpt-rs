@@ -4,7 +4,7 @@ This document describes the NFS-related code that exists in the repository today
 
 ## Overview
 
-Bifrost supports NFS-backed paths in three places:
+Fpt supports NFS-backed paths in three places:
 
 1. Scanning an NFS source.
 2. Backing up between local and NFS in any direction for common-format backup.

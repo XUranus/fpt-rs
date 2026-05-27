@@ -1,4 +1,4 @@
-//! NFS backup/restore support for Bifrost.
+//! NFS backup/restore support for Fpt.
 //!
 //! This top-level module exposes the [`Location`] enum, [`NfsLocation`]
 //! configuration, and re-exports the key types from sub-modules.
@@ -90,7 +90,7 @@ impl Default for Location {
 
 /// Configuration for a single NFSv3 mount point.
 ///
-/// Used within [`Location::Nfs`] to describe how Bifrost should connect to an
+/// Used within [`Location::Nfs`] to describe how Fpt should connect to an
 /// NFS server and which part of the exported tree to use.
 #[derive(Clone, Debug)]
 pub struct NfsLocation {
@@ -104,7 +104,7 @@ pub struct NfsLocation {
     /// Sub-path within the export to use as the working root.
     ///
     /// An empty string means the export root itself.  For example, if the
-    /// export is `/export/data` and `sub_path` is `"project/backup"`, Bifrost
+    /// export is `/export/data` and `sub_path` is `"project/backup"`, Fpt
     /// will work under `/export/data/project/backup`.
     pub sub_path: String,
 
@@ -208,7 +208,7 @@ impl NfsLocation {
     /// # Examples
     ///
     /// ```
-    /// # use bifrost::nfs::NfsLocation;
+    /// # use fpt::nfs::NfsLocation;
     /// let loc = NfsLocation::from_url("nfs://127.0.0.1/opt/dataset").unwrap();
     /// assert_eq!(loc.host, "127.0.0.1");
     /// assert_eq!(loc.export, "/opt/dataset");

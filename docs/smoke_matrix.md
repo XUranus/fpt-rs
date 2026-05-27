@@ -59,7 +59,7 @@ scripts/smoke_matrix.sh
 Local-only quick validation:
 
 ```bash
-TEST_ROOT_DIR=/tmp/bifrost-smoke \
+TEST_ROOT_DIR=/tmp/fpt-smoke \
 TEST_BUILD=0 \
 TEST_TRANSPORTS=local \
 TEST_AGGREGATE_LAYOUTS=shard \

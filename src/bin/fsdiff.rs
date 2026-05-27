@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 #[derive(Parser)]
-#[command(name = "fsdiff", version = "1.0", author = "Bifrost")]
+#[command(name = "fsdiff", version = "1.0", author = "Fpt")]
 #[command(about = "Compare two directories and report differences")]
 struct Args {
     /// Source directory path

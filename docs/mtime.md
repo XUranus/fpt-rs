@@ -19,7 +19,7 @@ The mtime control file (`mtime.txt`) is a text-based format that records directo
 ### Header
 
 ```
-#BIFROST_MTIME_CTRL_FILE V1 DIRS=<N> TIME=<UNIX_TIMESTAMP>
+#FPT_MTIME_CTRL_FILE V1 DIRS=<N> TIME=<UNIX_TIMESTAMP>
 ```
 
 - `DIRS=<N>`: Number of directory entries in the file
@@ -44,7 +44,7 @@ Fields:
 ### Example
 
 ```
-#BIFROST_MTIME_CTRL_FILE V1 DIRS=3 TIME=1700000000
+#FPT_MTIME_CTRL_FILE V1 DIRS=3 TIME=1700000000
 
 D 00000010 /home/user/docs 000041ED 000003E8 000003E8 00000170B5D7A300 00000170B5D7A300
 D 0000000E /home/user/src 000041ED 000003E8 000003E8 00000170B5D7A400 00000170B5D7A400
@@ -94,7 +94,7 @@ The mtime phase runs after copy and hardlink phases:
 #### Using Test Script
 
 ```bash
-./scripts/bifrost_test.sh -i /source/path -o /target/path --backup-mtime
+./scripts/fpt_test.sh -i /source/path -o /target/path --backup-mtime
 ```
 
 ## API Reference
@@ -102,7 +102,7 @@ The mtime phase runs after copy and hardlink phases:
 ### Scanner Module
 
 ```rust
-use bifrost::scanner::metadata::{MtimeControlFileWriter, MtimeDirEntry};
+use fpt::scanner::metadata::{MtimeControlFileWriter, MtimeDirEntry};
 
 // Create mtime control file
 let mut writer = MtimeControlFileWriter::new("mtime.txt")?;
@@ -123,7 +123,7 @@ writer.finish()?;
 ### Backup Module
 
 ```rust
-use bifrost::backup::bio::mtime;
+use fpt::backup::bio::mtime;
 
 // Run mtime phase
 let stats = mtime::run_mtime_phase(

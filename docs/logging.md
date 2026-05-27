@@ -1,6 +1,6 @@
 # Logging
 
-Bifrost uses a shared routed logger implemented in `src/logging.rs`.
+Fpt uses a shared routed logger implemented in `src/logging.rs`.
 
 The important behavior is:
 
@@ -31,11 +31,11 @@ Current `fptcli backup` routing:
 
 | Target prefix | Destination |
 |---------------|-------------|
-| `bifrost::scanner` | `C_REPO/logs/scan.log` |
-| `bifrost::nfs` | `C_REPO/logs/scan.log` during scan unless a more specific NFS AIO route matches |
-| `bifrost::frame` | `C_REPO/logs/frame.log` |
-| `bifrost::backup` | current subtask log |
-| `bifrost::nfs::aio` | current subtask log |
+| `fpt::scanner` | `C_REPO/logs/scan.log` |
+| `fpt::nfs` | `C_REPO/logs/scan.log` during scan unless a more specific NFS AIO route matches |
+| `fpt::frame` | `C_REPO/logs/frame.log` |
+| `fpt::backup` | current subtask log |
+| `fpt::nfs::aio` | current subtask log |
 | `exacl` | `scan.log` during scan, then current subtask log during backup |
 
 This routing is configured in `src/frame/backup_job.rs`.
@@ -97,14 +97,14 @@ This makes it useful as a single merged capture file.
   --data /opt/dataset/source \
   --target /backup/root \
   --format common \
-  --log-file /tmp/bifrost.log \
+  --log-file /tmp/fpt.log \
   -v
 ```
 
 Expected result:
 
 - routed logs are written under `COPY_.../C_REPO/logs/`
-- the same records are also appended to `/tmp/bifrost.log`
+- the same records are also appended to `/tmp/fpt.log`
 
 ## NFS and ACL Notes
 

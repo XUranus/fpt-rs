@@ -1,6 +1,6 @@
 # SMB Design
 
-This document records the current SMB design and implementation plan for Bifrost.
+This document records the current SMB design and implementation plan for Fpt.
 
 ## Feasibility Assessment
 
@@ -8,7 +8,7 @@ SMB support is feasible in the current codebase.
 
 Reasons:
 
-1. Bifrost already has a split between local BIO paths and async remote paths.
+1. Fpt already has a split between local BIO paths and async remote paths.
 2. `smb-rs` provides an async client with share connect and file read/write primitives.
 3. The existing NFS scan bridge already proved that a remote async scanner can feed the existing local metadata/control-file writers.
 4. The frame layer already uses `DataLocation` and runtime dispatch, so SMB can fit the same entry points.
@@ -215,7 +215,7 @@ the SMB write loop:
 - the last log line was typically a `write_block()` on the same file
 - `smb-rs` logged `STATUS_PENDING` for the write, but completion never arrived
 
-The Bifrost-side mitigation now used in `src/smb/aio.rs` is:
+The Fpt-side mitigation now used in `src/smb/aio.rs` is:
 
 - query negotiated SMB `max_read_size` / `max_write_size`
 - avoid fixed `1 MiB` transfer chunks

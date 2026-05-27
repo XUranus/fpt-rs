@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
-use bifrost::frame::DataLocation;
-use bifrost::scanner::{ScanOption, ScanPathFilterSet, Scanner};
+use fpt::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
+use fpt::frame::DataLocation;
+use fpt::scanner::{ScanOption, ScanPathFilterSet, Scanner};
 use clap::Parser;
 
-/// Bifrost Filesystem Scanner
+/// Fpt Filesystem Scanner
 ///
 /// Scans a local path, NFS export URL, or SMB share URL and generates
 /// metadata + control files for use by `fsbackup` or `fptcli`.
@@ -23,7 +23,7 @@ struct Args {
     #[arg(
         long,
         short = 'c',
-        default_value = "/tmp/bifrost/ctrl",
+        default_value = "/tmp/fpt/ctrl",
         value_name = "DIR"
     )]
     ctrl_dir: PathBuf,
@@ -32,7 +32,7 @@ struct Args {
     #[arg(
         long,
         short = 'm',
-        default_value = "/tmp/bifrost/meta",
+        default_value = "/tmp/fpt/meta",
         value_name = "DIR"
     )]
     meta_dir: PathBuf,
@@ -49,7 +49,7 @@ struct Args {
     #[arg(
         long,
         short = 't',
-        default_value = "/tmp/bifrost/cache",
+        default_value = "/tmp/fpt/cache",
         value_name = "DIR"
     )]
     temp_dir: PathBuf,
@@ -251,9 +251,9 @@ struct ScanSummary {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    bifrost::logging::init(args.verbose);
+    fpt::logging::init(args.verbose);
     if let Some(ref p) = args.log_file {
-        bifrost::logging::add_file(p);
+        fpt::logging::add_file(p);
     }
 
     let mut totals = ScanSummary::default();
@@ -368,10 +368,10 @@ fn run_scan(
         DataLocation::Nfs(loc) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .thread_name("bifrost-fsscan-nfs")
+                .thread_name("fpt-fsscan-nfs")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) = rt
-                .block_on(bifrost::scanner::run_nfs_scan(loc, scan_option))
+                .block_on(fpt::scanner::run_nfs_scan(loc, scan_option))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
@@ -385,10 +385,10 @@ fn run_scan(
         DataLocation::Smb(loc) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .thread_name("bifrost-fsscan-smb")
+                .thread_name("fpt-fsscan-smb")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) = rt
-                .block_on(bifrost::scanner::run_smb_scan(loc, scan_option))
+                .block_on(fpt::scanner::run_smb_scan(loc, scan_option))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
@@ -408,7 +408,7 @@ fn parse_nfs_location(
     uid: Option<u32>,
     gid: Option<u32>,
 ) -> Result<DataLocation, Box<dyn std::error::Error>> {
-    let mut loc = bifrost::nfs::NfsLocation::from_url(url)
+    let mut loc = fpt::nfs::NfsLocation::from_url(url)
         .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?
         .connection_count(connections);
     let default_uid = if loc.uid == 0 {
@@ -448,7 +448,7 @@ fn parse_data_location(
         {
             let _ = (connections, uid, gid);
             Ok(DataLocation::smb(
-                bifrost::smb::SmbLocation::from_url(spec)
+                fpt::smb::SmbLocation::from_url(spec)
                     .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
             ))
         }

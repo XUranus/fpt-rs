@@ -1,6 +1,6 @@
 # Retry And Failure Logs
 
-Bifrost can keep scanning and backup tasks running when individual entries fail, while recording structured failure details for later triage.
+Fpt can keep scanning and backup tasks running when individual entries fail, while recording structured failure details for later triage.
 
 This feature covers:
 

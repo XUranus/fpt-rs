@@ -1,6 +1,6 @@
 # fptserver
 
-`fptserver` is a process-supervised RPC server for creating and managing Bifrost scan, backup, and restore tasks.
+`fptserver` is a process-supervised RPC server for creating and managing Fpt scan, backup, and restore tasks.
 
 It is intentionally built as:
 

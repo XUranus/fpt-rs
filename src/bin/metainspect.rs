@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use bifrost::scanner::metadata::{
+use fpt::scanner::metadata::{
     ControlEntry, ControlFileReader, DeleteControlFileReader, DeleteEntryType, DirCacheEntry,
     DirMeta, FileCacheEntry, FileMeta, FixedSize, HardlinkControlFileReader, HardlinkEntry,
     MtimeControlFileReader,
@@ -230,7 +230,7 @@ fn detect_input_kind(path: &Path) -> Result<InspectInputKind> {
         bail!("cannot detect empty file type for {}", path.display());
     }
 
-    if prefix.starts_with(b"#BIFROST_") {
+    if prefix.starts_with(b"#FPT_") {
         return Ok(InspectInputKind::Control);
     }
 
@@ -357,10 +357,10 @@ fn inspect_fcache_file(path: &Path) -> Result<Vec<InspectRecord>> {
 fn inspect_control_file(path: &Path) -> Result<Vec<InspectRecord>> {
     let magic = read_control_magic(path)?;
     match magic.as_str() {
-        "#BIFROST_BACKUP_CTRL_FILE" => inspect_copy_control(path),
-        "#BIFROST_DELETE_CTRL_FILE" => inspect_delete_control(path),
-        "#BIFROST_MTIME_CTRL_FILE" => inspect_mtime_control(path),
-        "#BIFROST_HARDLINK_CTRL_FILE" => inspect_hardlink_control(path),
+        "#FPT_BACKUP_CTRL_FILE" => inspect_copy_control(path),
+        "#FPT_DELETE_CTRL_FILE" => inspect_delete_control(path),
+        "#FPT_MTIME_CTRL_FILE" => inspect_mtime_control(path),
+        "#FPT_HARDLINK_CTRL_FILE" => inspect_hardlink_control(path),
         other => bail!("unsupported control file magic {other} in {}", path.display()),
     }
 }

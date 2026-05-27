@@ -1,9 +1,9 @@
 //! Shared logging infrastructure with module-based file routing.
 //!
-//! All Bifrost binaries use the same log format:
+//! All Fpt binaries use the same log format:
 //!
 //! ```text
-//! 2026-04-17 21:00:00 [INFO] bifrost::frame::backup_job - message
+//! 2026-04-17 21:00:00 [INFO] fpt::frame::backup_job - message
 //! ```
 //!
 //! # Routing
@@ -11,13 +11,13 @@
 //! The `RoutingLogger` directs log records to specific files based on the
 //! **module path** (`record.target()`).  Routes are configured by calling
 //! [`add_route`].  More-specific prefixes take priority over less-specific
-//! ones (e.g. `bifrost::nfs::scanner` beats `bifrost::nfs`).
+//! ones (e.g. `fpt::nfs::scanner` beats `fpt::nfs`).
 //!
 //! | Record target         | Matching route (example) | Destination      |
 //! |-----------------------|--------------------------|------------------|
-//! | `bifrost::scanner::*` | `bifrost::scanner`       | `scan.log`       |
-//! | `bifrost::frame::*`   | `bifrost::frame`         | `frame.log`      |
-//! | `bifrost::backup::*`  | `bifrost::backup`        | `subtask_{u}.log`|
+//! | `fpt::scanner::*` | `fpt::scanner`       | `scan.log`       |
+//! | `fpt::frame::*`   | `fpt::frame`         | `frame.log`      |
+//! | `fpt::backup::*`  | `fpt::backup`        | `subtask_{u}.log`|
 //! | *(no match)*          | —                        | **stdout**       |
 //!
 //! Unmatched records (e.g. from the CLI binary itself) go to stdout only.
@@ -29,15 +29,15 @@
 //!
 //! ```rust,ignore
 //! // 1. One-time init (registers the global logger, sets max level)
-//! bifrost::logging::init(verbose);
+//! fpt::logging::init(verbose);
 //!
 //! // 2. Add a catch-all file (--log-file)
-//! bifrost::logging::add_file(&path);
+//! fpt::logging::add_file(&path);
 //!
 //! // 3. Add module routes (after dirs exist)
-//! bifrost::logging::add_route("bifrost::scanner", scan_log_path);
-//! bifrost::logging::add_route("bifrost::frame",   frame_log_path);
-//! bifrost::logging::add_route("bifrost::backup",  subtask_log_path);
+//! fpt::logging::add_route("fpt::scanner", scan_log_path);
+//! fpt::logging::add_route("fpt::frame",   frame_log_path);
+//! fpt::logging::add_route("fpt::backup",  subtask_log_path);
 //! ```
 
 use std::io::Write;
@@ -137,7 +137,7 @@ pub fn add_route(prefix: &str, path: &Path) {
 
 /// Remove all routes whose prefix starts with the given string.
 ///
-/// Used to clear the `bifrost::backup` route between subtasks so each
+/// Used to clear the `fpt::backup` route between subtasks so each
 /// subtask gets its own log file.
 pub fn remove_route(prefix: &str) {
     let mut st = STATE.lock().unwrap();

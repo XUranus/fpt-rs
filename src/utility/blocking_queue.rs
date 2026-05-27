@@ -17,7 +17,7 @@
 //! ```rust,ignore
 //! use std::thread;
 //! use std::sync::Arc;
-//! use bifrost::utility::BlockingQueue;
+//! use fpt::utility::BlockingQueue;
 //!
 //! let queue = Arc::new(BlockingQueue::new(2));
 //! let queue_producer = Arc::clone(&queue);
@@ -74,7 +74,7 @@ impl<T> BlockingQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use bifrost::utility::BlockingQueue;
+    /// use fpt::utility::BlockingQueue;
     /// let queue: BlockingQueue<i32> = BlockingQueue::new(10);
     /// ```
     pub fn new(capacity: usize) -> Self {
@@ -98,7 +98,7 @@ impl<T> BlockingQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use bifrost::utility::BlockingQueue;
+    /// use fpt::utility::BlockingQueue;
     /// let queue = BlockingQueue::new(1);
     /// queue.push(42);
     /// queue.close();
@@ -126,7 +126,7 @@ impl<T> BlockingQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use bifrost::utility::BlockingQueue;
+    /// use fpt::utility::BlockingQueue;
     /// let queue = BlockingQueue::new(1);
     /// queue.push("hello");
     /// // This would block until a consumer pops:
@@ -163,7 +163,7 @@ impl<T> BlockingQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use bifrost::utility::BlockingQueue;
+    /// use fpt::utility::BlockingQueue;
     /// let queue = BlockingQueue::new(1);
     /// queue.push(100);
     /// assert_eq!(queue.pop(), Some(100));
@@ -197,7 +197,7 @@ impl<T> BlockingQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use bifrost::utility::BlockingQueue;
+    /// use fpt::utility::BlockingQueue;
     /// let queue = BlockingQueue::new(2);
     /// queue.push(1);
     /// assert_eq!(queue.len(), 1);
@@ -214,7 +214,7 @@ impl<T> BlockingQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use bifrost::utility::BlockingQueue;
+    /// use fpt::utility::BlockingQueue;
     /// let queue: BlockingQueue<i32> = BlockingQueue::new(5);
     /// assert_eq!(queue.capacity(), 5);
     /// ```

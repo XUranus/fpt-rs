@@ -30,7 +30,7 @@ def iter_markdown_files() -> list[Path]:
 
 
 def write_sidebar(out_dir: Path, files: list[Path]) -> None:
-    lines = ["# Bifrost Docs", "", "* [Home](Home)"]
+    lines = ["# Fpt Docs", "", "* [Home](Home)"]
     for path in files:
         rel = path.relative_to(ROOT)
         if rel.name == "README.md":
@@ -46,7 +46,7 @@ def write_home(out_dir: Path) -> None:
     if readme.exists():
         text = readme.read_text(encoding="utf-8")
     else:
-        text = "# Bifrost Docs\n"
+        text = "# Fpt Docs\n"
     (out_dir / "Home.md").write_text(text, encoding="utf-8")
 
 

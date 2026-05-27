@@ -172,19 +172,19 @@ impl BackupRestoreJob for FileBackupJob {
         let repo = RepoLayout::new(&repo_base, &cfg.format_tag, &cfg.type_tag);
 
         // Create the logs/ directory early so we can route library module logs
-        // to files immediately — before Phase 1 runs and emits bifrost::* logs.
+        // to files immediately — before Phase 1 runs and emits fpt::* logs.
         std::fs::create_dir_all(&repo.logs_dir).map_err(BackupJobError::Io)?;
 
         crate::logging::init(cfg.verbose);
-        crate::logging::add_route("bifrost::scanner", &repo.scan_log());
-        crate::logging::add_route("bifrost::nfs", &repo.scan_log());
-        crate::logging::add_route("bifrost::smb", &repo.scan_log());
+        crate::logging::add_route("fpt::scanner", &repo.scan_log());
+        crate::logging::add_route("fpt::nfs", &repo.scan_log());
+        crate::logging::add_route("fpt::smb", &repo.scan_log());
         crate::logging::add_route("exacl", &repo.scan_log());
         crate::logging::add_route("sspi", &repo.scan_log());
         crate::logging::add_route("smb::", &repo.scan_log());
         crate::logging::add_route("smb", &repo.scan_log());
-        crate::logging::add_route("bifrost::frame", &repo.frame_log());
-        crate::logging::add_route("bifrost::backup", &repo.frame_log());
+        crate::logging::add_route("fpt::frame", &repo.frame_log());
+        crate::logging::add_route("fpt::backup", &repo.frame_log());
         // Per-subtask backup route is swapped below.
 
         // ── Phase 1: Prerequisites ────────────────────────────────────────────
@@ -252,16 +252,16 @@ impl BackupRestoreJob for FileBackupJob {
 
             // Route backup module logs to this subtask's log file.
             log::info!("Subtask {subtask_uuid} starting  ctrl_file={ctrl_name}");
-            crate::logging::remove_route("bifrost::backup");
-            crate::logging::remove_route("bifrost::nfs::aio");
-            crate::logging::remove_route("bifrost::smb::aio");
+            crate::logging::remove_route("fpt::backup");
+            crate::logging::remove_route("fpt::nfs::aio");
+            crate::logging::remove_route("fpt::smb::aio");
             crate::logging::remove_route("exacl");
             crate::logging::remove_route("sspi");
             crate::logging::remove_route("smb::");
             crate::logging::remove_route("smb");
-            crate::logging::add_route("bifrost::backup", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("bifrost::nfs::aio", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("bifrost::smb::aio", &repo.subtask_log(&subtask_uuid));
+            crate::logging::add_route("fpt::backup", &repo.subtask_log(&subtask_uuid));
+            crate::logging::add_route("fpt::nfs::aio", &repo.subtask_log(&subtask_uuid));
+            crate::logging::add_route("fpt::smb::aio", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("exacl", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("sspi", &repo.subtask_log(&subtask_uuid));
             crate::logging::add_route("smb::", &repo.subtask_log(&subtask_uuid));

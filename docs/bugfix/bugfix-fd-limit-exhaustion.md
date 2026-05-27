@@ -11,7 +11,7 @@
 When running an aggregate backup over a large dataset (e.g. 3905 files across 781 directories), many files fail with:
 
 ```
-[ERROR] bifrost::backup::bio::copy - Failed to open source file "/opt/dataset/.../f3": Too many open files (os error 24)
+[ERROR] fpt::backup::bio::copy - Failed to open source file "/opt/dataset/.../f3": Too many open files (os error 24)
 ```
 
 The errors appear in bursts, all at approximately the same timestamp, indicating the fd limit was crossed suddenly during a period of high concurrency.

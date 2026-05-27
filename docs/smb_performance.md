@@ -49,7 +49,7 @@ Result:
 
 ### 2. Enable SMB Server-Side Copy For Same-Share SMB->SMB
 
-When source and target are on the same SMB server/share/credentials, Bifrost now uses `srv_copy()` from the SMB client library instead of client-side read/write transfer.
+When source and target are on the same SMB server/share/credentials, Fpt now uses `srv_copy()` from the SMB client library instead of client-side read/write transfer.
 
 This uses SMB FSCTL operations:
 

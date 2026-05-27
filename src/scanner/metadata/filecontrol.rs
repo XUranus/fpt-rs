@@ -6,7 +6,7 @@ use crate::scanner::metadata::control_codec::{
     put_u8, read_record, take_bytes, take_u16, take_u32, take_u8, write_record, ControlFileHeader,
 };
 
-const COPY_MAGIC: &str = "#BIFROST_BACKUP_CTRL_FILE";
+const COPY_MAGIC: &str = "#FPT_BACKUP_CTRL_FILE";
 const RECORD_TYPE_DIR: u8 = 1;
 const RECORD_TYPE_FILE: u8 = 2;
 
@@ -343,7 +343,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("bifrost_ctrl_{unique}.txt"));
+        let path = std::env::temp_dir().join(format!("fpt_ctrl_{unique}.txt"));
 
         let mut writer = ControlFileWriter::new(&path).unwrap();
         writer

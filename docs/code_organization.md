@@ -91,7 +91,7 @@ Keep module exports narrow by default:
 - Public crate modules (`backup`, `frame`, `scanner`, `nfs`, `smb`) should expose stable entry points and data types.
 - Transport implementation modules such as `backup::aio`, `nfs::aio`, `nfs::fstat`, `smb::aio`, `smb::fstat`, `smb::scanner`, and `native::fstat` are crate-private.
 - Frame phase helpers such as `prereq`, `postjob`, and `subtask` are crate-private implementation details.
-- Prefer top-level shortcuts for common public types. For example, use `bifrost::scanner::ScanOption`, `bifrost::scanner::ScanPathFilterSet`, and `bifrost::frame::ScanConfig` instead of reaching through deep module paths.
+- Prefer top-level shortcuts for common public types. For example, use `fpt::scanner::ScanOption`, `fpt::scanner::ScanPathFilterSet`, and `fpt::frame::ScanConfig` instead of reaching through deep module paths.
 - If a module must be visible only to sibling modules, use `pub(crate)` rather than `pub`.
 
 ## Scanner Conventions

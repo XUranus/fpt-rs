@@ -2,9 +2,9 @@
 
 This project currently uses a patched checkout of your forked `smb-rs` repo at:
 
-- [smb-rs](/home/xuranus/workspace/bifrost/smb-rs)
+- [smb-rs](/home/xuranus/workspace/fpt/smb-rs)
 
-The active Cargo override in [Cargo.toml](/home/xuranus/workspace/bifrost/Cargo.toml) is:
+The active Cargo override in [Cargo.toml](/home/xuranus/workspace/fpt/Cargo.toml) is:
 
 ```toml
 [dependencies]
@@ -24,13 +24,13 @@ Observed behavior:
 1. Without the required SMB protocol/security features enabled, negotiate failed.
 2. After enabling those features, session setup still failed in the upstream auth path.
 
-The blocker was inside `smb-rs` authentication, not only in Bifrost's usage of it.
+The blocker was inside `smb-rs` authentication, not only in Fpt's usage of it.
 
 ## Exact Patch Applied To Your Fork
 
 Patched file:
 
-- [smb-rs/crates/smb/src/session/authenticator.rs](/home/xuranus/workspace/bifrost/smb-rs/crates/smb/src/session/authenticator.rs)
+- [smb-rs/crates/smb/src/session/authenticator.rs](/home/xuranus/workspace/fpt/smb-rs/crates/smb/src/session/authenticator.rs)
 
 Behavioral changes:
 
@@ -48,7 +48,7 @@ In diff form, the important transitions are:
 - `with_auth_data(&sspi::Credentials::AuthIdentity(identity.clone()))` -> `with_auth_data(&identity)`
 - `format!("cifs/{server_fqdn}")` -> `server_fqdn.to_string()`
 
-## Bifrost-Side Dependency Changes
+## Fpt-Side Dependency Changes
 
 Two repo-side changes were required:
 
@@ -57,10 +57,10 @@ Two repo-side changes were required:
    - `sign`
    - `encrypt`
    - `compress`
-2. Align Bifrost's direct `sspi` dependency with the forked SMB crate:
+2. Align Fpt's direct `sspi` dependency with the forked SMB crate:
    - `sspi = "0.19.2"`
 
-That version alignment matters because [src/bin/smbprobe.rs](/home/xuranus/workspace/bifrost/src/bin/smbprobe.rs) constructs `sspi::AuthIdentity` directly. If Bifrost and `smb-rs` pull different `sspi` versions, the types are incompatible and `cargo build` fails.
+That version alignment matters because [src/bin/smbprobe.rs](/home/xuranus/workspace/fpt/src/bin/smbprobe.rs) constructs `sspi::AuthIdentity` directly. If Fpt and `smb-rs` pull different `sspi` versions, the types are incompatible and `cargo build` fails.
 
 ## Current Validation
 
@@ -101,13 +101,13 @@ Recommended repo state after you commit and push the fork:
 smb = { git = "https://github.com/XUranus/smb-rs", rev = "<commit>" }
 ```
 
-This keeps third-party source out of the Bifrost repo while still pinning an exact working revision.
+This keeps third-party source out of the Fpt repo while still pinning an exact working revision.
 
 ## How To Move From Local Path To GitHub Fork
 
-1. Commit the patch inside [smb-rs](/home/xuranus/workspace/bifrost/smb-rs).
+1. Commit the patch inside [smb-rs](/home/xuranus/workspace/fpt/smb-rs).
 2. Push it to `https://github.com/XUranus/smb-rs`.
-3. Replace the local path override in [Cargo.toml](/home/xuranus/workspace/bifrost/Cargo.toml) with the `git` + `rev` form above.
+3. Replace the local path override in [Cargo.toml](/home/xuranus/workspace/fpt/Cargo.toml) with the `git` + `rev` form above.
 4. Run:
 
 ```bash

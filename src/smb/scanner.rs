@@ -1,4 +1,4 @@
-//! Async SMB directory scanner for Bifrost.
+//! Async SMB directory scanner for Fpt.
 //!
 //! This scanner walks an SMB share root using `smb-rs`, emitting the same
 //! `DirBatchScanResult` batches as the local and NFS scanners so the existing

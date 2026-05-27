@@ -70,7 +70,7 @@ pub fn spawn_local_to_nfs_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-local-to-nfs")
+            .thread_name("fpt-local-to-nfs")
             .build()
         {
             Ok(r) => r,
@@ -137,7 +137,7 @@ pub fn spawn_local_to_smb_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-local-to-smb")
+            .thread_name("fpt-local-to-smb")
             .build()
         {
             Ok(r) => r,
@@ -208,7 +208,7 @@ pub fn spawn_smb_to_local_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-smb-to-local")
+            .thread_name("fpt-smb-to-local")
             .build()
         {
             Ok(r) => r,
@@ -280,7 +280,7 @@ pub fn spawn_smb_to_smb_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-smb-to-smb")
+            .thread_name("fpt-smb-to-smb")
             .build()
         {
             Ok(r) => r,
@@ -365,7 +365,7 @@ pub fn spawn_nfs_to_smb_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-nfs-to-smb")
+            .thread_name("fpt-nfs-to-smb")
             .build()
         {
             Ok(r) => r,
@@ -445,7 +445,7 @@ pub fn spawn_smb_to_nfs_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-smb-to-nfs")
+            .thread_name("fpt-smb-to-nfs")
             .build()
         {
             Ok(r) => r,
@@ -523,7 +523,7 @@ pub fn spawn_nfs_to_local_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-nfs-to-local")
+            .thread_name("fpt-nfs-to-local")
             .build()
         {
             Ok(r) => r,
@@ -589,7 +589,7 @@ pub fn spawn_nfs_to_nfs_backup(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-nfs-to-nfs")
+            .thread_name("fpt-nfs-to-nfs")
             .build()
         {
             Ok(r) => r,

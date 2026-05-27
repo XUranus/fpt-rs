@@ -20,7 +20,7 @@
 //! ```
 //!
 //! For jobs with an NFS *target*, the `copy_root` lives inside a
-//! configurable `local_temp_dir` (default `/tmp/bifrost`).  After all
+//! configurable `local_temp_dir` (default `/tmp/fpt`).  After all
 //! subtasks finish, the [`PostJob`] copies D\_REPO (if NFS target was *not*
 //! used for direct writes), M\_REPO, and C\_REPO to the final destination.
 
@@ -175,14 +175,14 @@ impl RepoLayout {
 pub struct TempRepoConfig {
     /// Directory under which temporary job directories are created.
     ///
-    /// Defaults to `/tmp/bifrost`.
+    /// Defaults to `/tmp/fpt`.
     pub temp_base: PathBuf,
 }
 
 impl Default for TempRepoConfig {
     fn default() -> Self {
         Self {
-            temp_base: PathBuf::from("/tmp/bifrost"),
+            temp_base: PathBuf::from("/tmp/fpt"),
         }
     }
 }

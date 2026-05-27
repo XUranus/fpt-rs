@@ -6,7 +6,7 @@ use crate::scanner::metadata::control_codec::{
     read_record, take_bytes, take_u32, take_u8, write_record, ControlFileHeader,
 };
 
-const DELETE_MAGIC: &str = "#BIFROST_DELETE_CTRL_FILE";
+const DELETE_MAGIC: &str = "#FPT_DELETE_CTRL_FILE";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeleteEntryType {
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_delete_control_file_roundtrip() {
-        let path = std::env::temp_dir().join("bifrost_delete_test.dat");
+        let path = std::env::temp_dir().join("fpt_delete_test.dat");
         {
             let mut writer = DeleteControlFileWriter::new(&path).unwrap();
             writer.write_file(" weird\nfile.txt").unwrap();

@@ -42,7 +42,7 @@
 //!
 //! ```rust,ignore
 //! use tempfile::TempDir;
-//! use bifrost::utility::SpillQueue;
+//! use fpt::utility::SpillQueue;
 //!
 //! let temp_dir = TempDir::new().unwrap();
 //! let queue = SpillQueue::<i32>::new(temp_dir.path().to_path_buf(), 3, 1, 2).unwrap();

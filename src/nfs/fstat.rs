@@ -1,4 +1,4 @@
-//! Conversion from NFSv3 file attributes ([`fattr3`]) to Bifrost metadata types.
+//! Conversion from NFSv3 file attributes ([`fattr3`]) to Fpt metadata types.
 //!
 //! These functions map the NFS server's view of a file/directory onto the same
 //! [`FileMeta`] / [`DirMeta`] structures that the local filesystem scanner produces,

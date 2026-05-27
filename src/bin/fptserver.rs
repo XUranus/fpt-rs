@@ -3,16 +3,16 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use bifrost::backup::{
+use fpt::backup::{
     aggregate::{AggregateConfig, AggregateLayout},
     RestorePolicy,
 };
-use bifrost::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
-use bifrost::frame::{
+use fpt::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
+use fpt::frame::{
     BackupJobConfig, BackupRestoreJob, DataLocation, FileBackupJob, FileRestoreJob,
     RestoreJobConfig, ScanConfig, TempRepoConfig,
 };
-use bifrost::scanner::{ScanOption, ScanPathFilterSet, Scanner};
+use fpt::scanner::{ScanOption, ScanPathFilterSet, Scanner};
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -472,7 +472,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     fs::create_dir_all(&cli.runtime_dir)?;
-    bifrost::logging::init(0);
+    fpt::logging::init(0);
 
     let state = AppState {
         config: Arc::new(ServerConfig {
@@ -519,7 +519,7 @@ fn run_worker(args: WorkerArgs) -> Result<(), Box<dyn std::error::Error>> {
     };
     write_status_file(&args.status_file, &snapshot)?;
 
-    bifrost::logging::init(envelope.request.verbose());
+    fpt::logging::init(envelope.request.verbose());
 
     snapshot.state = TaskState::Running;
     snapshot.message = Some("task running".to_string());
@@ -1040,10 +1040,10 @@ fn run_scan_task(spec: &ScanTaskSpec) -> Result<TaskStats, Box<dyn std::error::E
         DataLocation::Nfs(loc) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .thread_name("bifrost-fptserver-scan-nfs")
+                .thread_name("fpt-fptserver-scan-nfs")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) =
-                rt.block_on(bifrost::scanner::run_nfs_scan(&loc, scan_option))?;
+                rt.block_on(fpt::scanner::run_nfs_scan(&loc, scan_option))?;
             Ok(TaskStats::Scan {
                 total_files,
                 total_dirs,
@@ -1056,10 +1056,10 @@ fn run_scan_task(spec: &ScanTaskSpec) -> Result<TaskStats, Box<dyn std::error::E
         DataLocation::Smb(loc) => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
-                .thread_name("bifrost-fptserver-scan-smb")
+                .thread_name("fpt-fptserver-scan-smb")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) =
-                rt.block_on(bifrost::scanner::run_smb_scan(&loc, scan_option))?;
+                rt.block_on(fpt::scanner::run_smb_scan(&loc, scan_option))?;
             Ok(TaskStats::Scan {
                 total_files,
                 total_dirs,
@@ -1188,7 +1188,7 @@ fn parse_data_location(
     if spec.starts_with("nfs://") {
         #[cfg(feature = "nfs")]
         {
-            let mut loc = bifrost::nfs::NfsLocation::from_url(spec)?.connection_count(connections);
+            let mut loc = fpt::nfs::NfsLocation::from_url(spec)?.connection_count(connections);
             let default_uid = if loc.uid == 0 {
                 unsafe { libc::geteuid() as u32 }
             } else {
@@ -1211,7 +1211,7 @@ fn parse_data_location(
         #[cfg(feature = "smb")]
         {
             let _ = (connections, uid, gid);
-            Ok(DataLocation::smb(bifrost::smb::SmbLocation::from_url(
+            Ok(DataLocation::smb(fpt::smb::SmbLocation::from_url(
                 spec,
             )?))
         }
@@ -1274,11 +1274,11 @@ fn default_retry_max_delay_ms() -> u64 {
 }
 
 fn default_scan_temp_dir() -> PathBuf {
-    PathBuf::from("/tmp/bifrost/cache")
+    PathBuf::from("/tmp/fpt/cache")
 }
 
 fn default_backup_temp_dir() -> PathBuf {
-    PathBuf::from("/tmp/bifrost")
+    PathBuf::from("/tmp/fpt")
 }
 
 fn default_scan_workers() -> usize {

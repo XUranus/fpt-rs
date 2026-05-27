@@ -1,4 +1,4 @@
-//! NFS connection pool for Bifrost.
+//! NFS connection pool for Fpt.
 //!
 //! Because `Nfs3Client` (and therefore [`Nfs3Connection`]) requires `&mut self` for
 //! every RPC call, a single connection is inherently sequential.  To achieve
@@ -205,7 +205,7 @@ impl NfsConnectionPool {
             use nfs3_client::nfs3_types::xdr_codec::Opaque;
             let auth = auth_unix {
                 stamp: 0,
-                machinename: Opaque::borrowed(b"bifrost"),
+                machinename: Opaque::borrowed(b"fpt"),
                 uid: location.uid,
                 gid: location.gid,
                 gids: vec![],

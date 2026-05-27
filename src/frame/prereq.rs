@@ -317,7 +317,7 @@ fn validate_local_source_dir(path: &Path) -> Result<(), PrereqError> {
 fn validate_local_target_writable(path: &Path) -> Result<(), PrereqError> {
     std::fs::create_dir_all(path).map_err(PrereqError::DirCreate)?;
     let magic = path.join(prereq_magic_file_name());
-    std::fs::write(&magic, b"bifrost-prereq")
+    std::fs::write(&magic, b"fpt-prereq")
         .map_err(|e| PrereqError::TargetNotWritable(format!("write {}: {e}", magic.display())))?;
     std::fs::remove_file(&magic)
         .map_err(|e| PrereqError::TargetNotWritable(format!("remove {}: {e}", magic.display())))?;
@@ -364,7 +364,7 @@ fn prereq_magic_file_name() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or_default();
-    format!(".bifrost_prereq_{}_{}.tmp", std::process::id(), nanos)
+    format!(".fpt_prereq_{}_{}.tmp", std::process::id(), nanos)
 }
 
 #[cfg(feature = "nfs")]
@@ -378,7 +378,7 @@ async fn validate_nfs_target_writable(
     crate::nfs::aio::writer::nfs_create_and_write(
         pool.clone(),
         PathBuf::from(&magic),
-        b"bifrost-prereq".to_vec(),
+        b"fpt-prereq".to_vec(),
     )
     .await?;
 

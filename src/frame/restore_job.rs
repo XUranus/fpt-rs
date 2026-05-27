@@ -149,12 +149,12 @@ impl BackupRestoreJob for FileRestoreJob {
 
         std::fs::create_dir_all(&repo.logs_dir).map_err(RestoreJobError::Io)?;
 
-        crate::logging::add_route("bifrost::nfs", &repo.frame_log());
-        crate::logging::add_route("bifrost::smb", &repo.frame_log());
+        crate::logging::add_route("fpt::nfs", &repo.frame_log());
+        crate::logging::add_route("fpt::smb", &repo.frame_log());
         crate::logging::add_route("sspi", &repo.frame_log());
         crate::logging::add_route("smb::", &repo.frame_log());
         crate::logging::add_route("smb", &repo.frame_log());
-        crate::logging::add_route("bifrost::frame", &repo.frame_log());
+        crate::logging::add_route("fpt::frame", &repo.frame_log());
 
         // ── Phase 1: Prerequisites ────────────────────────────────────────────
         RestorePrereqJob::new(&cfg.copy_source, &cfg.restore_target, &repo)

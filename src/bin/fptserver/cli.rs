@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Bifrost task RPC server", long_about = None)]
+#[command(author, version, about = "Fpt task RPC server", long_about = None)]
 pub(crate) struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
     pub(crate) host: String,

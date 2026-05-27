@@ -1090,7 +1090,7 @@ fn run_restore_copy_phase(
 ) -> Result<(), RestoreError> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("bifrost-restore-copy")
+        .thread_name("fpt-restore-copy")
         .build()
         .map_err(RestoreError::IoError)?;
 
@@ -1199,7 +1199,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         let nfs_target = nfs_target.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-restore-hardlink-nfs")
+            .thread_name("fpt-restore-hardlink-nfs")
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async move {
@@ -1229,7 +1229,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
     if let Some(smb_target) = &option.smb_target {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-restore-hardlink-smb")
+            .thread_name("fpt-restore-hardlink-smb")
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async {
@@ -1262,7 +1262,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         let nfs_target = nfs_target.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-restore-delete-nfs")
+            .thread_name("fpt-restore-delete-nfs")
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async move {
@@ -1291,7 +1291,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
     if let Some(smb_target) = &option.smb_target {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-restore-delete-smb")
+            .thread_name("fpt-restore-delete-smb")
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async {
@@ -1323,7 +1323,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         let nfs_target = nfs_target.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-restore-mtime-nfs")
+            .thread_name("fpt-restore-mtime-nfs")
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async move {
@@ -1352,7 +1352,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
     if let Some(smb_target) = &option.smb_target {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("bifrost-restore-mtime-smb")
+            .thread_name("fpt-restore-mtime-smb")
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async {
