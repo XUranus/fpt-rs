@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(feature = "nfs")]
+#[cfg(any(feature = "nfs", feature = "smb"))]
 use log::error;
 use log::info;
 
-#[cfg(feature = "nfs")]
+#[cfg(any(feature = "nfs", feature = "smb"))]
 use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};

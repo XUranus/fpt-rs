@@ -131,11 +131,11 @@ fn filetime_to_unix_seconds(ft: FileTime) -> u32 {
 }
 
 fn synthesize_mode(is_dir: bool, readonly: bool) -> u32 {
-    let perms = if readonly { 0o555 } else { 0o755 };
+    let perms: u32 = if readonly { 0o555 } else { 0o755 };
     if is_dir {
-        libc::S_IFDIR | perms
+        libc::S_IFDIR as u32 | perms
     } else {
-        let file_perms = if readonly { 0o444 } else { 0o644 };
-        libc::S_IFREG | file_perms
+        let file_perms: u32 = if readonly { 0o444 } else { 0o644 };
+        libc::S_IFREG as u32 | file_perms
     }
 }
