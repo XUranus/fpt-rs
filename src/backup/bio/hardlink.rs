@@ -513,6 +513,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn test_make_relative_and_join() {
         let base = PathBuf::from("/home/user/source");
         let target = PathBuf::from("/backup/target");

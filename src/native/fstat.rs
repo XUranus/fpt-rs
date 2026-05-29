@@ -135,9 +135,10 @@ fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> 
 
 #[cfg(windows)]
 fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
-    use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use windows::{Win32::Foundation::*, Win32::Security::*, Win32::Storage::FileSystem::*};
+    use windows::Win32::Foundation::*;
+    use windows::Win32::Security::*;
+    use windows::Win32::Storage::FileSystem::*;
 
     let wide_path: Vec<u16> = path
         .as_os_str()
@@ -147,21 +148,17 @@ fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
 
     unsafe {
         let hfile = CreateFileW(
-            wide_path.as_ptr(),
-            GENERIC_READ,
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            GENERIC_READ.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             None,
-        );
-
-        if hfile == INVALID_HANDLE_VALUE {
-            return Err(std::io::Error::last_os_error());
-        }
+        )?;
 
         let mut basic_info = FILE_BASIC_INFO::default();
-        let mut internal_info = FILE_INTERNAL_INFO::default();
+        let mut id_info = FILE_ID_INFO::default();
 
         let ok1 = GetFileInformationByHandleEx(
             hfile,
@@ -171,23 +168,33 @@ fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
         );
         let ok2 = GetFileInformationByHandleEx(
             hfile,
-            FileInternalInfo,
-            &mut internal_info as *mut _ as _,
-            std::mem::size_of::<FILE_INTERNAL_INFO>() as u32,
+            FileIdInfo,
+            &mut id_info as *mut _ as _,
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
         );
 
-        if !(ok1.as_bool() && ok2.as_bool()) {
-            CloseHandle(hfile);
+        if ok1.is_err() || ok2.is_err() {
+            let _ = CloseHandle(hfile);
             return Err(std::io::Error::last_os_error());
         }
 
+        // Fold 128-bit file ID into u64
+        let file_id = {
+            let bytes = &id_info.FileId.Identifier;
+            let mut id: u64 = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                id ^= (b as u64).wrapping_shl(((i % 8) * 8) as u32);
+            }
+            id
+        };
+
         let mut common = MetaCommon {
-            id: internal_info.IndexNumber,
+            id: file_id,
             mode: 0,
             attr: basic_info.FileAttributes,
-            atime: filetime_to_u32(basic_info.LastAccessTime),
-            ctime: filetime_to_u32(basic_info.CreationTime),
-            mtime: filetime_to_u32(basic_info.LastWriteTime),
+            atime: i64_windows_timestamp_to_u32(basic_info.LastAccessTime),
+            ctime: i64_windows_timestamp_to_u32(basic_info.CreationTime),
+            mtime: i64_windows_timestamp_to_u32(basic_info.LastWriteTime),
             devno: 0,
             name: path
                 .file_name()
@@ -213,59 +220,59 @@ fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
             }
         }
 
-        CloseHandle(hfile);
+        let _ = CloseHandle(hfile);
         Ok(common)
     }
 }
 
 #[cfg(windows)]
-fn filetime_to_u32(ft: windows::Win32::Foundation::FILETIME) -> u32 {
-    const WINDOWS_TICK: u64 = 10_000_000;
-    const SEC_TO_UNIX_EPOCH: u64 = 11_644_473_600;
-    let ticks = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
-    let seconds = ticks / WINDOWS_TICK - SEC_TO_UNIX_EPOCH;
-    seconds as u32
+fn i64_windows_timestamp_to_u32(ft: i64) -> u32 {
+    // FILE_BASIC_INFO fields are 100-nanosecond intervals since January 1, 1601
+    const WINDOWS_TICK: i64 = 10_000_000;
+    const SEC_TO_UNIX_EPOCH: i64 = 11_644_473_600;
+    if ft == 0 {
+        return 0;
+    }
+    let seconds = ft / WINDOWS_TICK - SEC_TO_UNIX_EPOCH;
+    seconds.max(0) as u32
 }
 
 #[cfg(windows)]
-fn get_security_descriptor_sddl(hfile: HANDLE) -> std::io::Result<String> {
+fn get_security_descriptor_sddl(hfile: windows::Win32::Foundation::HANDLE) -> std::io::Result<String> {
     use windows::Win32::Foundation::*;
     use windows::Win32::Security::*;
+    use windows::Win32::Security::Authorization::*;
 
     unsafe {
         let mut size = 0u32;
-        GetKernelObjectSecurity(
+        let se_info = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+        let _ = GetKernelObjectSecurity(
             hfile,
-            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            None,
+            se_info.0,
+            PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
             0,
             &mut size,
         );
         let mut sd = vec![0u8; size as usize];
-        if !GetKernelObjectSecurity(
+        GetKernelObjectSecurity(
             hfile,
-            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            Some(sd.as_mut_ptr() as *mut _),
+            se_info.0,
+            PSECURITY_DESCRIPTOR(sd.as_mut_ptr() as *mut _),
             size,
             &mut size,
         )
-        .as_bool()
-        {
-            return Err(std::io::Error::last_os_error());
-        }
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-        let mut sddl = PWSTR::null();
-        if !ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            sd.as_ptr() as *const _,
+        let mut sddl = windows::core::PWSTR::null();
+        let sd_ptr = sd.as_mut_ptr() as *mut core::ffi::c_void;
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            PSECURITY_DESCRIPTOR(sd_ptr),
             SDDL_REVISION_1,
-            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            se_info,
             &mut sddl,
             None,
         )
-        .as_bool()
-        {
-            return Err(std::io::Error::last_os_error());
-        }
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
         let result = if !sddl.is_null() {
             let len = (0..).take_while(|&i| *sddl.0.add(i) != 0).count();
@@ -275,7 +282,7 @@ fn get_security_descriptor_sddl(hfile: HANDLE) -> std::io::Result<String> {
             String::new()
         };
 
-        LocalFree(HLOCAL(sddl.0 as _));
+        let _ = LocalFree(HLOCAL(sddl.0 as _));
         Ok(result)
     }
 }
@@ -337,12 +344,15 @@ pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
     };
 
     let links = if path.is_file() {
-        let metadata = path.metadata()?;
-        if cfg!(unix) {
+        #[cfg(unix)]
+        {
+            let metadata = path.metadata()?;
             use std::os::unix::fs::MetadataExt;
             metadata.nlink() as u64
-        } else {
-            1 // TODO::Windows doesn't expose link count easily without syscalls
+        }
+        #[cfg(not(unix))]
+        {
+            1
         }
     } else {
         1

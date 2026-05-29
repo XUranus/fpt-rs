@@ -200,8 +200,8 @@ fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
 
     file.set_times(
         std::fs::FileTimes::new()
-            .accessed(atime_system)
-            .modified(mtime_system),
+            .set_accessed(atime_system)
+            .set_modified(mtime_system),
     )
 }
 
@@ -294,6 +294,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
     fn test_make_relative_and_join() {
         let base = PathBuf::from("/home/user/source");
         let target = PathBuf::from("/backup/target");

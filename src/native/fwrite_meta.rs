@@ -131,90 +131,82 @@ fn fill_unix_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
 
 #[cfg(windows)]
 fn fill_windows_meta(meta: &mut FileMeta, path: &Path, md: &std::fs::Metadata) {
-    use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use winapi::shared::minwindef::*;
-    use winapi::shared::ntdef::NULL;
-    use winapi::um::accctrl::*;
-    use winapi::um::aclapi::*;
-    use winapi::um::fileapi::*;
-    use winapi::um::securitybase::*;
-    use winapi::um::winbase::*;
+    use windows::Win32::Foundation::*;
+    use windows::Win32::Security::*;
+    use windows::Win32::Security::Authorization::*;
+    use windows::Win32::Storage::FileSystem::*;
 
     let wide_path: Vec<u16> = path
         .as_os_str()
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
+
+    // Get timestamps from Metadata (cross-platform)
+    use std::time::UNIX_EPOCH;
+    meta.atime = Some(
+        md.accessed()
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    );
+    meta.mtime = Some(
+        md.modified()
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    );
+    meta.ctime = Some(
+        md.created()
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    );
+
     unsafe {
-        let handle = CreateFileW(
-            wide_path.as_ptr(),
-            GENERIC_READ,
+        let handle = match CreateFileW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            GENERIC_READ.0,
             FILE_SHARE_READ,
-            NULL as *mut _,
+            None,
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS, // required for directories
-            NULL,
-        );
-
-        if handle == INVALID_HANDLE_VALUE {
-            return;
-        }
-
-        // Get timestamps from Metadata (already available)
-        use std::time::UNIX_EPOCH;
-        meta.atime = Some(
-            md.accessed()
-                .unwrap_or(UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-        );
-        meta.mtime = Some(
-            md.modified()
-                .unwrap_or(UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-        );
-        meta.ctime = Some(
-            md.created()
-                .unwrap_or(UNIX_EPOCH)
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
-        );
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        ) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
 
         // Security Descriptor
-        let mut sd_size: DWORD = 0;
-        GetSecurityInfo(
-            handle,
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            NULL as *mut _,
-            NULL as *mut _,
-            NULL as *mut _,
-            NULL as *mut _,
-            &mut sd_size as *mut _,
-        );
-
-        let mut buffer = vec![0u8; sd_size as usize];
-        let psd = buffer.as_mut_ptr() as *mut BYTE;
+        let mut sd_ptr = PSECURITY_DESCRIPTOR::default();
+        let se_info = OWNER_SECURITY_INFORMATION
+            | GROUP_SECURITY_INFORMATION
+            | DACL_SECURITY_INFORMATION;
         if GetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            NULL as *mut _,
-            NULL as *mut _,
-            NULL as *mut _,
-            NULL as *mut _,
-            &mut psd as *mut _,
-        ) == 0
+            se_info,
+            None,
+            None,
+            None,
+            None,
+            Some(&mut sd_ptr),
+        ) == ERROR_SUCCESS
         {
-            meta.security_descriptor = Some(buffer);
+            // Get the size of the security descriptor
+            let sd_len = GetSecurityDescriptorLength(sd_ptr);
+            if sd_len > 0 {
+                let sd_slice = std::slice::from_raw_parts(sd_ptr.0 as *const u8, sd_len as usize);
+                meta.security_descriptor = Some(sd_slice.to_vec());
+            }
+            let _ = LocalFree(HLOCAL(sd_ptr.0 as _));
         }
 
-        CloseHandle(handle);
+        let _ = CloseHandle(handle);
     }
 }
 

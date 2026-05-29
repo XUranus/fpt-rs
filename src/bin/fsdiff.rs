@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use base64::Engine as _;
 use clap::Parser;
 use sha2::{Digest, Sha256};
@@ -342,7 +343,7 @@ fn collect_files(
         };
 
         #[cfg(not(target_os = "linux"))]
-        let (acl, xattrs) = (None, None);
+        let (acl, xattrs): (Option<String>, Option<String>) = (None, None);
 
         let is_dir = metadata.is_dir();
 

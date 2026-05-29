@@ -49,7 +49,9 @@ exacl = "0.6"
 windows = { version = "0.58", features = [
   "Win32_Storage_FileSystem",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Foundation",
+  "Wdk_Storage_FileSystem",
 ] }
 
 [dev-dependencies]
@@ -59,5 +61,7 @@ tempfile = "3.0"
 [profile.release]
 debug = true
 
-[patch.crates-io]
-smb = { git = "https://github.com/XUranus/smb-rs", rev = "fe8eb82d30d0e93dca432b64c2c57adb748b19ac" }
+# NOTE: Temporarily commented out because the git source is unreachable on some networks.
+# Re-enable this patch when building with --features smb on Linux.
+# [patch.crates-io]
+# smb = { git = "https://github.com/XUranus/smb-rs", rev = "fe8eb82d30d0e93dca432b64c2c57adb748b19ac" }

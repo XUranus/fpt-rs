@@ -25,7 +25,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 // TODO:: slicing
@@ -169,7 +168,7 @@ impl<T: DeserializeOwned + FixedSize> BinObjectRandomReader<T> {
     /// Opens a file for random-access reading.
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let size = fs::metadata(path.clone())?.size();
+        let size = fs::metadata(path.clone())?.len();
         let file = File::open(&path)?;
         Ok(Self {
             path,

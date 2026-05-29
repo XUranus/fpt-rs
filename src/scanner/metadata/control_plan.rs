@@ -538,6 +538,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn requested_path_maps_under_non_root_logical_prefix() {
         let layout = SourceLayout {
             source_kind: "nfs".to_string(),
