@@ -38,7 +38,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libnfs-dev
+          sudo apt-get install -y libnfs-dev libacl1-dev
 
       - name: Build (all features)
         run: cargo build --features sqlite,nfs,smb --bins
