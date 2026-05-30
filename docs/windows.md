@@ -12,11 +12,11 @@ This document describes the Windows-specific implementation details for Fpt's sc
 | Symlinks (file) | Yes | Yes | Yes | Requires admin or Developer Mode |
 | Symlinks (directory) | Yes | Yes | Yes | Uses `symlink_dir` on restore |
 | Junctions | Yes | Yes | Yes | Via `read_link` / `mklink /J` |
-| File attributes | Yes | Yes | Partial | READONLY, HIDDEN, SYSTEM etc. stored in `attr` field |
+| File attributes | Yes | Yes | Yes | READONLY, HIDDEN, SYSTEM etc. stored in `attr` field, restored via SetFileAttributesW |
 | Security descriptors | Yes | No | No | SDDL string captured during scan; restore not yet implemented |
-| Sparse files | Partial | Yes | No | Size preserved; sparseness not detected or recreated |
+| Sparse files | Yes | Yes | No | Detected via GetCompressedFileSizeW; size preserved but sparseness not recreated on restore |
 | Long filenames | Yes | Yes | Yes | Up to 255 chars per component |
-| Long paths | Partial | Partial | Partial | Limited by MAX_PATH without `\\?\` prefix |
+| Long paths | Yes | Yes | Yes | `\\?\` prefix applied for paths > 240 chars; `longPathAware` manifest embedded |
 | Incremental backup | Yes | Yes | Yes | File index via `FILE_ID_INFO` |
 
 ## Architecture
@@ -63,11 +63,9 @@ Windows file metadata is retrieved via Win32 APIs:
 
 2. **Attribute restore**: `restore_windows_attrs` is defined but may not be called in all restore code paths (the async restore pipeline in `restore_pipeline.rs` does not call `restore_common_metadata`).
 
-3. **Sparse file sparseness**: The scanner does not detect sparse ranges on Windows (`detect_sparse_ranges` returns `None`). During restore, sparse files are created as regular files — `FSCTL_SET_SPARSE` is not called.
+3. **Sparse file sparseness**: The scanner detects sparse files via `GetCompressedFileSizeW` but does not capture exact hole ranges. During restore, sparse files are created as regular files — `FSCTL_SET_SPARSE` is not called.
 
-4. **Long paths**: Paths exceeding MAX_PATH (260) require the `\\?\` prefix which is not currently applied. The Cargo.toml does not include a `longPathAware` manifest.
-
-5. **File index collision**: The 128-bit `FILE_ID_INFO` is XOR-folded to u64, which can theoretically cause collisions. The `devno` is 0 on Windows, so cross-volume collisions are possible.
+4. **File index collision**: The 128-bit `FILE_ID_INFO` is XOR-folded to u64, which can theoretically cause collisions. The `devno` is 0 on Windows, so cross-volume collisions are possible.
 
 ## Testing
 
