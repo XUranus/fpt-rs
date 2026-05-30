@@ -28,6 +28,7 @@ from framework import (
     transport_available,
     transport_mount,
 )
+from _platform import bin_name
 
 
 # ---------------------------------------------------------------------------
@@ -44,13 +45,14 @@ def fptbin() -> Path:
         return p
 
     # walk up to find the project root (contains target/release)
+    target_bin = bin_name("fptcli")
     cwd = Path.cwd()
     for candidate in [cwd, *cwd.parents]:
         p = candidate / "target" / "release"
-        if p.is_dir() and (p / "fptcli").exists():
+        if p.is_dir() and (p / target_bin).exists():
             return p
         p = candidate / "target" / "debug"
-        if p.is_dir() and (p / "fptcli").exists():
+        if p.is_dir() and (p / target_bin).exists():
             return p
 
     pytest.skip("fpt binaries not found — run cargo build first")

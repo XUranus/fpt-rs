@@ -118,13 +118,25 @@ pub fn process_deletes(
 
         stats.entries_processed.fetch_add(1, Ordering::Relaxed);
 
-        // Calculate target path for files
-        let target_path = make_relative_and_join(
-            source_dir_base,
-            target_dir_base.to_path_buf(),
-            entry.path.clone(),
-            logical_paths,
-        );
+        // Calculate target path: strip source prefix, join with target base.
+        // Use logical (forward-slash) string comparison for cross-platform correctness.
+        let target_path = {
+            let logical_entry = crate::path_util::normalize_logical(&entry.path);
+            let logical_source = crate::path_util::normalize_logical(
+                &crate::path_util::to_logical_string(source_dir_base));
+            let rel = logical_entry
+                .strip_prefix(&logical_source)
+                .and_then(|r| r.strip_prefix('/').or(Some(r)))
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| {
+                    logical_entry.strip_prefix('/').unwrap_or(&logical_entry)
+                });
+            let mut native = target_dir_base.to_path_buf();
+            for component in rel.split('/') {
+                native.push(component);
+            }
+            native
+        };
 
         match entry.entry_type {
             DeleteEntryType::File => {
@@ -239,40 +251,7 @@ fn make_relative_and_join(
     path: String,
     logical_paths: bool,
 ) -> PathBuf {
-    let path_buf = PathBuf::from(&path);
-
-    let relative_path = if path_buf.starts_with(base_dir) {
-        path_buf
-            .strip_prefix(base_dir)
-            .map(|p| p.to_path_buf())
-            .unwrap_or(path_buf)
-    } else if path_buf.is_absolute() {
-        if logical_paths {
-            let rel = path_buf
-                .strip_prefix("/")
-                .map(|p| p.to_path_buf())
-                .unwrap_or(path_buf);
-            return target_base.join(rel);
-        }
-        let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
-        let first_segment = path_buf
-            .strip_prefix("/")
-            .ok()
-            .and_then(|p| p.iter().next())
-            .and_then(|s| s.to_str());
-        if logical_root_name.is_some() && logical_root_name == first_segment {
-            path_buf
-                .strip_prefix("/")
-                .map(|p| p.to_path_buf())
-                .unwrap_or(path_buf)
-        } else {
-            path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
-        }
-    } else {
-        path_buf
-    };
-
-    target_base.join(relative_path)
+    crate::path_util::make_relative_and_join(base_dir, target_base, &path, logical_paths)
 }
 
 /// Runs the delete phase as a separate backup phase.
@@ -318,27 +297,4 @@ fn record_delete_failure(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[cfg(unix)]
-    fn test_make_relative_and_join() {
-        let base = PathBuf::from("/home/user/source");
-        let target = PathBuf::from("/backup/target");
-
-        let result = make_relative_and_join(
-            &base,
-            target.clone(),
-            "/home/user/source/docs".to_string(),
-            false,
-        );
-        assert_eq!(result, PathBuf::from("/backup/target/docs"));
-
-        // Test with non-matching absolute path
-        let result =
-            make_relative_and_join(&base, target.clone(), "/other/path".to_string(), false);
-        assert_eq!(result, PathBuf::from("/backup/target/path"));
-    }
-}
+// Tests for make_relative_and_join are in path_util module.

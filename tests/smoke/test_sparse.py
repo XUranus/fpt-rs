@@ -9,6 +9,7 @@ import pytest
 from pathlib import Path
 
 from framework import FptCli, create_sparse_files, find_copy_dir, is_sparse
+from _platform import can_detect_sparse
 
 
 def test_sparse_files(tmp_workspace: FptCli):
@@ -27,10 +28,11 @@ def test_sparse_files(tmp_workspace: FptCli):
     sizes = {name: os.stat(p).st_size for name, p in sparse.items()}
     sizes["non_sparse.dat"] = os.stat(non_sparse).st_size
 
-    # verify source sparse files actually have holes
-    for name, p in sparse.items():
-        if os.stat(p).st_size > 10 * 1024 * 1024:  # only check large files
-            assert is_sparse(p), f"Source file {name} should be sparse but isn't"
+    # verify source sparse files actually have holes (platform-dependent)
+    if can_detect_sparse():
+        for name, p in sparse.items():
+            if os.stat(p).st_size > 10 * 1024 * 1024:  # only check large files
+                assert is_sparse(p), f"Source file {name} should be sparse but isn't"
 
     source = str(fpt.source_dir)
     target = str(fpt.backup_dir)

@@ -273,23 +273,7 @@ fn split_logical_path(path: &str) -> Vec<&str> {
 }
 
 fn normalize_logical_path(raw: &str) -> String {
-    let normalized = raw.replace('\\', "/");
-    let mut parts: Vec<&str> = Vec::new();
-    for part in normalized.split('/') {
-        if part.is_empty() || part == "." {
-            continue;
-        }
-        if part == ".." {
-            let _ = parts.pop();
-            continue;
-        }
-        parts.push(part);
-    }
-    if parts.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", parts.join("/"))
-    }
+    crate::path_util::normalize_logical(raw)
 }
 
 #[cfg(test)]

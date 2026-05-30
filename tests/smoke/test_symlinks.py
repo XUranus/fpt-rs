@@ -8,10 +8,11 @@ import os
 import pytest
 from pathlib import Path
 
-from framework import FptCli, create_symlinks, find_copy_dir, IS_WINDOWS
+from framework import FptCli, create_symlinks, find_copy_dir
+from _platform import skip_unless_symlink
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="Symlink handling varies on Windows")
+@skip_unless_symlink
 def test_symlinks_backup_succeeds(tmp_workspace: FptCli):
     """Backup a directory with symlinks, verify backup succeeds and targets are intact."""
     fpt = tmp_workspace

@@ -223,10 +223,10 @@ class FptCli:
     # -- binary resolution ---------------------------------------------------
 
     def _bin(self, name: str) -> str:
-        p = self.bin_dir / name
-        if not p.exists():
-            raise FileNotFoundError(f"Binary not found: {p}")
-        return str(p)
+        p = self.bin_dir / bin_name(name)
+        if p.exists():
+            return str(p)
+        raise FileNotFoundError(f"Binary not found: {p}")
 
     # -- internal runner -----------------------------------------------------
 
@@ -830,12 +830,15 @@ def find_copy_dir(backup_root: Path) -> Optional[Path]:
 
 
 # ---------------------------------------------------------------------------
-# Platform helpers
+# Platform helpers — re-exported from platform module
 # ---------------------------------------------------------------------------
 
-IS_LINUX = platform.system() == "Linux"
-IS_WINDOWS = platform.system() == "Windows"
-IS_UNIX = os.name == "posix"
-
-skip_unless_linux = pytest.mark.skipif(not IS_LINUX, reason="Linux only")
-skip_unless_unix = pytest.mark.skipif(not IS_UNIX, reason="Unix/POSIX only")
+from _platform import (  # noqa: E402
+    IS_LINUX,
+    IS_UNIX,
+    IS_WINDOWS,
+    bin_name,
+    can_detect_sparse,
+    skip_unless_linux,
+    skip_unless_unix,
+)

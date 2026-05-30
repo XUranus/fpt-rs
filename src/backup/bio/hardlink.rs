@@ -447,40 +447,7 @@ fn make_relative_and_join(
     path: String,
     logical_paths: bool,
 ) -> PathBuf {
-    let path_buf = PathBuf::from(&path);
-
-    let relative_path = if path_buf.starts_with(base_dir) {
-        path_buf
-            .strip_prefix(base_dir)
-            .map(|p| p.to_path_buf())
-            .unwrap_or(path_buf)
-    } else if path_buf.is_absolute() {
-        if logical_paths {
-            let rel = path_buf
-                .strip_prefix("/")
-                .map(|p| p.to_path_buf())
-                .unwrap_or(path_buf);
-            return target_base.join(rel);
-        }
-        let logical_root_name = base_dir.file_name().and_then(|n| n.to_str());
-        let first_segment = path_buf
-            .strip_prefix("/")
-            .ok()
-            .and_then(|p| p.iter().next())
-            .and_then(|s| s.to_str());
-        if logical_root_name.is_some() && logical_root_name == first_segment {
-            path_buf
-                .strip_prefix("/")
-                .map(|p| p.to_path_buf())
-                .unwrap_or(path_buf)
-        } else {
-            path_buf.file_name().map(PathBuf::from).unwrap_or(path_buf)
-        }
-    } else {
-        path_buf
-    };
-
-    target_base.join(relative_path)
+    crate::path_util::make_relative_and_join(base_dir, target_base, &path, logical_paths)
 }
 
 /// Runs the hardlink phase as a separate backup phase.
@@ -508,31 +475,4 @@ pub fn run_hardlink_phase(
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[cfg(unix)]
-    fn test_make_relative_and_join() {
-        let base = PathBuf::from("/home/user/source");
-        let target = PathBuf::from("/backup/target");
-
-        let result = make_relative_and_join(
-            &base,
-            target.clone(),
-            "/home/user/source/docs/file.txt".to_string(),
-            false,
-        );
-        assert_eq!(result, PathBuf::from("/backup/target/docs/file.txt"));
-
-        // Test with non-matching absolute path
-        let result = make_relative_and_join(
-            &base,
-            target.clone(),
-            "/other/path/file.txt".to_string(),
-            false,
-        );
-        assert_eq!(result, PathBuf::from("/backup/target/file.txt"));
-    }
-}
+// Tests for make_relative_and_join are in path_util module.

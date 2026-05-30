@@ -291,7 +291,7 @@ pub fn stat_dir(path: &PathBuf) -> std::io::Result<DirMeta> {
     let common = stat_common(path, true)?;
     Ok(DirMeta {
         common,
-        path: path.to_string_lossy().into_owned(),
+        path: crate::path_util::to_logical_string(path),
     })
 }
 

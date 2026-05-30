@@ -116,7 +116,7 @@ fn process_scan_result(
             if let Some(index) = hardlink_index {
                 if let Ok(mut idx) = index.lock() {
                     // Build full path from directory path and file name
-                    let full_path = format!("{}/{}", dir_scan_result.dir.path, fmeta.common.name);
+                    let full_path = crate::path_util::join_logical(&dir_scan_result.dir.path, &fmeta.common.name);
                     idx.add_file(
                         fmeta.common.id,    // inode
                         fmeta.common.devno, // device

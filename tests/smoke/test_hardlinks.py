@@ -7,10 +7,11 @@ import os
 import pytest
 from pathlib import Path
 
-from framework import FptCli, create_hardlinks, find_copy_dir, file_hash, IS_WINDOWS
+from framework import FptCli, create_hardlinks, find_copy_dir, file_hash
+from _platform import skip_unless_hardlink
 
 
-@pytest.mark.skipif(IS_WINDOWS, reason="Hardlinks not supported on Windows")
+@skip_unless_hardlink
 def test_hardlinks(tmp_workspace: FptCli):
     """Create hardlink groups, backup with hardlink support, verify."""
     fpt = tmp_workspace

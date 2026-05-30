@@ -478,23 +478,7 @@ fn normalize_requested_path(layout: &SourceLayout, raw: &str) -> String {
 }
 
 fn normalize_logical_string(raw: &str) -> String {
-    let mut parts = Vec::new();
-    let normalized = raw.replace('\\', "/");
-    for part in normalized.split('/') {
-        if part.is_empty() || part == "." {
-            continue;
-        }
-        if part == ".." {
-            let _ = parts.pop();
-            continue;
-        }
-        parts.push(part);
-    }
-    if parts.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", parts.join("/"))
-    }
+    crate::path_util::normalize_logical(raw)
 }
 
 fn join_logical_child(dir_path: &str, name: &str) -> String {

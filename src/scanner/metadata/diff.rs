@@ -370,7 +370,7 @@ impl IncrementalDiff {
                     diff.deleted_files += 1;
                     diff.delete_entries.push(DeleteEntry {
                         entry_type: DeleteEntryType::File,
-                        path: format!("{}/{}", dir_path, file_name),
+                        path: crate::path_util::join_logical(dir_path, file_name),
                     });
                 }
             }
