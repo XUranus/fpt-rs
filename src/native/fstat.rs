@@ -350,7 +350,11 @@ pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
             use std::os::unix::fs::MetadataExt;
             metadata.nlink() as u64
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            get_link_count(path).unwrap_or(1)
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             1
         }
@@ -367,4 +371,46 @@ pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
         links,
         sparse_range,
     })
+}
+
+/// Query the hardlink count for a file on Windows.
+#[cfg(windows)]
+fn get_link_count(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Foundation::*;
+    use windows::Win32::Storage::FileSystem::*;
+
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let hfile = CreateFileW(
+            windows::core::PCWSTR(wide_path.as_ptr()),
+            GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+        .ok()?;
+
+        let mut info = FILE_STANDARD_INFO::default();
+        let ok = GetFileInformationByHandleEx(
+            hfile,
+            FileStandardInfo,
+            &mut info as *mut _ as _,
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        );
+        let _ = CloseHandle(hfile);
+
+        if ok.is_ok() {
+            Some(info.NumberOfLinks as u64)
+        } else {
+            None
+        }
+    }
 }

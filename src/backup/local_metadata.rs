@@ -8,6 +8,8 @@ use crate::scanner::metadata::MetaCommon;
 pub(crate) fn restore_common_metadata(path: &Path, meta: &MetaCommon) {
     restore_xattrs(path, &meta.xattributes);
     restore_acl(path, &meta.posix_access_acl, &meta.posix_default_acl);
+    #[cfg(windows)]
+    restore_windows_attrs(path, meta.attr);
 }
 
 #[cfg(target_os = "linux")]
@@ -62,6 +64,26 @@ fn restore_acl(path: &Path, access_acl: &Option<String>, default_acl: &Option<St
 #[cfg(not(target_os = "linux"))]
 fn restore_acl(_path: &Path, _access_acl: &Option<String>, _default_acl: &Option<String>) {}
 
+#[cfg(windows)]
+fn restore_windows_attrs(path: &Path, attr: u32) {
+    if attr == 0 {
+        return;
+    }
+    use std::os::windows::ffi::OsStrExt;
+    unsafe {
+        use windows::Win32::Storage::FileSystem::{
+            SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES,
+        };
+        use windows::core::PCWSTR;
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attr));
+    }
+}
+
 pub(crate) fn create_symlink(dst_path: &Path, target: &str) -> io::Result<()> {
     if dst_path.exists() {
         std::fs::remove_file(dst_path)?;
@@ -73,6 +95,16 @@ pub(crate) fn create_symlink(dst_path: &Path, target: &str) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        std::os::windows::fs::symlink_file(target, dst_path)
+        // On Windows, directory symlinks require symlink_dir, not symlink_file.
+        // Try symlink_dir first if the target looks like a directory path.
+        let is_dir_target = target.ends_with('/')
+            || target.ends_with('\\')
+            || Path::new(target).is_dir();
+        if is_dir_target {
+            std::os::windows::fs::symlink_dir(target, dst_path)
+                .or_else(|_| std::os::windows::fs::symlink_file(target, dst_path))
+        } else {
+            std::os::windows::fs::symlink_file(target, dst_path)
+        }
     }
 }

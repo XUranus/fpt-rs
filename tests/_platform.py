@@ -57,9 +57,3 @@ def can_detect_sparse() -> bool:
 
 skip_unless_linux = pytest.mark.skipif(not IS_LINUX, reason="Linux only")
 skip_unless_unix = pytest.mark.skipif(not IS_UNIX, reason="Unix/POSIX only")
-skip_unless_symlink = pytest.mark.skipif(
-    IS_WINDOWS, reason="Symlink handling varies on Windows",
-)
-skip_unless_hardlink = pytest.mark.skipif(
-    IS_WINDOWS, reason="Hardlinks not fully supported on Windows",
-)

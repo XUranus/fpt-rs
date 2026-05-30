@@ -174,8 +174,8 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     continue;
                 }
 
-                // Apply hidden file filter (Unix-style: leading dot)
-                let is_hidden = entry_name.starts_with('.');
+                // Apply hidden file filter
+                let is_hidden = is_hidden_entry(&entry_name, &entry);
 
                 if !scan_option.meta_option.scan_hidden && is_hidden {
                     debug!("Skipping hidden entry: {:?}", path);
@@ -435,4 +435,23 @@ pub fn start_workers(
     }
 
     worker_handles
+}
+
+/// Check if a directory entry should be considered hidden.
+///
+/// - **Unix**: hidden if name starts with `.`.
+/// - **Windows**: hidden if name starts with `.` OR has `FILE_ATTRIBUTE_HIDDEN`.
+fn is_hidden_entry(name: &str, entry: &fs::DirEntry) -> bool {
+    if name.starts_with('.') {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        if let Ok(meta) = entry.metadata() {
+            return (meta.file_attributes() & FILE_ATTRIBUTE_HIDDEN) != 0;
+        }
+    }
+    false
 }

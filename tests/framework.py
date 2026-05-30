@@ -414,6 +414,7 @@ class FptCli:
         scan_hardlinks: bool = False,
         scan_acl: bool = False,
         scan_xattrs: bool = False,
+        scan_hidden: bool = False,
         workers: int = 4,
         writers: int = 1,
         timeout: int = 300,
@@ -425,6 +426,8 @@ class FptCli:
             "-c", str(self.ctrl_dir), "-m", str(self.meta_dir),
             "-w", str(workers), "-W", str(writers),
         ]
+        if scan_hidden:
+            cmd.append("--scan-hidden")
         if prev_meta_dir:
             cmd += ["--prev-meta-dir", prev_meta_dir]
         if scan_hardlinks:
