@@ -215,8 +215,28 @@ pub async fn run_restore_copy_pipeline<T>(
                 src_path,
                 dst_path,
             }) => {
-                if meta.common.symlink_target_path.is_some() {
-                    debug!("{log_prefix}: skipping symlink {:?}", src_path);
+                if let Some(ref symlink_target) = meta.common.symlink_target_path {
+                    // Create symlink instead of copying file content
+                    let symlink_full_path = target_local_base
+                        .as_ref()
+                        .map(|base| base.join(&dst_path))
+                        .unwrap_or_else(|| dst_path.clone());
+                    debug!("{log_prefix}: restoring symlink {:?} -> {:?}", symlink_full_path, symlink_target);
+                    if let Some(parent) = symlink_full_path.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    match crate::backup::local_metadata::create_symlink(&symlink_full_path, symlink_target) {
+                        Ok(()) => {
+                            crate::backup::local_metadata::restore_common_metadata(
+                                &symlink_full_path, &meta.common,
+                            );
+                            stats.lock().unwrap().files_restored += 1;
+                        }
+                        Err(e) => {
+                            error!("{log_prefix}: symlink {:?}: {e}", symlink_full_path);
+                            stats.lock().unwrap().files_failed += 1;
+                        }
+                    }
                     continue;
                 }
 
@@ -239,6 +259,10 @@ pub async fn run_restore_copy_pipeline<T>(
                     }
 
                     let restore_rel = dst_path.clone();
+                    let restore_full_path = local_target_base2
+                        .as_ref()
+                        .map(|base| base.join(&restore_rel))
+                        .unwrap_or_else(|| restore_rel.clone());
                     let file_size = meta.size;
                     let mut block = CopyBlock {
                         meta: Arc::new(meta),
@@ -279,7 +303,11 @@ pub async fn run_restore_copy_pipeline<T>(
                         };
 
                         if block.read_complete() && block.write_complete() {
-                            debug!("{log_prefix}: restored {:?}", restore_rel);
+                            debug!("{log_prefix}: restored {:?} (attr=0x{:x})", restore_rel, block.meta.common.attr);
+                            // Restore metadata (attributes, xattrs, ACLs)
+                            crate::backup::local_metadata::restore_common_metadata(
+                                &restore_full_path, &block.meta.common,
+                            );
                             let mut guard = stats2.lock().unwrap();
                             guard.files_restored += 1;
                             guard.bytes_restored += block.file_size;

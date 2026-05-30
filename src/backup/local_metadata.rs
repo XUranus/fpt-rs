@@ -80,7 +80,14 @@ fn restore_windows_attrs(path: &Path, attr: u32) {
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let _ = SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attr));
+        // Retry a few times — the file handle may not be fully released yet
+        for _ in 0..3 {
+            if SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attr)).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        error!("Failed to set file attributes on {:?} (attr=0x{:x})", path, attr);
     }
 }
 

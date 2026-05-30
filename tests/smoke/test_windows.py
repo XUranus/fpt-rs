@@ -57,15 +57,12 @@ def test_windows_file_attributes(tmp_workspace: FptCli):
     assert (restore_target / "readonly_file.txt").read_text() == "readonly content"
     assert (restore_target / "normal_file.txt").read_text() == "normal content"
 
-    # verify readonly attribute is preserved (if restore pipeline calls restore_common_metadata)
+    # verify readonly attribute is preserved
     restored_readonly = restore_target / "readonly_file.txt"
     restored_readonly_attr = GetFileAttributes(str(restored_readonly))
-    if not (restored_readonly_attr & FILE_ATTRIBUTE_READONLY):
-        import logging
-        logging.getLogger("fpt_test").warning(
-            "READONLY attribute not preserved (attr=0x%x, known limitation)",
-            restored_readonly_attr,
-        )
+    assert restored_readonly_attr & FILE_ATTRIBUTE_READONLY, (
+        f"READONLY attribute not preserved: 0x{restored_readonly_attr:x}"
+    )
 
 
 # ---------------------------------------------------------------------------
