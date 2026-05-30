@@ -18,6 +18,10 @@ This document describes the Windows-specific implementation details for Fpt's sc
 | Long filenames | Yes | Yes | Yes | Up to 255 chars per component |
 | Long paths | Yes | Yes | Yes | `\\?\` prefix applied for paths > 240 chars; `longPathAware` manifest embedded |
 | Incremental backup | Yes | Yes | Yes | File index via `FILE_ID_INFO` |
+| Local → SMB backup | — | Yes | — | Tested on Windows loopback share |
+| SMB → Local backup | — | Yes | — | query_info fallback for deserialization failure |
+| SMB → SMB backup | — | Yes | — | Tested on Windows loopback share |
+| SMB target restore | — | — | Yes | Via local mount path access to SMB share |
 
 ## Architecture
 
@@ -59,6 +63,22 @@ Windows file metadata is retrieved via Win32 APIs:
 - `restore_windows_sd()` converts SDDL string back via `ConvertStringSecurityDescriptorToSecurityDescriptorW` and applies via `SetSecurityInfo`.
 - `restore_sparse()` marks files sparse via `DeviceIoControl(FSCTL_SET_SPARSE)` and punches holes via `FSCTL_SET_ZERO_DATA`.
 
+## SMB Transport Matrix (Windows)
+
+All 4 local↔SMB directions tested and verified on Windows 10 loopback SMB share:
+
+| Direction | Status | MD5 Verified |
+|-----------|--------|--------------|
+| Local → SMB | ✅ | Yes |
+| SMB → Local (backup) | ✅ | Yes |
+| SMB → SMB | ✅ | Yes |
+| SMB target restore | ✅ | Yes |
+
+**Known SMB issue**: `FileAllInformation` query deserialization fails on Windows
+local loopback SMB shares due to smb-rs library binary layout mismatch. The scanner
+falls back to a minimal DirMeta and continues enumeration successfully.
+See [smb.md](smb.md) for analysis.
+
 ## Known Limitations
 
 1. **Security Descriptor restore scope**: Only DACL is restored (no SACL — requires `SE_SECURITY_NAME` privilege). Owner/Group are set when present in SDDL.
@@ -66,6 +86,8 @@ Windows file metadata is retrieved via Win32 APIs:
 2. **Sparse hole ranges**: The scanner detects that a file is sparse (via `GetCompressedFileSizeW`) but does not record exact hole locations. During restore, the entire file content is written first, then trailing zero regions are punched. Intermediate holes are not restored.
 
 3. **File index collision**: The 128-bit `FILE_ID_INFO` is XOR-folded to u64, which can theoretically cause collisions. The `devno` is 0 on Windows, so cross-volume collisions are possible.
+
+4. **SMB→SMB restore via SMB URL**: The `fptcli restore --copy smb://...` is not yet implemented. SMB backups must be restored via local mount path access to the SMB share.
 
 ## Testing
 
