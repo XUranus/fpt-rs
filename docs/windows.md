@@ -13,8 +13,8 @@ This document describes the Windows-specific implementation details for Fpt's sc
 | Symlinks (directory) | Yes | Yes | Yes | Uses `symlink_dir` on restore |
 | Junctions | Yes | Yes | Yes | Via `read_link` / `mklink /J` |
 | File attributes | Yes | Yes | Yes | READONLY, HIDDEN, SYSTEM etc. stored in `attr` field, restored via SetFileAttributesW |
-| Security descriptors | Yes | No | No | SDDL string captured during scan; restore not yet implemented |
-| Sparse files | Yes | Yes | No | Detected via GetCompressedFileSizeW; size preserved but sparseness not recreated on restore |
+| Security descriptors | Yes | Partial | Partial | SDDL captured via GetKernelObjectSecurity; restored via ConvertStringSecurityDescriptorToSecurityDescriptorW + SetSecurityInfo |
+| Sparse files | Yes | Yes | Yes | Detected via GetCompressedFileSizeW; restored via FSCTL_SET_SPARSE + FSCTL_SET_ZERO_DATA |
 | Long filenames | Yes | Yes | Yes | Up to 255 chars per component |
 | Long paths | Yes | Yes | Yes | `\\?\` prefix applied for paths > 240 chars; `longPathAware` manifest embedded |
 | Incremental backup | Yes | Yes | Yes | File index via `FILE_ID_INFO` |
@@ -56,16 +56,16 @@ Windows file metadata is retrieved via Win32 APIs:
 
 - `create_symlink()` uses `symlink_dir` for directory targets, `symlink_file` for files.
 - `restore_windows_attrs()` calls `SetFileAttributesW` to restore file attributes.
+- `restore_windows_sd()` converts SDDL string back via `ConvertStringSecurityDescriptorToSecurityDescriptorW` and applies via `SetSecurityInfo`.
+- `restore_sparse()` marks files sparse via `DeviceIoControl(FSCTL_SET_SPARSE)` and punches holes via `FSCTL_SET_ZERO_DATA`.
 
 ## Known Limitations
 
-1. **Security Descriptor restore**: SDs are read during scan (stored as SDDL) but not written back during restore. The `restore_common_metadata` function does not call `SetSecurityInfo`.
+1. **Security Descriptor restore scope**: Only DACL is restored (no SACL — requires `SE_SECURITY_NAME` privilege). Owner/Group are set when present in SDDL.
 
-2. **Attribute restore**: `restore_windows_attrs` is defined but may not be called in all restore code paths (the async restore pipeline in `restore_pipeline.rs` does not call `restore_common_metadata`).
+2. **Sparse hole ranges**: The scanner detects that a file is sparse (via `GetCompressedFileSizeW`) but does not record exact hole locations. During restore, the entire file content is written first, then trailing zero regions are punched. Intermediate holes are not restored.
 
-3. **Sparse file sparseness**: The scanner detects sparse files via `GetCompressedFileSizeW` but does not capture exact hole ranges. During restore, sparse files are created as regular files — `FSCTL_SET_SPARSE` is not called.
-
-4. **File index collision**: The 128-bit `FILE_ID_INFO` is XOR-folded to u64, which can theoretically cause collisions. The `devno` is 0 on Windows, so cross-volume collisions are possible.
+3. **File index collision**: The 128-bit `FILE_ID_INFO` is XOR-folded to u64, which can theoretically cause collisions. The `devno` is 0 on Windows, so cross-volume collisions are possible.
 
 ## Testing
 

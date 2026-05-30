@@ -27,7 +27,16 @@ pub fn read_local_file_chunk(
 }
 
 /// Write a byte buffer to a local file at the given offset.
-pub fn write_local_file_chunk(path: &PathBuf, offset: u64, buf: &[u8]) -> Result<(), String> {
+///
+/// If `mark_sparse` is true and this is the first write (offset == 0),
+/// the file is marked as sparse on Windows so NTFS doesn't pre-allocate
+/// space for zero-filled regions.
+pub fn write_local_file_chunk(
+    path: &PathBuf,
+    offset: u64,
+    buf: &[u8],
+    mark_sparse: bool,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {:?}: {e}", parent))?;
     }
@@ -39,6 +48,13 @@ pub fn write_local_file_chunk(path: &PathBuf, offset: u64, buf: &[u8]) -> Result
     let mut file = options
         .open(path)
         .map_err(|e| format!("open target {:?}: {e}", path))?;
+
+    // Mark file as sparse on first write (Windows only)
+    if mark_sparse && offset == 0 {
+        #[cfg(windows)]
+        crate::backup::local_metadata::mark_file_sparse(path);
+    }
+
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| format!("seek target {:?} @ {offset}: {e}", path))?;
     file.write_all(buf)

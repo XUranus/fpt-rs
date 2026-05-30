@@ -114,9 +114,12 @@ impl TargetWriter for LocalTarget {
         let dst_path = self.base.join(&block.dst_path);
         let buf = block.data.clone();
         let offset = block.dst_offset;
+        let mark_sparse = block.meta.sparse_range.is_some();
         Box::pin(async move {
             let result =
-                task::spawn_blocking(move || write_local_file_chunk(&dst_path, offset, &buf))
+                task::spawn_blocking(move || {
+                    write_local_file_chunk(&dst_path, offset, &buf, mark_sparse)
+                })
                     .await
                     .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
 
