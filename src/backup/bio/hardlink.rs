@@ -307,6 +307,7 @@ fn create_hardlinks_for_group(
         // 2. Create a hardlink to the target
         if link_info.dst_path.exists() {
             // Check if it's already a hardlink (same inode as target)
+            #[allow(unused_variables)]
             match (fs::metadata(&link_info.dst_path), fs::metadata(target_path)) {
                 (Ok(link_meta), Ok(target_meta)) => {
                     #[cfg(unix)]

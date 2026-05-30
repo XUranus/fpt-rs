@@ -187,7 +187,7 @@ fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
 fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, UNIX_EPOCH};
 
     // Open directory with write access for setting times
     let file = OpenOptions::new()

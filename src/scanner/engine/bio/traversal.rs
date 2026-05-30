@@ -441,7 +441,8 @@ pub fn start_workers(
 ///
 /// - **Unix**: hidden if name starts with `.`.
 /// - **Windows**: hidden if name starts with `.` OR has `FILE_ATTRIBUTE_HIDDEN`.
-fn is_hidden_entry(name: &str, _entry: &fs::DirEntry) -> bool {
+#[allow(unused_variables)]
+fn is_hidden_entry(name: &str, entry: &fs::DirEntry) -> bool {
     if name.starts_with('.') {
         return true;
     }

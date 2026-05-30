@@ -136,7 +136,6 @@ fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> 
 #[cfg(windows)]
 fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
     use windows::Win32::Foundation::*;
-    use windows::Win32::Security::*;
     use windows::Win32::Storage::FileSystem::*;
 
     let wide_path = crate::path_util::to_wide_for_win32(path);
@@ -398,7 +397,6 @@ pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
 /// Query the hardlink count for a file on Windows.
 #[cfg(windows)]
 fn get_link_count(path: &Path) -> Option<u64> {
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Foundation::*;
     use windows::Win32::Storage::FileSystem::*;
 
