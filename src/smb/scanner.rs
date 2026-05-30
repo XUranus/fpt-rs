@@ -289,19 +289,23 @@ impl SmbScanner {
                 }
                 Err(e) => {
                     self.metrics.add_dir_query_info(query_info_started);
-                    log::error!("SMB query_info failed for {}: {}", task.path, e);
-                    self.record_failure(
-                        "query_dir_info",
-                        FailureItemType::Directory,
-                        &task.path,
-                        e,
-                        self.retry_policy.max_retries + 1,
-                    );
-                    drop(dir);
-                    return DirScanOutput {
-                        batch: None,
-                        children: Vec::new(),
-                    };
+                    log::warn!("SMB query_info failed for {} (continuing with defaults): {}", task.path, e);
+                    // Fallback: create a minimal DirMeta from the path.
+                    // query_info can fail on some SMB servers (e.g. Windows local shares)
+                    // due to deserialization issues, but directory enumeration still works.
+                    use std::path::Path;
+                    let dir_name = Path::new(&task.path)
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    crate::scanner::metadata::DirMeta {
+                        common: crate::scanner::metadata::MetaCommon {
+                            name: dir_name,
+                            ..Default::default()
+                        },
+                        path: task.path.clone(),
+                    }
                 }
             }
         };
