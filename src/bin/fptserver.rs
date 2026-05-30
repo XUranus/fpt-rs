@@ -844,16 +844,25 @@ async fn stop_task(state: AppState, task_id: &str) -> Result<TaskStatusSnapshot,
 }
 
 async fn kill_task(state: AppState, task_id: &str) -> Result<TaskStatusSnapshot, (i64, String)> {
-    signal_task(
-        state,
-        task_id,
-        libc::SIGKILL,
-        TaskState::Killed,
-        "kill requested",
-    )
-    .await
+    #[cfg(unix)]
+    {
+        signal_task(
+            state,
+            task_id,
+            libc::SIGKILL,
+            TaskState::Killed,
+            "kill requested",
+        )
+        .await
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (state, task_id);
+        Err((-32001, "task.kill is not supported on this platform".to_string()))
+    }
 }
 
+#[allow(unused_variables)]
 async fn signal_task(
     state: AppState,
     task_id: &str,
@@ -1190,12 +1199,18 @@ fn parse_data_location(
         {
             let mut loc = fpt::nfs::NfsLocation::from_url(spec)?.connection_count(connections);
             let default_uid = if loc.uid == 0 {
-                unsafe { libc::geteuid() as u32 }
+                #[cfg(unix)]
+                { unsafe { libc::geteuid() as u32 } }
+                #[cfg(not(unix))]
+                { 0u32 }
             } else {
                 loc.uid
             };
             let default_gid = if loc.gid == 0 {
-                unsafe { libc::getegid() as u32 }
+                #[cfg(unix)]
+                { unsafe { libc::getegid() as u32 } }
+                #[cfg(not(unix))]
+                { 0u32 }
             } else {
                 loc.gid
             };

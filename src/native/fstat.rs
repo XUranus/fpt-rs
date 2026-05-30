@@ -134,6 +134,7 @@ fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> 
 }
 
 #[cfg(windows)]
+#[allow(unused_variables)]
 fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
     use windows::Win32::Foundation::*;
     use windows::Win32::Storage::FileSystem::*;
