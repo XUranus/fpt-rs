@@ -403,3 +403,65 @@ Sources:
 
 - https://github.com/afiffon/smb-rs
 - https://docs.rs/crate/smb/latest
+
+## Known Issues
+
+### FileAllInformation deserialization failure on Windows local SMB
+
+**Symptom**: When scanning a directory on a Windows local SMB share
+(`smb://127.0.0.1/share`), the `dir.query_info::<FileAllInformation>()`
+call fails with:
+
+```
+Binary read/write error: no variants matched at 0x0
+  at query_file_info.rs:81 (FileAlignmentInformation enum)
+  at query_file_info.rs:18 (file_info_classes! macro dispatch)
+```
+
+**Root cause**: The `smb-rs` library (version 0.11.2, rev fe8eb82)
+expects `FileAllInformation` responses to follow a specific binary
+layout defined in [MS-FSCC 2.4.2]. However, Windows' local SMB server
+(likely SMB loopback via `srv2` driver) returns `FileAllInformation`
+in a format that differs from what the library's `binrw` deserializer
+expects. Specifically, the `FileAlignmentInformation` field at offset
+0x0 cannot be parsed — the response may:
+
+1. Have a different field order than expected by `binrw` derive.
+2. Use a different alignment representation (e.g., the enum variant
+   discriminant is at a different offset).
+3. Return an empty or truncated response for local loopback shares.
+
+**Evidence**: The same query works on remote SMB shares (NAS, other
+Windows machines) but fails on `127.0.0.1` loopback shares. The
+assertion errors in the log (`AccessInformation`, `AlignmentInformation`,
+`AllInformation`) show that `binrw`'s generated assertions fail because
+the actual binary data doesn't match the expected struct layout.
+
+**Workaround**: The scanner now catches `query_info` failure and falls
+back to a minimal `DirMeta` constructed from the directory path. The
+directory enumeration (`Directory::query_with_options`) uses a different
+query type (`FileIdBothDirectoryInformation`) which works correctly on
+Windows loopback shares. This means directory metadata (timestamps,
+attributes) may be incomplete for the scanned root, but file enumeration
+works correctly.
+
+**Upstream fix needed**: The `smb-rs` library should investigate the
+`FileAllInformation` binary layout difference for Windows local SMB
+servers and adjust the `binrw` deserialization accordingly. A possible
+approach is to use a manual `binrw` implementation that handles
+variable-length fields and padding more flexibly.
+
+### SMB target restore not implemented
+
+The `fptcli restore` command does not support SMB URLs as the `--copy`
+parameter. The prerequisite check explicitly returns
+"SMB restore copy-source staging is not implemented yet".
+
+To implement this, the restore pipeline needs to:
+1. Connect to the SMB share.
+2. Pre-fetch `M_REPO/` and `C_REPO/` directories to a local staging area.
+3. Use the staged metadata to generate restore control plans.
+4. Stream `D_REPO/` file content from the SMB share during the copy phase.
+
+This is analogous to how NFS restore works (which already pre-fetches
+metadata and streams data from NFS).
