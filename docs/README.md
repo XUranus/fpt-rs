@@ -10,6 +10,7 @@ Start here if you are new to the repository:
 2. [fptcli.md](fptcli.md) for user-facing backup and restore usage.
 3. [nfs.md](nfs.md) if you are touching NFS-backed scan/backup paths.
 4. [smb.md](smb.md) for the SMB transport design and rollout plan.
+5. [windows.md](windows.md) for Windows platform support status and known limitations.
 5. [aggregate.md](aggregate.md), [incremental.md](incremental.md), and [ctrlfile.md](ctrlfile.md) for format and pipeline details.
 6. [pipeline_refactor.md](pipeline_refactor.md) for the shared copy-plan/block-transfer refactor.
 7. [smoke_matrix.md](smoke_matrix.md) for the local/NFS/SMB backup+restore smoke matrix.
