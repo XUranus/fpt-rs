@@ -69,17 +69,12 @@ fn restore_windows_attrs(path: &Path, attr: u32) {
     if attr == 0 {
         return;
     }
-    use std::os::windows::ffi::OsStrExt;
     unsafe {
         use windows::Win32::Storage::FileSystem::{
             SetFileAttributesW, FILE_FLAGS_AND_ATTRIBUTES,
         };
         use windows::core::PCWSTR;
-        let wide: Vec<u16> = path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
+        let wide = crate::path_util::to_wide_for_win32(path);
         // Retry a few times — the file handle may not be fully released yet
         for _ in 0..3 {
             if SetFileAttributesW(PCWSTR(wide.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(attr)).is_ok() {

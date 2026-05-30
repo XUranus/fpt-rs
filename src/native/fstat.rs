@@ -135,16 +135,11 @@ fn get_acl_text(path: &Path, is_dir: bool) -> std::io::Result<(String, String)> 
 
 #[cfg(windows)]
 fn stat_common(path: &Path, is_dir: bool) -> std::io::Result<MetaCommon> {
-    use std::os::windows::ffi::OsStrExt;
     use windows::Win32::Foundation::*;
     use windows::Win32::Security::*;
     use windows::Win32::Storage::FileSystem::*;
 
-    let wide_path: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let wide_path = crate::path_util::to_wide_for_win32(path);
 
     unsafe {
         let hfile = CreateFileW(
@@ -328,9 +323,36 @@ fn detect_sparse_ranges(path: &Path) -> Option<Vec<(u64, u64)>> {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 fn detect_sparse_ranges(_path: &Path) -> Option<Vec<(u64, u64)>> {
     None
+}
+
+/// On Windows, detect sparse files by comparing apparent size with actual disk allocation.
+/// `GetCompressedFileSizeW` returns the actual number of bytes on disk.
+#[cfg(windows)]
+fn detect_sparse_ranges(path: &Path) -> Option<Vec<(u64, u64)>> {
+    use windows::Win32::Storage::FileSystem::GetCompressedFileSizeW;
+
+    let metadata = std::fs::metadata(path).ok()?;
+    let apparent_size = metadata.len();
+    if apparent_size == 0 {
+        return None;
+    }
+
+    let wide = crate::path_util::to_wide_for_win32(path);
+    unsafe {
+        let mut high: u32 = 0;
+        let low = GetCompressedFileSizeW(windows::core::PCWSTR(wide.as_ptr()), Some(&mut high));
+        let actual_size = ((high as u64) << 32) | (low as u64);
+
+        if actual_size < apparent_size {
+            // File has a trailing hole
+            Some(vec![(actual_size, apparent_size - actual_size)])
+        } else {
+            None
+        }
+    }
 }
 
 pub fn stat_file(path: &PathBuf) -> std::io::Result<FileMeta> {
@@ -380,11 +402,7 @@ fn get_link_count(path: &Path) -> Option<u64> {
     use windows::Win32::Foundation::*;
     use windows::Win32::Storage::FileSystem::*;
 
-    let wide_path: Vec<u16> = path
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let wide_path = crate::path_util::to_wide_for_win32(path);
 
     unsafe {
         let hfile = CreateFileW(

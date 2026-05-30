@@ -103,6 +103,28 @@ pub fn strip_source_base(logical_path: &str, source_base: &Path) -> Option<Strin
     }
 }
 
+/// Convert a native path to a null-terminated wide string for Win32 APIs.
+///
+/// On Windows, prepends `\\?\` for absolute paths longer than MAX_PATH to
+/// bypass the 260-character limit. On non-Windows, returns `OsStr`-to-`u16`.
+#[cfg(windows)]
+pub fn to_wide_for_win32(path: &Path) -> Vec<u16> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStrExt;
+
+    let s = path.to_string_lossy();
+    // If the path is absolute and long, prepend \\?\
+    let owned: OsString = if s.len() > 240
+        && (s.starts_with('\\') || (s.len() > 3 && s.as_bytes()[1] == b':'))
+    {
+        OsString::from(format!("\\\\?\\{}", s))
+    } else {
+        path.as_os_str().to_os_string()
+    };
+
+    owned.encode_wide().chain(std::iter::once(0)).collect()
+}
+
 /// Check if a logical path string represents a root-level entry (no subdirectories).
 ///
 /// e.g. `"/file.txt"` -> true, `"/dir/file.txt"` -> false.
