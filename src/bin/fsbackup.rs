@@ -340,12 +340,14 @@ fn parse_nfs_location(
 ) -> Result<DataLocation, Box<dyn std::error::Error>> {
     let mut loc = fpt::nfs::NfsLocation::from_url(url)?.connection_count(connections);
     let default_uid = if loc.uid == 0 {
-        unsafe { libc::geteuid() as u32 }
+        #[cfg(unix)] { unsafe { libc::geteuid() as u32 } }
+        #[cfg(not(unix))] { 0 }
     } else {
         loc.uid
     };
     let default_gid = if loc.gid == 0 {
-        unsafe { libc::getegid() as u32 }
+        #[cfg(unix)] { unsafe { libc::getegid() as u32 } }
+        #[cfg(not(unix))] { 0 }
     } else {
         loc.gid
     };
