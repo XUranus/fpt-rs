@@ -58,6 +58,10 @@ windows = { version = "0.58", features = [
 tempfile = "3.0"
 
 
+[[bin]]
+name = "smbprobe"
+required-features = ["smb"]
+
 [profile.release]
 debug = true
 

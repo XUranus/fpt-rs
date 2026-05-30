@@ -609,6 +609,7 @@ mod smb_impl {
 ///
 /// Given a path like `/tmp/work/COPY_COMMON_FULL_xxx/D_REPO`, returns
 /// `COPY_COMMON_FULL_xxx/D_REPO`.
+#[allow(dead_code)]
 fn extract_repo_relative_path(local_target_dir: &PathBuf) -> String {
     // Walk up from the path to find the COPY_.../D_REPO portion.
     // The structure is: <base>/COPY_{format}_{type}_{uuid}/D_REPO

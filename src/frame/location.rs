@@ -174,6 +174,7 @@ impl DataLocation {
     /// Physical prefix stripped from metadata paths when emitting logical
     /// control-file paths.
     pub fn control_path_base(&self) -> PathBuf {
+        #[allow(irrefutable_let_patterns)]
         if let DataLocation::Local(p) = self {
             return p.clone();
         }

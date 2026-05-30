@@ -1,23 +1,32 @@
 //! Thin direction wrappers over the generic async copy executor.
 
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
 
-use log::{debug, error, info};
-use tokio::sync::{mpsc, Semaphore};
-
-use crate::backup::aggregate::{should_aggregate, AggregateConfig};
+use crate::backup::aggregate::AggregateConfig;
 use crate::backup::aio::aggregation::AggregatingTarget;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
-use crate::backup::aio::transport::{
-    clamp_copy_buffer_size, LocalSource, LocalTarget, TargetWriter,
-};
-use crate::backup::copy_plan::{produce_copy_plan, CopyPlanEntry, FileCopyPlan};
+use crate::backup::aio::transport::{clamp_copy_buffer_size, LocalSource, LocalTarget};
 use crate::backup::stats::BackupStats;
-use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::failure::{FailureRecorder, RetryPolicy};
+
+#[cfg(feature = "smb")]
+use std::sync::atomic::Ordering;
+#[cfg(feature = "smb")]
+use std::time::Instant;
+#[cfg(feature = "smb")]
+use log::{debug, error, info};
+#[cfg(feature = "smb")]
+use tokio::sync::{mpsc, Semaphore};
+#[cfg(feature = "smb")]
+use crate::backup::aggregate::should_aggregate;
+#[cfg(feature = "smb")]
+use crate::backup::aio::transport::TargetWriter;
+#[cfg(feature = "smb")]
+use crate::backup::copy_plan::{produce_copy_plan, CopyPlanEntry, FileCopyPlan};
+#[cfg(feature = "smb")]
+use crate::failure::{FailureItemType, FailureRecord};
 
 #[cfg(feature = "nfs")]
 use crate::backup::aio::transport::{NfsSource, NfsTarget};

@@ -194,6 +194,7 @@ pub fn run_backup_subtask(
                 .map_err(map_backup_err)
         }
         #[cfg(all(feature = "smb", not(feature = "nfs")))]
+        #[allow(unreachable_patterns)]
         _ if config.backup_source.is_smb() || config.backup_target.is_smb() => Err(
             SubtaskError::Engine("this SMB backup direction is not implemented yet".to_string()),
         ),
@@ -201,6 +202,7 @@ pub fn run_backup_subtask(
             all(not(feature = "nfs"), not(feature = "smb")),
             all(feature = "nfs", not(feature = "smb"))
         ))]
+        #[allow(unreachable_patterns)]
         _ => Err(SubtaskError::Engine(
             "this backup direction is not compiled in".to_string(),
         )),

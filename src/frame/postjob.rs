@@ -23,6 +23,7 @@
 //! perspective.
 
 use std::io;
+#[cfg(feature = "nfs")]
 use std::path::Path;
 
 use crate::backup::aggregate::AggregateLayout;

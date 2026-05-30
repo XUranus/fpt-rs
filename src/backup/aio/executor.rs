@@ -3,14 +3,16 @@ use std::sync::Arc;
 
 use log::{debug, error};
 
-use crate::backup::aggregate::{should_aggregate, AggregateConfig};
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
 use crate::backup::copy_block::CopyBlock;
 use crate::backup::copy_plan::FileCopyPlan;
 use crate::backup::stats::BackupStats;
-use crate::failure::{
-    retry_async, retry_async_item, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy,
-};
+use crate::failure::{retry_async_item, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+
+#[cfg(feature = "smb")]
+use crate::backup::aggregate::{should_aggregate, AggregateConfig};
+#[cfg(feature = "smb")]
+use crate::failure::retry_async;
 
 pub(crate) async fn execute_async_file_plan<S, T>(
     plan: FileCopyPlan,

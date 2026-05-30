@@ -42,6 +42,7 @@ pub(crate) mod aio;
 #[cfg(not(any(feature = "nfs", feature = "smb")))]
 #[allow(dead_code)]
 pub(crate) mod aio {
+    #[allow(unused_imports)]
     pub mod copy_block {
         pub use crate::backup::copy_block::*;
     }

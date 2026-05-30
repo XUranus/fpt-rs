@@ -1,6 +1,7 @@
 //! Post-copy phase runners for async backup directions.
 
 use std::path::PathBuf;
+#[cfg(feature = "nfs")]
 use std::sync::Arc;
 
 #[cfg(any(feature = "nfs", feature = "smb"))]

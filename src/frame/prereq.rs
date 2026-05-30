@@ -10,7 +10,9 @@
 //!    pipeline can access them with standard BIO I/O.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "nfs")]
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::frame::location::DataLocation;

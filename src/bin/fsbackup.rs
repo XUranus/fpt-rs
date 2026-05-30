@@ -252,6 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let local_target_dir = match &target {
         DataLocation::Local(path) => path.clone(),
+        #[allow(unreachable_patterns)]
         _ => PathBuf::from("/"),
     };
 

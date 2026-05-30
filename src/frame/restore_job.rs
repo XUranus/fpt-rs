@@ -161,6 +161,7 @@ impl BackupRestoreJob for FileRestoreJob {
             .run_sync()
             .map_err(RestoreJobError::Prereq)?;
 
+        #[allow(irrefutable_let_patterns)]
         if let DataLocation::Local(_) = &cfg.copy_source {
             if !repo.manifest_path().exists() {
                 return Err(RestoreJobError::MissingManifest(repo.manifest_path()));
@@ -217,6 +218,7 @@ impl BackupRestoreJob for FileRestoreJob {
             .cloned()
             .unwrap_or_else(|| cfg.temp_config.temp_base.join("_restore_placeholder"));
 
+        #[allow(irrefutable_let_patterns)]
         if let DataLocation::Local(_) = &cfg.restore_target {
             std::fs::create_dir_all(&local_restore_target).map_err(RestoreJobError::Io)?;
         }
