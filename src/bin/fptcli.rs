@@ -364,11 +364,11 @@ fn parse_data_location(
     }
 }
 
-/// Execute backup command using the `frame::BackupJob` orchestrator.
-fn cmd_backup(
+/// CLI arguments for the backup command, bundled to avoid 30-parameter functions.
+struct BackupCliArgs {
     data: String,
     target: String,
-    mut format: BackupFormat,
+    format: BackupFormat,
     aggregate: bool,
     incremental_base: Option<PathBuf>,
     jobs: usize,
@@ -395,7 +395,56 @@ fn cmd_backup(
     temp_dir: Option<PathBuf>,
     verbose: u8,
     log_file: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+}
+
+/// CLI arguments for the restore command, bundled to avoid 15-parameter functions.
+struct RestoreCliArgs {
+    copy_path: String,
+    target: String,
+    policy: RestorePolicy,
+    jobs: usize,
+    paths: Vec<String>,
+    nfs_connections: usize,
+    nfs_uid: Option<u32>,
+    nfs_gid: Option<u32>,
+    temp_dir: Option<PathBuf>,
+    verbose: u8,
+    log_file: Option<PathBuf>,
+}
+
+/// Execute backup command using the `frame::BackupJob` orchestrator.
+fn cmd_backup(args: BackupCliArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let BackupCliArgs {
+        data,
+        target,
+        mut format,
+        aggregate,
+        incremental_base,
+        jobs,
+        blob_size,
+        threshold,
+        aggregate_layout,
+        hardlink,
+        delete,
+        mtime,
+        scan_filters,
+        workers,
+        nfs_connections,
+        smb_connections,
+        smb_copy_tasks,
+        buffer_size,
+        failure_log_format,
+        operation_retries,
+        retry_delay_ms,
+        retry_backoff,
+        retry_max_delay_ms,
+        retry_jitter,
+        nfs_uid,
+        nfs_gid,
+        temp_dir,
+        verbose,
+        log_file,
+    } = args;
     if aggregate {
         format = BackupFormat::Aggregated;
     }
@@ -535,22 +584,21 @@ fn cmd_backup(
 }
 
 /// Execute restore command using the `frame::RestoreJob` orchestrator.
-fn cmd_restore(
-    copy_path: String,
-    target: String,
-    policy: RestorePolicy,
-    jobs: usize,
-    _workers: usize,
-    _hardlinks: bool,
-    _mtime: bool,
-    paths: Vec<String>,
-    nfs_connections: usize,
-    nfs_uid: Option<u32>,
-    nfs_gid: Option<u32>,
-    temp_dir: Option<PathBuf>,
-    verbose: u8,
-    log_file: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_restore(args: RestoreCliArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let RestoreCliArgs {
+        copy_path,
+        target,
+        policy,
+        jobs,
+        paths,
+        nfs_connections,
+        nfs_uid,
+        nfs_gid,
+        temp_dir,
+        verbose,
+        log_file,
+    } = args;
+
     let restore_target = parse_data_location(&target, nfs_connections, nfs_uid, nfs_gid)?;
     let copy_source = parse_data_location(&copy_path, nfs_connections, nfs_uid, nfs_gid)?;
 
@@ -729,7 +777,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             temp_dir,
             verbose,
             log_file,
-        } => cmd_backup(
+        } => cmd_backup(BackupCliArgs {
             data,
             target,
             format,
@@ -759,15 +807,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             temp_dir,
             verbose,
             log_file,
-        ),
+        }),
         Commands::Restore {
             copy,
             target,
             policy,
             jobs,
-            workers,
-            hardlinks,
-            mtime,
+            workers: _workers,
+            hardlinks: _hardlinks,
+            mtime: _mtime,
             paths,
             nfs_connections,
             nfs_uid,
@@ -775,14 +823,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             temp_dir,
             verbose,
             log_file,
-        } => cmd_restore(
-            copy,
+        } => cmd_restore(RestoreCliArgs {
+            copy_path: copy,
             target,
-            policy.into(),
+            policy: policy.into(),
             jobs,
-            workers,
-            hardlinks,
-            mtime,
             paths,
             nfs_connections,
             nfs_uid,
@@ -790,6 +835,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             temp_dir,
             verbose,
             log_file,
-        ),
+        }),
     }
 }
