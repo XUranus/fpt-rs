@@ -652,7 +652,9 @@ pub struct RestoreOption {
     pub source_dir_base: PathBuf,
     /// Original source base path recorded in the manifest.
     pub original_source_base: PathBuf,
-    /// Target directory (restore destination)
+    /// Target location (restore destination — local, NFS, or SMB).
+    pub target: crate::frame::location::DataLocation,
+    /// Target directory (restore destination) — derived from target for local paths.
     pub target_dir_base: PathBuf,
     /// Metadata directory containing meta_*.dat files
     pub meta_dir: PathBuf,
@@ -670,14 +672,6 @@ pub struct RestoreOption {
     pub restore_hardlinks: bool,
     /// Whether to restore mtime attributes
     pub restore_mtime: bool,
-    /// NFS target location.  When `Some`, the AIO pipeline writes restored
-    /// files to the NFS server instead of the local filesystem.
-    /// Requires the `nfs` Cargo feature.
-    #[cfg(feature = "nfs")]
-    pub nfs_target: Option<crate::nfs::NfsLocation>,
-    /// SMB target location. When `Some`, restored files are written to SMB.
-    #[cfg(feature = "smb")]
-    pub smb_target: Option<crate::smb::SmbLocation>,
 }
 
 impl RestoreOption {
@@ -685,7 +679,7 @@ impl RestoreOption {
     pub fn new(
         source_dir_base: PathBuf,
         original_source_base: PathBuf,
-        target_dir_base: PathBuf,
+        target: crate::frame::location::DataLocation,
         meta_dir: PathBuf,
         ctrl_dir: PathBuf,
         control_file: PathBuf,
@@ -693,7 +687,8 @@ impl RestoreOption {
         Self {
             source_dir_base,
             original_source_base,
-            target_dir_base,
+            target_dir_base: target.base_path(),
+            target,
             meta_dir,
             ctrl_dir,
             control_file,
@@ -702,10 +697,6 @@ impl RestoreOption {
             worker_count: 8,
             restore_hardlinks: false,
             restore_mtime: true,
-            #[cfg(feature = "nfs")]
-            nfs_target: None,
-            #[cfg(feature = "smb")]
-            smb_target: None,
         }
     }
 
@@ -735,22 +726,6 @@ impl RestoreOption {
     /// Enables or disables mtime restoration.
     pub fn restore_mtime(mut self, enable: bool) -> Self {
         self.restore_mtime = enable;
-        self
-    }
-
-    /// Set an NFS target location.  When set, the AIO pipeline is used and
-    /// restored files are written to the NFS server instead of the local
-    /// filesystem.  Requires the `nfs` Cargo feature.
-    #[cfg(feature = "nfs")]
-    pub fn nfs_target(mut self, loc: crate::nfs::NfsLocation) -> Self {
-        self.nfs_target = Some(loc);
-        self
-    }
-
-    /// Set an SMB target location for restore.
-    #[cfg(feature = "smb")]
-    pub fn smb_target(mut self, loc: crate::smb::SmbLocation) -> Self {
-        self.smb_target = Some(loc);
         self
     }
 }
@@ -915,75 +890,79 @@ fn run_restore_copy_phase(
     )
     .map_err(|e| RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-    #[cfg(feature = "nfs")]
-    if let Some(nfs_target) = &option.nfs_target {
-        let nfs_target = nfs_target.clone();
-        return rt.block_on(async {
-            let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
-                .await
-                .map_err(|e| {
-                    RestoreError::IoError(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        e.to_string(),
-                    ))
-                })?;
-            let root_fh = pool.root_fh();
-            let write_chunk = pool.server_wtmax.max(4096);
-            let target = crate::backup::aio::transport::NfsTarget {
-                pool,
-                dir_cache: crate::nfs::aio::writer::new_dir_handle_cache(),
-                root_fh,
-                write_chunk,
-                buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
-            };
-            restore_pipeline::run_restore_copy_pipeline(
-                option.control_file.clone(),
-                option.meta_dir.clone(),
-                option.original_source_base.clone(),
-                source,
-                target,
-                None,
-                option.policy,
-                stats,
-                "restore-copy-nfs",
-                option.worker_count,
-            )
-            .await;
-            Ok::<(), RestoreError>(())
-        });
-    }
+    use crate::frame::location::DataLocation;
 
-    #[cfg(feature = "smb")]
-    if let Some(smb_target) = &option.smb_target {
-        let smb_target = smb_target.clone();
-        return rt.block_on(async {
-            let pool =
-                crate::smb::aio::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
+    match &option.target {
+        #[cfg(feature = "nfs")]
+        DataLocation::Nfs(nfs_target) => {
+            let nfs_target = nfs_target.clone();
+            return rt.block_on(async {
+                let pool = crate::nfs::connection::NfsConnectionPool::new(&nfs_target)
                     .await
                     .map_err(|e| {
-                        RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                        RestoreError::IoError(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        ))
                     })?;
-            let target = crate::backup::aio::transport::SmbTarget {
-                location: smb_target,
-                pool,
-                dir_cache: crate::smb::aio::new_dir_cache(),
-                buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
-            };
-            restore_pipeline::run_restore_copy_pipeline(
-                option.control_file.clone(),
-                option.meta_dir.clone(),
-                option.original_source_base.clone(),
-                source,
-                target,
-                None,
-                option.policy,
-                stats,
-                "restore-copy-smb",
-                option.worker_count,
-            )
-            .await;
-            Ok::<(), RestoreError>(())
-        });
+                let root_fh = pool.root_fh();
+                let write_chunk = pool.server_wtmax.max(4096);
+                let target = crate::backup::aio::transport::NfsTarget {
+                    pool,
+                    dir_cache: crate::nfs::aio::writer::new_dir_handle_cache(),
+                    root_fh,
+                    write_chunk,
+                    buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
+                };
+                restore_pipeline::run_restore_copy_pipeline(
+                    option.control_file.clone(),
+                    option.meta_dir.clone(),
+                    option.original_source_base.clone(),
+                    source,
+                    target,
+                    None,
+                    option.policy,
+                    stats,
+                    "restore-copy-nfs",
+                    option.worker_count,
+                )
+                .await;
+                Ok::<(), RestoreError>(())
+            });
+        }
+        #[cfg(feature = "smb")]
+        DataLocation::Smb(smb_target) => {
+            let smb_target = smb_target.clone();
+            return rt.block_on(async {
+                let pool =
+                    crate::smb::aio::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
+                        .await
+                        .map_err(|e| {
+                            RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
+                        })?;
+                let target = crate::backup::aio::transport::SmbTarget {
+                    location: smb_target,
+                    pool,
+                    dir_cache: crate::smb::aio::new_dir_cache(),
+                    buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
+                };
+                restore_pipeline::run_restore_copy_pipeline(
+                    option.control_file.clone(),
+                    option.meta_dir.clone(),
+                    option.original_source_base.clone(),
+                    source,
+                    target,
+                    None,
+                    option.policy,
+                    stats,
+                    "restore-copy-smb",
+                    option.worker_count,
+                )
+                .await;
+                Ok::<(), RestoreError>(())
+            });
+        }
+        DataLocation::Local(_) => {}
     }
 
     let target = crate::backup::aio::transport::LocalTarget {
@@ -1008,8 +987,11 @@ fn run_restore_copy_phase(
 }
 
 fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError> {
+    #[allow(unused_imports)]
+    use crate::frame::location::DataLocation;
+
     #[cfg(feature = "nfs")]
-    if let Some(nfs_target) = &option.nfs_target {
+    if let DataLocation::Nfs(nfs_target) = &option.target {
         let nfs_target = nfs_target.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1040,7 +1022,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
     }
 
     #[cfg(feature = "smb")]
-    if let Some(smb_target) = &option.smb_target {
+    if let DataLocation::Smb(smb_target) = &option.target {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("fpt-restore-hardlink-smb")
@@ -1071,8 +1053,11 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
 }
 
 fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> {
+    #[allow(unused_imports)]
+    use crate::frame::location::DataLocation;
+
     #[cfg(feature = "nfs")]
-    if let Some(nfs_target) = &option.nfs_target {
+    if let DataLocation::Nfs(nfs_target) = &option.target {
         let nfs_target = nfs_target.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1102,7 +1087,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
     }
 
     #[cfg(feature = "smb")]
-    if let Some(smb_target) = &option.smb_target {
+    if let DataLocation::Smb(smb_target) = &option.target {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("fpt-restore-delete-smb")
@@ -1132,8 +1117,11 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
 }
 
 fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
+    #[allow(unused_imports)]
+    use crate::frame::location::DataLocation;
+
     #[cfg(feature = "nfs")]
-    if let Some(nfs_target) = &option.nfs_target {
+    if let DataLocation::Nfs(nfs_target) = &option.target {
         let nfs_target = nfs_target.clone();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -1163,7 +1151,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
     }
 
     #[cfg(feature = "smb")]
-    if let Some(smb_target) = &option.smb_target {
+    if let DataLocation::Smb(smb_target) = &option.target {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("fpt-restore-mtime-smb")

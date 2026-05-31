@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::{RestoreOption, RestorePolicy, RestoreTask};
+use crate::frame::location::DataLocation;
 use crate::frame::traits::{FileRestore, TransferStats};
 
 // ---------------------------------------------------------------------------
@@ -119,7 +120,7 @@ impl FileRestore for LocalFileRestore {
         let option = RestoreOption::new(
             cfg.d_repo_dir.clone(),
             cfg.source_base_dir.clone(),
-            cfg.local_target_dir.clone(),
+            DataLocation::local(cfg.local_target_dir.clone()),
             cfg.meta_dir.clone(),
             cfg.ctrl_dir.clone(),
             cfg.control_file.clone(),
@@ -166,14 +167,13 @@ mod nfs_impl {
             let option = RestoreOption::new(
                 cfg.d_repo_dir.clone(),
                 cfg.source_base_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::nfs(self.nfs_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
             )
             .policy(cfg.policy)
-            .aggregate_config(cfg.aggregate_config)
-            .nfs_target(self.nfs_target.clone());
+            .aggregate_config(cfg.aggregate_config);
 
             run_restore_task(option)
         }
@@ -207,14 +207,13 @@ mod smb_impl {
             let option = RestoreOption::new(
                 cfg.d_repo_dir.clone(),
                 cfg.source_base_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::smb(self.smb_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
             )
             .policy(cfg.policy)
-            .aggregate_config(cfg.aggregate_config)
-            .smb_target(self.smb_target.clone());
+            .aggregate_config(cfg.aggregate_config);
 
             run_restore_task(option)
         }
