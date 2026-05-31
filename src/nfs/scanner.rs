@@ -260,6 +260,60 @@ async fn scan_worker(runtime: NfsWorkerRuntime) -> Result<(), NfsError> {
     Ok(())
 }
 
+/// Resolve file attributes for a readdirplus entry, falling back to getattr if needed.
+/// Returns `None` (with failure logged) if attributes cannot be resolved.
+async fn resolve_entry_attrs(
+    pool: &NfsConnectionPool,
+    sem: &Semaphore,
+    shared: &NfsScanShared,
+    entry: &nfs3::entryplus3<'_>,
+    child_path: &str,
+) -> Option<nfs3::fattr3> {
+    match &entry.name_attributes {
+        Nfs3Option::Some(a) => Some(a.clone()),
+        Nfs3Option::None => match entry.name_handle.clone() {
+            Nfs3Option::Some(fh) => {
+                match retry_nfs(shared.retry_policy, || async {
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
+                    let mut conn = pool.acquire().await;
+                    conn.getattr(&GETATTR3args { object: fh.clone() })
+                        .await
+                        .map_err(NfsError::from)
+                })
+                .await
+                {
+                    Ok(Nfs3Result::Ok(ok)) => Some(ok.obj_attributes),
+                    Ok(Nfs3Result::Err((stat, _))) => {
+                        log::warn!("NFS getattr failed for {child_path}: {stat}");
+                        record_nfs_failure(
+                            shared.failure_recorder.as_ref(),
+                            "getattr_entry",
+                            FailureItemType::Unknown,
+                            child_path,
+                            format!("NFS error {stat:?}"),
+                            shared.retry_policy.max_retries + 1,
+                        );
+                        None
+                    }
+                    Err(e) => {
+                        log::warn!("NFS getattr error for {child_path}: {e}");
+                        None
+                    }
+                }
+            }
+            Nfs3Option::None => {
+                log::warn!(
+                    "NFS readdirplus returned no attrs and no fh for {child_path}; skipping"
+                );
+                None
+            }
+        },
+    }
+}
+
 /// Read a single directory and send a [`DirBatchScanResult`] for it.
 /// Subdirectories are pushed into `work_tx` for recursive processing.
 async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
@@ -371,47 +425,9 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
                 .map(|_| logical_path_from_physical(&shared.control_path, child_path.as_ref()));
 
             // Get fattr3 for this entry (present in readdirplus, may be absent).
-            let attrs = match &entry.name_attributes {
-                Nfs3Option::Some(a) => a.clone(),
-                Nfs3Option::None => {
-                    // Fallback: getattr on the file handle if available.
-                    match entry.name_handle.clone() {
-                        Nfs3Option::Some(fh) => {
-                            match retry_nfs(shared.retry_policy, || async {
-                                let _permit = sem
-                                    .acquire()
-                                    .await
-                                    .map_err(|_| NfsError::Path("semaphore closed".to_string()))?;
-                                let mut conn = pool.acquire().await;
-                                conn.getattr(&GETATTR3args { object: fh.clone() })
-                                    .await
-                                    .map_err(NfsError::from)
-                            })
-                            .await?
-                            {
-                                Nfs3Result::Ok(ok) => ok.obj_attributes,
-                                Nfs3Result::Err((stat, _)) => {
-                                    log::warn!("NFS getattr failed for {child_path}: {stat}");
-                                    record_nfs_failure(
-                                        shared.failure_recorder.as_ref(),
-                                        "getattr_entry",
-                                        FailureItemType::Unknown,
-                                        &child_path,
-                                        format!("NFS error {stat:?}"),
-                                        shared.retry_policy.max_retries + 1,
-                                    );
-                                    continue;
-                                }
-                            }
-                        }
-                        Nfs3Option::None => {
-                            log::warn!(
-                                "NFS readdirplus returned no attrs and no fh for {child_path}; skipping"
-                            );
-                            continue;
-                        }
-                    }
-                }
+            let attrs = match resolve_entry_attrs(pool, sem, shared, entry, &child_path).await {
+                Some(a) => a,
+                None => continue,
             };
 
             match attrs.type_ {
@@ -424,14 +440,12 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
                         }
                     }
                     log::debug!("NFS scan: dir entry {child_path}");
-                    // Recurse into subdirectory.
                     if let Nfs3Option::Some(fh) = entry.name_handle.clone() {
                         work_tx
                             .send((fh, child_path))
                             .await
                             .map_err(|_| NfsError::Path("work channel closed".to_string()))?;
                     } else {
-                        // No handle in readdirplus — resolve via lookup.
                         match lookup_child(pool, &dir_fh, &name).await {
                             Ok(Some(fh)) => {
                                 work_tx.send((fh, child_path)).await.map_err(|_| {
@@ -469,7 +483,6 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
                         }
                     }
                     log::debug!("NFS scan: symlink entry {child_path}");
-                    // Resolve symlink target.
                     let target = if let Nfs3Option::Some(fh) = entry.name_handle.clone() {
                         match readlink_target(pool, &fh, shared.retry_policy).await {
                             Ok(t) => Some(t),
@@ -492,7 +505,6 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
                     files.push(nfs_fattr3_to_file_meta(&attrs, &name, target));
                 }
                 other => {
-                    // Special files (block/char devices, sockets, FIFOs) are skipped.
                     log::debug!("NFS skipping special file {child_path} (type {other:?})");
                 }
             }
