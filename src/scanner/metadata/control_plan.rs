@@ -444,13 +444,13 @@ fn normalize_metadata_path(layout: &SourceLayout, path: &str) -> String {
     let physical = PathBuf::from(path);
     let logical_root = PathBuf::from(&layout.logical_root);
     if !physical.starts_with(&layout.physical_base) && physical.starts_with(&logical_root) {
-        return normalize_logical_string(path);
+        return crate::path_util::normalize_logical(path);
     }
     let rel = physical
         .strip_prefix(&layout.physical_base)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| physical.clone());
-    normalize_logical_string(&format!(
+    crate::path_util::normalize_logical(&format!(
         "/{}",
         rel.to_string_lossy().trim_start_matches('/')
     ))
@@ -462,7 +462,7 @@ fn normalize_requested_path(layout: &SourceLayout, raw: &str) -> String {
         return normalize_metadata_path(layout, raw);
     }
 
-    let normalized = normalize_logical_string(raw);
+    let normalized = crate::path_util::normalize_logical(raw);
     if layout.logical_root == "/" {
         return normalized;
     }
@@ -470,36 +470,32 @@ fn normalize_requested_path(layout: &SourceLayout, raw: &str) -> String {
         return normalized;
     }
     let suffix = normalized.trim_start_matches('/');
-    normalize_logical_string(&format!(
+    crate::path_util::normalize_logical(&format!(
         "{}/{}",
         layout.logical_root.trim_end_matches('/'),
         suffix
     ))
 }
 
-fn normalize_logical_string(raw: &str) -> String {
-    crate::path_util::normalize_logical(raw)
-}
-
 fn join_logical_child(dir_path: &str, name: &str) -> String {
     if dir_path == "/" {
-        normalize_logical_string(&format!("/{}", name))
+        crate::path_util::normalize_logical(&format!("/{}", name))
     } else {
-        normalize_logical_string(&format!("{}/{}", dir_path.trim_end_matches('/'), name))
+        crate::path_util::normalize_logical(&format!("{}/{}", dir_path.trim_end_matches('/'), name))
     }
 }
 
 fn path_prefix_matches(prefix: &str, candidate: &str) -> bool {
-    let prefix = normalize_logical_string(prefix);
-    let candidate = normalize_logical_string(candidate);
+    let prefix = crate::path_util::normalize_logical(prefix);
+    let candidate = crate::path_util::normalize_logical(candidate);
     prefix == "/"
         || candidate == prefix
         || candidate.strip_prefix(&(prefix.clone() + "/")).is_some()
 }
 
 fn path_is_ancestor(dir_path: &str, file_path: &str) -> bool {
-    let dir_path = normalize_logical_string(dir_path);
-    let file_path = normalize_logical_string(file_path);
+    let dir_path = crate::path_util::normalize_logical(dir_path);
+    let file_path = crate::path_util::normalize_logical(file_path);
     dir_path == "/" || file_path.strip_prefix(&(dir_path.clone() + "/")).is_some()
 }
 
@@ -509,9 +505,9 @@ mod tests {
 
     #[test]
     fn normalize_logical_paths() {
-        assert_eq!(normalize_logical_string("/d1//d2/"), "/d1/d2");
-        assert_eq!(normalize_logical_string("d1/d2"), "/d1/d2");
-        assert_eq!(normalize_logical_string("/d1/./d2/../f1"), "/d1/f1");
+        assert_eq!(crate::path_util::normalize_logical("/d1//d2/"), "/d1/d2");
+        assert_eq!(crate::path_util::normalize_logical("d1/d2"), "/d1/d2");
+        assert_eq!(crate::path_util::normalize_logical("/d1/./d2/../f1"), "/d1/f1");
     }
 
     #[test]

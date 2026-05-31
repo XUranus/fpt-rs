@@ -112,6 +112,16 @@ impl fmt::Display for SpillQueueError {
     }
 }
 
+impl std::error::Error for SpillQueueError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SpillQueueError::Io(e) => Some(e),
+            SpillQueueError::Serialization(e) => Some(e),
+            SpillQueueError::InvalidConfig => None,
+        }
+    }
+}
+
 /// A thread-safe, spillable FIFO queue that uses disk as overflow storage.
 ///
 /// Items are held in memory up to `memory_upper_bound`. When exceeded, the newest items are

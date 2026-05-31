@@ -17,6 +17,15 @@ use std::path::PathBuf;
 use crate::failure::{FailureLogConfig, RetryPolicy};
 use crate::scanner::filter::ScanPathFilterSet;
 
+/// Default maximum blob size for aggregate backup (64 MB).
+pub const DEFAULT_MAX_AGGREGATE_BLOB_SIZE: u64 = 64 * 1024 * 1024;
+/// Default file size threshold for aggregate backup (1 MB). Files smaller than this are packed.
+pub const DEFAULT_AGGREGATE_FILE_THRESHOLD: u64 = 1024 * 1024;
+/// Default capacity for scanner output queues.
+pub const DEFAULT_SCAN_QUEUE_CAPACITY: usize = 1000;
+/// Default capacity for internal tokio mpsc channels.
+pub const DEFAULT_MPSC_CHANNEL_CAPACITY: usize = 256;
+
 #[derive(Debug, Clone)]
 pub struct ControlPathOption {
     /// Physical base prefix stripped from metadata paths when emitting
@@ -217,8 +226,8 @@ impl Default for MetaScanOption {
             path_filters: None,
             skip_block_devices: true, // safe default
             enable_aggregation: false,
-            max_aggregate_blob_size: 64 * 1024 * 1024, // 64MB
-            aggregate_file_threshold: 1024 * 1024,     // 1MB
+            max_aggregate_blob_size: DEFAULT_MAX_AGGREGATE_BLOB_SIZE,
+            aggregate_file_threshold: DEFAULT_AGGREGATE_FILE_THRESHOLD,
         }
     }
 }

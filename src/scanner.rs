@@ -80,7 +80,7 @@ impl From<ScanOption> for Scanner {
         )
         .expect("Failed to create directory entry queue");
 
-        let output_queue = BlockingQueue::new(1000);
+        let output_queue = BlockingQueue::new(crate::scanner::options::DEFAULT_SCAN_QUEUE_CAPACITY);
 
         Self {
             enqueued_paths: Vec::new(),
@@ -296,11 +296,6 @@ impl RunningScan {
     pub fn wait(self) {
         let _ = self.terminator_handle.join();
     }
-
-    // TODO: Implement pause/resume/abort functionality
-    // pub fn pause(&self) { }
-    // pub fn resume(&self) { }
-    // pub fn abort(&self) { }
 }
 
 // ---------------------------------------------------------------------------

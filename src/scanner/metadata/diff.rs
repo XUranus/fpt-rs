@@ -179,7 +179,9 @@ impl IncrementalDiff {
                                 entry_type: DeleteEntryType::Dir,
                                 path: dmeta.path,
                             };
-                            let _ = delete_writer.write_entry(&delete_entry);
+                            if let Err(e) = delete_writer.write_entry(&delete_entry) {
+                                log::warn!("Failed to write delete entry for dir: {e}");
+                            }
                         }
                     }
                 }
@@ -232,7 +234,9 @@ impl IncrementalDiff {
                                 copy_writer.write_file(&entry)?;
                             }
                             for entry in file_diff.delete_entries {
-                                let _ = delete_writer.write_entry(&entry);
+                                if let Err(e) = delete_writer.write_entry(&entry) {
+                                    log::warn!("Failed to write delete entry: {e}");
+                                }
                             }
 
                             stats.new_files += file_diff.new_files;

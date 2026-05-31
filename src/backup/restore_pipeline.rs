@@ -223,7 +223,9 @@ pub async fn run_restore_copy_pipeline<T>(
                         .unwrap_or_else(|| dst_path.clone());
                     debug!("{log_prefix}: restoring symlink {:?} -> {:?}", symlink_full_path, symlink_target);
                     if let Some(parent) = symlink_full_path.parent() {
-                        let _ = tokio::fs::create_dir_all(parent).await;
+                        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                            log::warn!("{log_prefix}: failed to create symlink parent dir {:?}: {e}", parent);
+                        }
                     }
                     match crate::backup::local_metadata::create_symlink(&symlink_full_path, symlink_target) {
                         Ok(()) => {

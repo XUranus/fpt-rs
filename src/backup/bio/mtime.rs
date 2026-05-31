@@ -20,7 +20,7 @@
 //! See [`crate::scanner::metadata::mtime`] for the control file format.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -111,10 +111,10 @@ pub fn process_mtime(
         stats.dirs_processed.fetch_add(1, Ordering::Relaxed);
 
         // Calculate target path
-        let target_path = make_relative_and_join(
+        let target_path = crate::path_util::make_relative_and_join(
             source_dir_base,
             target_dir_base.to_path_buf(),
-            entry.path,
+            &entry.path,
             logical_paths,
         );
 
@@ -203,16 +203,6 @@ fn set_dir_times(path: &Path, atime: u64, mtime: u64) -> io::Result<()> {
             .set_accessed(atime_system)
             .set_modified(mtime_system),
     )
-}
-
-/// Make path relative to base_dir and then join with target_base.
-fn make_relative_and_join(
-    base_dir: &Path,
-    target_base: PathBuf,
-    path: String,
-    logical_paths: bool,
-) -> PathBuf {
-    crate::path_util::make_relative_and_join(base_dir, target_base, &path, logical_paths)
 }
 
 /// Runs the mtime phase as a separate backup phase.

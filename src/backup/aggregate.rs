@@ -25,9 +25,9 @@
 //! 2. Read blob file and extract specific byte ranges
 //! 3. Write extracted files to destination
 
-pub const AGGREGATE_ROOT_DIR: &str = ".AGGR";
-pub const AGGREGATE_DIR_NAME: &str = ".AGGR_DIR";
-pub const DEFAULT_AGGREGATE_SHARDS: u16 = 16;
+pub(crate) const AGGREGATE_ROOT_DIR: &str = ".AGGR";
+pub(crate) const AGGREGATE_DIR_NAME: &str = ".AGGR_DIR";
+pub(crate) const DEFAULT_AGGREGATE_SHARDS: u16 = 16;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

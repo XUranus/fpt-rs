@@ -187,10 +187,10 @@ fn read_hardlink_groups(
                         Ok(_fmeta) => {
                             // Build source and destination paths
                             let src_path = PathBuf::from(&file_entry.path);
-                            let dst_path = make_relative_and_join(
+                            let dst_path = crate::path_util::make_relative_and_join(
                                 source_dir_base,
                                 target_dir_base.to_path_buf(),
-                                file_entry.path.clone(),
+                                &file_entry.path,
                                 logical_paths,
                             );
 
@@ -439,16 +439,6 @@ fn restore_file_metadata(_file_info: &HardlinkFileInfo) -> io::Result<()> {
     // The metadata was already set on the target file during the copy phase.
 
     Ok(())
-}
-
-/// Make path relative to base_dir and then join with target_base.
-fn make_relative_and_join(
-    base_dir: &Path,
-    target_base: PathBuf,
-    path: String,
-    logical_paths: bool,
-) -> PathBuf {
-    crate::path_util::make_relative_and_join(base_dir, target_base, &path, logical_paths)
 }
 
 /// Runs the hardlink phase as a separate backup phase.

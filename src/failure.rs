@@ -329,7 +329,9 @@ impl FailureRecorder {
 
     pub fn record(&self, record: FailureRecord) {
         if let Ok(mut inner) = self.inner.lock() {
-            let _ = inner.write_record(&record);
+            if let Err(e) = inner.write_record(&record) {
+                log::warn!("Failed to write failure record: {e}");
+            }
         }
     }
 }

@@ -237,7 +237,7 @@ fn compile_patterns(patterns: Vec<String>) -> Result<Vec<PathPattern>, String> {
 }
 
 fn compile_pattern(pattern: &str) -> Result<PathPattern, String> {
-    let normalized = normalize_logical_path(pattern);
+    let normalized = crate::path_util::normalize_logical(pattern);
     let segments = split_logical_path(&normalized)
         .into_iter()
         .map(SegmentPattern::new)
@@ -253,13 +253,13 @@ pub fn logical_path_from_physical(control: &ControlPathOption, physical_path: &P
     if !physical_path.starts_with(&control.physical_base)
         && physical_path.starts_with(&logical_root)
     {
-        return normalize_logical_path(&physical_path.to_string_lossy());
+        return crate::path_util::normalize_logical(&physical_path.to_string_lossy());
     }
     let rel = physical_path
         .strip_prefix(&control.physical_base)
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|_| physical_path.to_path_buf());
-    normalize_logical_path(&format!(
+    crate::path_util::normalize_logical(&format!(
         "/{}",
         rel.to_string_lossy().trim_start_matches('/')
     ))
@@ -270,10 +270,6 @@ fn split_logical_path(path: &str) -> Vec<&str> {
         .split('/')
         .filter(|part| !part.is_empty())
         .collect()
-}
-
-fn normalize_logical_path(raw: &str) -> String {
-    crate::path_util::normalize_logical(raw)
 }
 
 #[cfg(test)]

@@ -8,10 +8,10 @@ use crate::backup::stats::BackupStats;
 use crate::backup::{PhaseFlags, SharedState};
 use crate::failure::{FailureRecorder, RetryPolicy};
 
-pub mod delete;
-pub mod hardlink;
-pub mod local_copy;
-pub mod mtime;
+pub(crate) mod delete;
+pub(crate) mod hardlink;
+pub(crate) mod local_copy;
+pub(crate) mod mtime;
 
 pub(crate) fn spawn_local_backup_pipeline(
     control_file: PathBuf,

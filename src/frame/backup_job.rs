@@ -296,7 +296,9 @@ impl BackupRestoreJob for FileBackupJob {
             };
 
             let repo_clone = repo.clone();
-            let _ = repo.create_status(&format!("SUBTASK_{subtask_uuid}.RUNNING"));
+            if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
+                log::debug!("Failed to create RUNNING status for subtask {subtask_uuid}: {e}");
+            }
 
             let handle = thread::spawn(move || run_backup_subtask(&subtask_cfg, &repo_clone));
 
@@ -328,8 +330,12 @@ impl BackupRestoreJob for FileBackupJob {
                     subtasks_ok += 1;
                     total_files += stats.files_transferred;
                     total_bytes += stats.bytes_transferred;
-                    let _ = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING"));
-                    let _ = repo.create_status(&format!("SUBTASK_{subtask_uuid}.DONE"));
+                    if let Err(e) = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
+                        log::debug!("Failed to remove RUNNING status: {e}");
+                    }
+                    if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.DONE")) {
+                        log::debug!("Failed to create DONE status: {e}");
+                    }
                     if let Some(r) = subtask_records.get_mut(i) {
                         r.succeeded = true;
                     }
@@ -343,8 +349,12 @@ impl BackupRestoreJob for FileBackupJob {
                 Err(e) => {
                     subtasks_failed += 1;
                     log::error!("Subtask {subtask_uuid} FAILED: {e}");
-                    let _ = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING"));
-                    let _ = repo.create_status(&format!("SUBTASK_{subtask_uuid}.FAILED"));
+                    if let Err(e) = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
+                        log::debug!("Failed to remove RUNNING status: {e}");
+                    }
+                    if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.FAILED")) {
+                        log::debug!("Failed to create FAILED status: {e}");
+                    }
                 }
             }
         }

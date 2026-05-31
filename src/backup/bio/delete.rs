@@ -21,7 +21,7 @@
 //! See [`crate::scanner::metadata::delete`] for the control file format.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -181,10 +181,10 @@ pub fn process_deletes(
     // Delete directories (in reverse order to delete deepest first)
     dirs_to_delete.sort_by(|a, b| b.cmp(a)); // Reverse sort
     for dir_path in dirs_to_delete {
-        let target_path = make_relative_and_join(
+        let target_path = crate::path_util::make_relative_and_join(
             source_dir_base,
             target_dir_base.to_path_buf(),
-            dir_path,
+            &dir_path,
             logical_paths,
         );
 
@@ -242,16 +242,6 @@ pub fn process_deletes(
     );
 
     Ok(snapshot)
-}
-
-/// Make path relative to base_dir and then join with target_base.
-fn make_relative_and_join(
-    base_dir: &Path,
-    target_base: PathBuf,
-    path: String,
-    logical_paths: bool,
-) -> PathBuf {
-    crate::path_util::make_relative_and_join(base_dir, target_base, &path, logical_paths)
 }
 
 /// Runs the delete phase as a separate backup phase.

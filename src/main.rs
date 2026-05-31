@@ -1,5 +1,3 @@
-extern crate libc;
-
 use std::{path::PathBuf, time::Duration};
 
 use fpt::{
@@ -9,7 +7,6 @@ use fpt::{
 
 fn setup_logger() -> Result<(), fern::InitError> {
     fern::Dispatch::new()
-        // Perform allocation-free log formatting
         .format(|out, message, record| {
             out.finish(format_args!(
                 "[{}] [{}] [{}] [{:?}:{:?}] {}",
@@ -21,44 +18,12 @@ fn setup_logger() -> Result<(), fern::InitError> {
                 message
             ))
         })
-        // Log to stdout (optional)
-        //
-        //.chain(std::io::stdout())
-        // Log to a file
         .chain(fern::log_file("output.log")?)
-        // Set the global log level
         .apply()?;
     Ok(())
 }
 
 fn main() {
-    // let path = "/home";
-
-    // match get_inode(path) {
-    //     Ok(inode) => ls("Inode of {}: {}", path, inode),
-    //     Err(e) => eprintln!("Error: {}", e),
-    // }
-    //---------------------------------------------------
-
-    // let my_data = (42u32, "Hello, world!".to_string());
-
-    // let queue = SpillQueue::new(
-    //     PathBuf::from("/tmp/myqueue"),
-    //     1000,    // memory_upper_bound
-    //     500,     // memory_lower_bound
-    //     200      // spill_load_batch_size (must be ≤ 500)
-    // ).unwrap();
-
-    // for i in 0..1500 {
-    //     let item = (i, format!("Item {}", i));
-    //     queue.push(item).unwrap();
-    // }
-    // while !queue.is_empty() {
-    //     let item = queue.pop().unwrap();
-    //     print!("{:?}\n", item);
-    // }
-
-    //---------------------------------------------------
     setup_logger().unwrap();
 
     let mut scanner: Scanner = ScanOption::new(
@@ -73,7 +38,7 @@ fn main() {
     .into();
 
     scanner
-        .enqueue_path(PathBuf::from("/home/xuranus/workspace/fpt/mnt/source"))
+        .enqueue_path(PathBuf::from("/tmp/fpt/source"))
         .unwrap();
     let scan = scanner.start().unwrap();
     while !scan.complete() {
@@ -82,27 +47,8 @@ fn main() {
     }
     println!("Scan complete");
 
-    //    let mut w = fpt::scanner::fsidx_storage::FileCacheWriter::new("/tmp/fpt", "wxx").unwrap();
-    //    let res = w.write(&fpt::scanner::fsidx_storage::FileCacheEntry::default()).unwrap();
-    //    println!("{:#?}", res);
-
-    //    let res = w.write(&fpt::scanner::fsidx_storage::FileCacheEntry::default()).unwrap();
-    //    println!("{:#?}", res);
-
-    // let mut r = fpt::scanner::fsidx_storage::FileCacheReader::new("/tmp/fpt", "wxx").unwrap();
-    // let res = r.read(0, 5).unwrap();
-    // print!("{:#?}", res);
-
-    // let a = PathBuf::from("/tmp/target");
-    // let b = PathBuf::from("/home/xuranus/dataset/dir1/dir11");
-    // let c = String::from("11.txt");
-    // let d = a.join(b.clone()).join(c.clone());
-    // println!("{:?} {:?} {} {:?}", a, b, c, d);
-
-    // why the output is not /tmp/target/home/xuranus/dataset/dir1/dir11/11.txt
-
     let source_dir_base = PathBuf::from("/");
-    let target_dir_base = PathBuf::from("/home/xuranus/workspace/fpt/mnt/target");
+    let target_dir_base = PathBuf::from("/tmp/fpt/target");
     let meta_dir = PathBuf::from("/tmp/fpt/meta");
     let ctrl_dir = PathBuf::from("/tmp/fpt/ctrl");
     let control_file = PathBuf::from("/tmp/fpt/meta/ctrl.txt");
