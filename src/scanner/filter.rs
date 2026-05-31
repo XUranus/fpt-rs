@@ -30,10 +30,13 @@ pub enum ScanEntryKind {
 }
 
 impl ScanPathFilterSet {
+    /// Returns `true` if no filters are active (all paths pass).
     pub fn is_empty(&self) -> bool {
         !self.has_includes && self.exclude_dirs.is_empty() && self.exclude_files.is_empty()
     }
 
+    /// Compile include/exclude glob patterns into a filter set.
+    /// Returns `Ok(None)` if all pattern lists are empty.
     pub fn compile(
         include_dirs: Vec<String>,
         include_files: Vec<String>,
@@ -55,6 +58,7 @@ impl ScanPathFilterSet {
         }
     }
 
+    /// Returns `true` if a directory's metadata should appear in scan output.
     pub fn should_emit_dir(&self, logical_path: &str) -> bool {
         if self.matches_excluded_dir(logical_path) {
             return false;
@@ -65,6 +69,7 @@ impl ScanPathFilterSet {
         self.dir_is_included_subtree(logical_path) || self.dir_can_reach_include(logical_path)
     }
 
+    /// Returns `true` if the scanner should recurse into this directory.
     pub fn should_descend_dir(&self, logical_path: &str) -> bool {
         if self.matches_excluded_dir(logical_path) {
             return false;
@@ -75,6 +80,7 @@ impl ScanPathFilterSet {
         self.dir_is_included_subtree(logical_path) || self.dir_can_reach_include(logical_path)
     }
 
+    /// Returns `true` if a file should appear in scan output.
     pub fn should_emit_file(&self, logical_path: &str) -> bool {
         if self.matches_excluded_dir(logical_path) || self.matches_excluded_file(logical_path) {
             return false;
