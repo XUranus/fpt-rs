@@ -235,129 +235,8 @@ impl BackupRestoreJob for FileBackupJob {
             ctrl_files.len()
         );
 
-        let mut subtask_records: Vec<SubtaskRecord> = Vec::new();
-        let mut subtasks_ok = 0usize;
-        let mut subtasks_failed = 0usize;
-        let mut total_files = 0u64;
-        let mut total_bytes = 0u64;
-
-        let mut handles: Vec<(String, thread::JoinHandle<_>)> = Vec::new();
-
-        for ctrl_file in ctrl_files {
-            let subtask_uuid = Uuid::new_v4().to_string();
-            let ctrl_name = ctrl_file
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-
-            // Route backup module logs to this subtask's log file.
-            log::info!("Subtask {subtask_uuid} starting  ctrl_file={ctrl_name}");
-            crate::logging::remove_route("fpt::backup");
-            crate::logging::remove_route("fpt::nfs::aio");
-            crate::logging::remove_route("fpt::smb::aio");
-            crate::logging::remove_route("exacl");
-            crate::logging::remove_route("sspi");
-            crate::logging::remove_route("smb::");
-            crate::logging::remove_route("smb");
-            crate::logging::add_route("fpt::backup", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("fpt::nfs::aio", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("fpt::smb::aio", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("exacl", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("sspi", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("smb::", &repo.subtask_log(&subtask_uuid));
-            crate::logging::add_route("smb", &repo.subtask_log(&subtask_uuid));
-
-            let subtask_cfg = SubtaskConfig {
-                subtask_uuid: subtask_uuid.clone(),
-                control_file: ctrl_file.clone(),
-                source_dir: cfg.source.base_path(),
-                aggregate_config: cfg.aggregate_config.clone(),
-                enable_hardlink: cfg.enable_hardlink,
-                enable_delete: cfg.enable_delete,
-                enable_mtime: cfg.enable_mtime,
-                smb_connection_count: cfg.smb_connection_count,
-                smb_copy_task_count: cfg.smb_copy_task_count,
-                copy_buffer_size: cfg.copy_buffer_size,
-                failure_log: cfg.failure_log_format.map(|format| {
-                    FailureLogConfig::new(
-                        failure_file_path(
-                            &repo.logs_dir,
-                            &format!("SUBTASK_{}_FAILURE", subtask_uuid),
-                            format,
-                        ),
-                        format,
-                    )
-                }),
-                retry_policy: cfg.retry_policy,
-                backup_source: cfg.source.clone(),
-                backup_target: cfg.target.clone(),
-                restore_target: DataLocation::Local(PathBuf::new()), // unused for backup
-                restore_source_base: PathBuf::new(),
-            };
-
-            let repo_clone = repo.clone();
-            if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
-                log::debug!("Failed to create RUNNING status for subtask {subtask_uuid}: {e}");
-            }
-
-            let handle = thread::spawn(move || run_backup_subtask(&subtask_cfg, &repo_clone));
-
-            subtask_records.push(SubtaskRecord {
-                id: subtask_uuid.clone(),
-                control_file: format!("C_REPO/ctrl/{ctrl_name}"),
-                log_file: format!("C_REPO/logs/{subtask_uuid}.log"),
-                succeeded: false,
-            });
-
-            handles.push((subtask_uuid, handle));
-
-            // Simple sequential drain once we hit the concurrency cap.
-            while handles.len() >= cfg.max_concurrent_subtasks {
-                break; // drain happens in the join loop below
-            }
-        }
-
-        // Join all subtask threads.
-        for (i, (subtask_uuid, handle)) in handles.into_iter().enumerate() {
-            let result = handle.join().unwrap_or_else(|_| {
-                Err(crate::frame::subtask::SubtaskError::Engine(
-                    "subtask thread panicked".to_string(),
-                ))
-            });
-
-            match result {
-                Ok(stats) => {
-                    subtasks_ok += 1;
-                    total_files += stats.files_transferred;
-                    total_bytes += stats.bytes_transferred;
-                    if let Err(e) = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
-                        log::debug!("Failed to remove RUNNING status: {e}");
-                    }
-                    if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.DONE")) {
-                        log::debug!("Failed to create DONE status: {e}");
-                    }
-                    if let Some(r) = subtask_records.get_mut(i) {
-                        r.succeeded = true;
-                    }
-
-                    log::info!(
-                        "Subtask {subtask_uuid} OK  files={}  bytes={}",
-                        stats.files_transferred,
-                        stats.bytes_transferred
-                    );
-                }
-                Err(e) => {
-                    subtasks_failed += 1;
-                    log::error!("Subtask {subtask_uuid} FAILED: {e}");
-                    if let Err(e) = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
-                        log::debug!("Failed to remove RUNNING status: {e}");
-                    }
-                    if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.FAILED")) {
-                        log::debug!("Failed to create FAILED status: {e}");
-                    }
-                }
-            }
-        }
+        let subtask_result =
+            spawn_and_join_subtasks(cfg, &repo, &ctrl_files);
 
         // ── Phase 4: Post-job ─────────────────────────────────────────────────
         log::info!("=== Phase 4: Post-job ===");
@@ -379,7 +258,7 @@ impl BackupRestoreJob for FileBackupJob {
                 file_threshold: cfg.aggregate_config.file_threshold,
                 shard_count: cfg.aggregate_config.shard_count,
             }),
-            subtasks: subtask_records,
+            subtasks: subtask_result.records,
         };
 
         BackupPostJob::new(&cfg.target, &repo, &manifest)
@@ -387,19 +266,162 @@ impl BackupRestoreJob for FileBackupJob {
             .map_err(BackupJobError::PostJob)?;
 
         log::info!(
-            "Backup job finished  subtasks_ok={subtasks_ok}  subtasks_failed={subtasks_failed}  \
-             total_files={total_files}  total_bytes={total_bytes}"
+            "Backup job finished  subtasks_ok={}  subtasks_failed={}  \
+             total_files={}  total_bytes={}",
+            subtask_result.ok,
+            subtask_result.failed,
+            subtask_result.total_files,
+            subtask_result.total_bytes
         );
 
         Ok(JobResult {
             copy_uuid: repo.copy_uuid.clone(),
             copy_root: repo.copy_root.clone(),
-            subtasks_ok,
-            subtasks_failed,
-            total_files,
+            subtasks_ok: subtask_result.ok,
+            subtasks_failed: subtask_result.failed,
+            total_files: subtask_result.total_files,
             total_dirs: scan_stats.total_dirs,
-            total_bytes,
+            total_bytes: subtask_result.total_bytes,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subtask execution helpers
+// ---------------------------------------------------------------------------
+
+struct SubtaskExecResult {
+    records: Vec<SubtaskRecord>,
+    ok: usize,
+    failed: usize,
+    total_files: u64,
+    total_bytes: u64,
+}
+
+fn spawn_and_join_subtasks(
+    cfg: &BackupJobConfig,
+    repo: &RepoLayout,
+    ctrl_files: &[std::path::PathBuf],
+) -> SubtaskExecResult {
+    let mut subtask_records: Vec<SubtaskRecord> = Vec::new();
+    let mut handles: Vec<(String, thread::JoinHandle<_>)> = Vec::new();
+
+    for ctrl_file in ctrl_files {
+        let subtask_uuid = Uuid::new_v4().to_string();
+        let ctrl_name = ctrl_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        log::info!("Subtask {subtask_uuid} starting  ctrl_file={ctrl_name}");
+        let log_path = repo.subtask_log(&subtask_uuid);
+        for module in &[
+            "fpt::backup",
+            "fpt::nfs::aio",
+            "fpt::smb::aio",
+            "exacl",
+            "sspi",
+            "smb::",
+            "smb",
+        ] {
+            crate::logging::remove_route(module);
+            crate::logging::add_route(module, &log_path);
+        }
+
+        let subtask_cfg = SubtaskConfig {
+            subtask_uuid: subtask_uuid.clone(),
+            control_file: ctrl_file.clone(),
+            source_dir: cfg.source.base_path(),
+            aggregate_config: cfg.aggregate_config.clone(),
+            enable_hardlink: cfg.enable_hardlink,
+            enable_delete: cfg.enable_delete,
+            enable_mtime: cfg.enable_mtime,
+            smb_connection_count: cfg.smb_connection_count,
+            smb_copy_task_count: cfg.smb_copy_task_count,
+            copy_buffer_size: cfg.copy_buffer_size,
+            failure_log: cfg.failure_log_format.map(|format| {
+                FailureLogConfig::new(
+                    failure_file_path(
+                        &repo.logs_dir,
+                        &format!("SUBTASK_{}_FAILURE", subtask_uuid),
+                        format,
+                    ),
+                    format,
+                )
+            }),
+            retry_policy: cfg.retry_policy,
+            backup_source: cfg.source.clone(),
+            backup_target: cfg.target.clone(),
+            restore_target: DataLocation::Local(PathBuf::new()),
+            restore_source_base: PathBuf::new(),
+        };
+
+        let repo_clone = repo.clone();
+        if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
+            log::debug!("Failed to create RUNNING status for subtask {subtask_uuid}: {e}");
+        }
+
+        let handle = thread::spawn(move || run_backup_subtask(&subtask_cfg, &repo_clone));
+        subtask_records.push(SubtaskRecord {
+            id: subtask_uuid.clone(),
+            control_file: format!("C_REPO/ctrl/{ctrl_name}"),
+            log_file: format!("C_REPO/logs/{subtask_uuid}.log"),
+            succeeded: false,
+        });
+        handles.push((subtask_uuid, handle));
+    }
+
+    let mut ok = 0usize;
+    let mut failed = 0usize;
+    let mut total_files = 0u64;
+    let mut total_bytes = 0u64;
+
+    for (i, (subtask_uuid, handle)) in handles.into_iter().enumerate() {
+        let result = handle.join().unwrap_or_else(|_| {
+            Err(crate::frame::subtask::SubtaskError::Engine(
+                "subtask thread panicked".to_string(),
+            ))
+        });
+
+        match result {
+            Ok(stats) => {
+                ok += 1;
+                total_files += stats.files_transferred;
+                total_bytes += stats.bytes_transferred;
+                if let Err(e) = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
+                    log::debug!("Failed to remove RUNNING status: {e}");
+                }
+                if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.DONE")) {
+                    log::debug!("Failed to create DONE status: {e}");
+                }
+                if let Some(r) = subtask_records.get_mut(i) {
+                    r.succeeded = true;
+                }
+                log::info!(
+                    "Subtask {subtask_uuid} OK  files={}  bytes={}",
+                    stats.files_transferred,
+                    stats.bytes_transferred
+                );
+            }
+            Err(e) => {
+                failed += 1;
+                log::error!("Subtask {subtask_uuid} FAILED: {e}");
+                if let Err(e) = repo.remove_status(&format!("SUBTASK_{subtask_uuid}.RUNNING")) {
+                    log::debug!("Failed to remove RUNNING status: {e}");
+                }
+                if let Err(e) = repo.create_status(&format!("SUBTASK_{subtask_uuid}.FAILED")) {
+                    log::debug!("Failed to create FAILED status: {e}");
+                }
+            }
+        }
+    }
+
+    SubtaskExecResult {
+        records: subtask_records,
+        ok,
+        failed,
+        total_files,
+        total_bytes,
     }
 }
 
