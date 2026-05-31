@@ -236,10 +236,12 @@ fn same_share(source: &SmbLocation, target: &SmbLocation) -> bool {
         && source.password == target.password
 }
 
+/// Create a new shared directory existence cache for SMB mkdir deduplication.
 pub fn new_dir_cache() -> DirCache {
     Arc::new(Mutex::new(HashSet::new()))
 }
 
+/// Connect and authenticate an SMB client to the given share location.
 pub async fn connect_client(location: &SmbLocation) -> Result<Arc<smb_client::Client>, String> {
     let client = Arc::new(smb_client::Client::new(crate::smb::client_config(location)));
     let share_root = location.share_unc_path()?;
@@ -284,6 +286,8 @@ impl SmbClientPool {
     }
 }
 
+/// Ensure a directory exists on the SMB share, creating it (and parents) if needed.
+/// Uses a shared cache to skip redundant mkdir calls.
 pub async fn ensure_relative_directory(
     client: &smb_client::Client,
     location: &SmbLocation,
@@ -343,6 +347,7 @@ pub async fn ensure_relative_directory(
     Ok(())
 }
 
+/// Write a complete file to the SMB share at the given relative path.
 pub async fn write_relative_file(
     client: &smb_client::Client,
     location: &SmbLocation,
@@ -740,6 +745,7 @@ pub async fn upload_local_file_to_smb(
     Ok(())
 }
 
+/// Build a UNC path for a file relative to the share location.
 pub fn relative_unc_path(
     location: &SmbLocation,
     relative_path: &str,
@@ -753,6 +759,7 @@ pub fn relative_unc_path(
     }
 }
 
+/// Normalize a path for SMB use: convert backslashes, trim leading/trailing slashes.
 pub fn normalize_relative_path(path: &str) -> String {
     path.replace('\\', "/").trim_matches('/').to_string()
 }
@@ -817,6 +824,7 @@ fn relative_path_buf(source_dir_base: &Path, path: &Path) -> PathBuf {
         })
 }
 
+/// Close an SMB resource (file, directory, or pipe) regardless of its type.
 pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
     match resource {
         smb_client::Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
