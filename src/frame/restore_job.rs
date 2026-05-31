@@ -247,20 +247,17 @@ impl BackupRestoreJob for FileRestoreJob {
                 let subtask_cfg = SubtaskConfig {
                     subtask_uuid: subtask_uuid.clone(),
                     control_file: ctrl_file,
-                    source_dir: repo.d_repo.clone(),
                     aggregate_config,
                     enable_hardlink: false,
                     enable_delete: false,
                     enable_mtime: false,
-                    smb_connection_count: 4,
-                    smb_copy_task_count: 0,
                     copy_buffer_size: 1024 * 1024,
                     failure_log: None,
                     retry_policy: RetryPolicy::default(),
-                    backup_source: DataLocation::Local(PathBuf::new()), // unused for restore
-                    backup_target: DataLocation::Local(PathBuf::new()), // unused for restore
-                    restore_target: cfg.restore_target.clone(),
-                    restore_source_base: restore_source_base.clone(),
+                    direction: crate::frame::subtask::SubtaskDirection::Restore {
+                        restore_target: cfg.restore_target.clone(),
+                        source_base: restore_source_base.clone(),
+                    },
                 };
 
                 let repo_clone = repo.clone();

@@ -27,6 +27,24 @@ use crate::frame::traits::{FileBackup, FileRestore, TransferStats};
 // SubtaskConfig
 // ---------------------------------------------------------------------------
 
+/// Direction-specific configuration for a subtask.
+#[derive(Debug, Clone)]
+pub enum SubtaskDirection {
+    /// Backup subtask: source and target locations.
+    Backup {
+        source: DataLocation,
+        target: DataLocation,
+        source_dir: PathBuf,
+        smb_connection_count: usize,
+        smb_copy_task_count: usize,
+    },
+    /// Restore subtask: restore target and source base.
+    Restore {
+        restore_target: DataLocation,
+        source_base: PathBuf,
+    },
+}
+
 /// Everything needed to execute one backup or restore subtask.
 #[derive(Debug, Clone)]
 pub struct SubtaskConfig {
@@ -35,8 +53,6 @@ pub struct SubtaskConfig {
     pub subtask_uuid: String,
     /// Path to the control file this subtask should process.
     pub control_file: PathBuf,
-    /// Local source path (backup only; used when source is local).
-    pub source_dir: PathBuf,
     /// Aggregation settings.
     pub aggregate_config: AggregateConfig,
     /// Whether to run the hardlink phase.
@@ -45,24 +61,14 @@ pub struct SubtaskConfig {
     pub enable_delete: bool,
     /// Whether to run the mtime phase.
     pub enable_mtime: bool,
-    /// SMB client connections per SMB endpoint for backup subtasks.
-    pub smb_connection_count: usize,
-    /// Maximum concurrent SMB file copy tasks. 0 means auto.
-    pub smb_copy_task_count: usize,
     /// Maximum per-file copy buffer size in bytes.
     pub copy_buffer_size: usize,
     /// Optional failure log file for this subtask.
     pub failure_log: Option<FailureLogConfig>,
     /// Retry policy for copy operations in this subtask.
     pub retry_policy: RetryPolicy,
-    /// Data source for backup (local or NFS).
-    pub backup_source: DataLocation,
-    /// Data target for backup (local or NFS).
-    pub backup_target: DataLocation,
-    /// Data target for restore (local or NFS).
-    pub restore_target: DataLocation,
-    /// Original source base path recorded in the backup manifest.
-    pub restore_source_base: PathBuf,
+    /// Direction-specific configuration (backup or restore).
+    pub direction: SubtaskDirection,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,8 +121,21 @@ pub fn run_backup_subtask(
     config: &SubtaskConfig,
     repo: &RepoLayout,
 ) -> Result<SubtaskStats, SubtaskError> {
+    let SubtaskDirection::Backup {
+        source,
+        target,
+        source_dir,
+        smb_connection_count,
+        smb_copy_task_count,
+    } = &config.direction
+    else {
+        return Err(SubtaskError::Engine(
+            "run_backup_subtask called with Restore direction".to_string(),
+        ));
+    };
+
     let backup_cfg = BackupConfig::new(
-        config.source_dir.clone(),
+        source_dir.clone(),
         repo.d_repo.clone(),
         repo.meta_dir.clone(),
         repo.ctrl_dir.clone(),
@@ -126,13 +145,13 @@ pub fn run_backup_subtask(
     .enable_hardlink(config.enable_hardlink)
     .enable_delete(config.enable_delete)
     .enable_mtime(config.enable_mtime)
-    .smb_connection_count(config.smb_connection_count)
-    .smb_copy_task_count(config.smb_copy_task_count)
+    .smb_connection_count(*smb_connection_count)
+    .smb_copy_task_count(*smb_copy_task_count)
     .copy_buffer_size(config.copy_buffer_size)
     .failure_log(config.failure_log.clone())
     .retry_policy(config.retry_policy);
 
-    match (&config.backup_source, &config.backup_target) {
+    match (source, target) {
         (DataLocation::Local(_), DataLocation::Local(_)) => LocalFileBackup::new(backup_cfg)
             .run()
             .map_err(map_backup_err),
@@ -195,7 +214,7 @@ pub fn run_backup_subtask(
         }
         #[cfg(all(feature = "smb", not(feature = "nfs")))]
         #[allow(unreachable_patterns)]
-        _ if config.backup_source.is_smb() || config.backup_target.is_smb() => Err(
+        _ if source.is_smb() || target.is_smb() => Err(
             SubtaskError::Engine("this SMB backup direction is not implemented yet".to_string()),
         ),
         #[cfg(any(
@@ -220,9 +239,19 @@ pub fn run_restore_subtask(
     local_restore_target: &PathBuf,
     restore_ctrl_dir: &PathBuf,
 ) -> Result<SubtaskStats, SubtaskError> {
+    let SubtaskDirection::Restore {
+        restore_target,
+        source_base,
+    } = &config.direction
+    else {
+        return Err(SubtaskError::Engine(
+            "run_restore_subtask called with Backup direction".to_string(),
+        ));
+    };
+
     let restore_cfg = RestoreConfig::new(
         repo.d_repo.clone(),
-        config.restore_source_base.clone(),
+        source_base.clone(),
         local_restore_target.clone(),
         repo.meta_dir.clone(),
         restore_ctrl_dir.clone(),
@@ -230,7 +259,7 @@ pub fn run_restore_subtask(
     )
     .aggregate_config(config.aggregate_config);
 
-    match &config.restore_target {
+    match restore_target {
         DataLocation::Local(_) => LocalFileRestore::new(restore_cfg)
             .run()
             .map_err(map_restore_err),

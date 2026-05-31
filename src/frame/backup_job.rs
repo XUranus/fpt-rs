@@ -331,13 +331,10 @@ fn spawn_and_join_subtasks(
         let subtask_cfg = SubtaskConfig {
             subtask_uuid: subtask_uuid.clone(),
             control_file: ctrl_file.clone(),
-            source_dir: cfg.source.base_path(),
             aggregate_config: cfg.aggregate_config.clone(),
             enable_hardlink: cfg.enable_hardlink,
             enable_delete: cfg.enable_delete,
             enable_mtime: cfg.enable_mtime,
-            smb_connection_count: cfg.smb_connection_count,
-            smb_copy_task_count: cfg.smb_copy_task_count,
             copy_buffer_size: cfg.copy_buffer_size,
             failure_log: cfg.failure_log_format.map(|format| {
                 FailureLogConfig::new(
@@ -350,10 +347,13 @@ fn spawn_and_join_subtasks(
                 )
             }),
             retry_policy: cfg.retry_policy,
-            backup_source: cfg.source.clone(),
-            backup_target: cfg.target.clone(),
-            restore_target: DataLocation::Local(PathBuf::new()),
-            restore_source_base: PathBuf::new(),
+            direction: crate::frame::subtask::SubtaskDirection::Backup {
+                source: cfg.source.clone(),
+                target: cfg.target.clone(),
+                source_dir: cfg.source.base_path(),
+                smb_connection_count: cfg.smb_connection_count,
+                smb_copy_task_count: cfg.smb_copy_task_count,
+            },
         };
 
         let repo_clone = repo.clone();
