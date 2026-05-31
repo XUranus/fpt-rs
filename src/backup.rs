@@ -52,14 +52,13 @@ pub(crate) mod aio {
 }
 
 pub struct BackupOption {
-    /// source location path prefix
-    source_dir_base: PathBuf,
-    /// target location path prefix
-    target_dir_base: PathBuf,
+    /// Data source location (local path, NFS export, or SMB share).
+    source: crate::frame::location::DataLocation,
+    /// Data target location (local path, NFS export, or SMB share).
+    target: crate::frame::location::DataLocation,
 
     meta_dir: PathBuf,
     ctrl_dir: PathBuf,
-    // path for control file
     control_file: PathBuf,
 
     worker_count: usize,
@@ -73,44 +72,13 @@ pub struct BackupOption {
     /// Aggregate backup configuration
     pub aggregate_config: AggregateConfig,
 
-    /// NFS target location.  When `Some`, the AIO pipeline writes to NFS
-    /// instead of the local filesystem.  Requires the `nfs` feature.
-    #[cfg(feature = "nfs")]
-    pub nfs_target: Option<crate::nfs::NfsLocation>,
+    /// Relative path prepended to D_REPO data on remote targets
+    /// (e.g. `COPY_COMMON_FULL_xxx/D_REPO`). Computed at the frame layer.
+    target_prefix: Option<String>,
 
-    /// NFS source location.  When `Some`, the AIO pipeline reads from NFS
-    /// instead of the local filesystem.  Requires the `nfs` feature.
-    #[cfg(feature = "nfs")]
-    pub nfs_source: Option<crate::nfs::NfsLocation>,
-
-    /// Relative path within the NFS target where D_REPO data should be written.
-    /// e.g. `COPY_COMMON_FULL_xxx/D_REPO`. The NFS pool's root_fh points to the
-    /// target's configured sub_path; this prefix is prepended to each dst_path
-    /// to place files under the correct copy structure.
-    #[cfg(feature = "nfs")]
-    pub nfs_target_d_repo_path: Option<String>,
-
-    /// SMB target location. When `Some`, the async pipeline writes to SMB
-    /// instead of the local filesystem. Requires the `smb` feature.
-    #[cfg(feature = "smb")]
-    pub smb_target: Option<crate::smb::SmbLocation>,
-
-    /// SMB source location. When `Some`, the async pipeline reads from SMB
-    /// instead of the local filesystem. Requires the `smb` feature.
-    #[cfg(feature = "smb")]
-    pub smb_source: Option<crate::smb::SmbLocation>,
-
-    /// Relative path within the SMB target where D_REPO data should be written.
-    /// e.g. `COPY_COMMON_FULL_xxx/D_REPO`.
-    #[cfg(feature = "smb")]
-    pub smb_target_d_repo_path: Option<String>,
-
-    /// Number of SMB client connections per SMB endpoint used by the async
-    /// backup pipeline. For SMB->SMB this is applied independently to source
-    /// and target pools.
+    /// Number of SMB client connections per SMB endpoint.
     #[cfg(feature = "smb")]
     pub smb_connection_count: usize,
-
     /// Maximum concurrent SMB file copy tasks. 0 means auto.
     #[cfg(feature = "smb")]
     pub smb_copy_task_count: usize,
@@ -169,8 +137,8 @@ impl BackupOption {
     /// and control files respectively. `control_file` is the path to the main control
     /// file listing entries to process.
     pub fn new(
-        source_dir_base: PathBuf,
-        target_dir_base: PathBuf,
+        source: crate::frame::location::DataLocation,
+        target: crate::frame::location::DataLocation,
         meta_dir: PathBuf,
         ctrl_dir: PathBuf,
         control_file: PathBuf,
@@ -180,25 +148,14 @@ impl BackupOption {
             copy_buffer_size: 1024 * 1024,
             retry_policy: RetryPolicy::default(),
             failure_log: None,
-            source_dir_base,
-            target_dir_base,
+            source,
+            target,
             meta_dir,
             ctrl_dir,
             control_file,
             phase_flags: PhaseFlags::default(),
             aggregate_config: AggregateConfig::default(),
-            #[cfg(feature = "nfs")]
-            nfs_target: None,
-            #[cfg(feature = "nfs")]
-            nfs_source: None,
-            #[cfg(feature = "nfs")]
-            nfs_target_d_repo_path: None,
-            #[cfg(feature = "smb")]
-            smb_target: None,
-            #[cfg(feature = "smb")]
-            smb_source: None,
-            #[cfg(feature = "smb")]
-            smb_target_d_repo_path: None,
+            target_prefix: None,
             #[cfg(feature = "smb")]
             smb_connection_count: crate::backup::aio::DEFAULT_SMB_POOL_SIZE,
             #[cfg(feature = "smb")]
@@ -273,57 +230,10 @@ impl BackupOption {
         self
     }
 
-    /// Set an NFS target location.  When set, the AIO pipeline is used and
-    /// files are written to the NFS server instead of the local filesystem.
-    /// Requires the `nfs` Cargo feature.
-    #[cfg(feature = "nfs")]
-    pub fn nfs_target(mut self, loc: crate::nfs::NfsLocation) -> Self {
-        self.nfs_target = Some(loc);
-        self
-    }
-
-    /// Set an NFS source location.  When set, the AIO pipeline reads files
-    /// from the NFS server instead of the local filesystem.
-    /// Requires the `nfs` Cargo feature.
-    #[cfg(feature = "nfs")]
-    pub fn nfs_source(mut self, loc: crate::nfs::NfsLocation) -> Self {
-        self.nfs_source = Some(loc);
-        self
-    }
-
-    /// Set the relative path within the NFS target where D_REPO data should
-    /// be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
-    /// Requires the `nfs` Cargo feature.
-    #[cfg(feature = "nfs")]
-    pub fn nfs_target_d_repo_path(mut self, path: String) -> Self {
-        self.nfs_target_d_repo_path = Some(path);
-        self
-    }
-
-    /// Set an SMB target location. When set, the async pipeline writes files
-    /// to the SMB share instead of the local filesystem.
-    /// Requires the `smb` Cargo feature.
-    #[cfg(feature = "smb")]
-    pub fn smb_target(mut self, loc: crate::smb::SmbLocation) -> Self {
-        self.smb_target = Some(loc);
-        self
-    }
-
-    /// Set an SMB source location. When set, the async pipeline reads files
-    /// from the SMB share instead of the local filesystem.
-    /// Requires the `smb` Cargo feature.
-    #[cfg(feature = "smb")]
-    pub fn smb_source(mut self, loc: crate::smb::SmbLocation) -> Self {
-        self.smb_source = Some(loc);
-        self
-    }
-
-    /// Set the relative path within the SMB target where D_REPO data should
-    /// be written (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
-    /// Requires the `smb` Cargo feature.
-    #[cfg(feature = "smb")]
-    pub fn smb_target_d_repo_path(mut self, path: String) -> Self {
-        self.smb_target_d_repo_path = Some(path);
+    /// Set the relative path prepended to D_REPO on remote targets
+    /// (e.g. `COPY_COMMON_FULL_xxx/D_REPO`).
+    pub fn target_prefix(mut self, prefix: String) -> Self {
+        self.target_prefix = Some(prefix);
         self
     }
 
@@ -365,135 +275,19 @@ impl Default for SharedState {
     }
 }
 
-enum BackupDirection {
-    LocalToLocal,
-    #[cfg(feature = "nfs")]
-    LocalToNfs {
-        target: crate::nfs::NfsLocation,
-        target_prefix: String,
-    },
-    #[cfg(feature = "nfs")]
-    NfsToLocal {
-        source: crate::nfs::NfsLocation,
-    },
-    #[cfg(feature = "nfs")]
-    NfsToNfs {
-        source: crate::nfs::NfsLocation,
-        target: crate::nfs::NfsLocation,
-        target_prefix: String,
-    },
-    #[cfg(feature = "smb")]
-    LocalToSmb {
-        target: crate::smb::SmbLocation,
-        target_prefix: String,
-    },
-    #[cfg(feature = "smb")]
-    SmbToLocal {
-        source: crate::smb::SmbLocation,
-    },
-    #[cfg(feature = "smb")]
-    SmbToSmb {
-        source: crate::smb::SmbLocation,
-        target: crate::smb::SmbLocation,
-        target_prefix: String,
-    },
-    #[cfg(all(feature = "nfs", feature = "smb"))]
-    NfsToSmb {
-        source: crate::nfs::NfsLocation,
-        target: crate::smb::SmbLocation,
-        target_prefix: String,
-    },
-    #[cfg(all(feature = "nfs", feature = "smb"))]
-    SmbToNfs {
-        source: crate::smb::SmbLocation,
-        target: crate::nfs::NfsLocation,
-        target_prefix: String,
-    },
-}
-
-impl BackupOption {
-    fn direction(&self) -> BackupDirection {
-        #[cfg(feature = "nfs")]
-        if let (Some(source), Some(target)) = (&self.nfs_source, &self.nfs_target) {
-            return BackupDirection::NfsToNfs {
-                source: source.clone(),
-                target: target.clone(),
-                target_prefix: self.nfs_target_d_repo_path.clone().unwrap_or_default(),
-            };
-        }
-
-        #[cfg(all(feature = "nfs", feature = "smb"))]
-        if let (Some(source), Some(target)) = (&self.nfs_source, &self.smb_target) {
-            return BackupDirection::NfsToSmb {
-                source: source.clone(),
-                target: target.clone(),
-                target_prefix: self.smb_target_d_repo_path.clone().unwrap_or_default(),
-            };
-        }
-
-        #[cfg(all(feature = "nfs", feature = "smb"))]
-        if let (Some(source), Some(target)) = (&self.smb_source, &self.nfs_target) {
-            return BackupDirection::SmbToNfs {
-                source: source.clone(),
-                target: target.clone(),
-                target_prefix: self.nfs_target_d_repo_path.clone().unwrap_or_default(),
-            };
-        }
-
-        #[cfg(feature = "nfs")]
-        if let Some(target) = &self.nfs_target {
-            return BackupDirection::LocalToNfs {
-                target: target.clone(),
-                target_prefix: self.nfs_target_d_repo_path.clone().unwrap_or_default(),
-            };
-        }
-
-        #[cfg(feature = "nfs")]
-        if let Some(source) = &self.nfs_source {
-            return BackupDirection::NfsToLocal {
-                source: source.clone(),
-            };
-        }
-
-        #[cfg(feature = "smb")]
-        if let (Some(source), Some(target)) = (&self.smb_source, &self.smb_target) {
-            return BackupDirection::SmbToSmb {
-                source: source.clone(),
-                target: target.clone(),
-                target_prefix: self.smb_target_d_repo_path.clone().unwrap_or_default(),
-            };
-        }
-
-        #[cfg(feature = "smb")]
-        if let Some(target) = &self.smb_target {
-            return BackupDirection::LocalToSmb {
-                target: target.clone(),
-                target_prefix: self.smb_target_d_repo_path.clone().unwrap_or_default(),
-            };
-        }
-
-        #[cfg(feature = "smb")]
-        if let Some(source) = &self.smb_source {
-            return BackupDirection::SmbToLocal {
-                source: source.clone(),
-            };
-        }
-
-        BackupDirection::LocalToLocal
-    }
-}
-
 impl BackupTask {
     /// Start the backup execution.
     ///
     /// Spawns worker threads that read control files and copy data from source to target.
     /// Returns a [`RunningBackup`] handle for monitoring progress and waiting on completion.
     pub fn start(self) -> Result<RunningBackup, BackupError> {
+        use crate::frame::location::DataLocation;
+
         let worker_count = self.option.worker_count;
         let copy_buffer_size = self.option.copy_buffer_size;
         let control_file = self.option.control_file.clone();
-        let source_dir_base = self.option.source_dir_base.clone();
-        let target_dir_base = self.option.target_dir_base.clone();
+        let source_dir_base = self.option.source.base_path();
+        let target_dir_base = self.option.target.base_path();
         let meta_dir = self.option.meta_dir.clone();
         let ctrl_dir = self.option.ctrl_dir.clone();
         let phase_flags = self.option.phase_flags;
@@ -512,32 +306,35 @@ impl BackupTask {
         #[cfg(feature = "smb")]
         let smb_copy_task_count = self.option.smb_copy_task_count;
 
-        let direction = self.option.direction();
-        let remote_handle = match direction {
-            BackupDirection::LocalToLocal => None,
+        #[allow(unused_variables)]
+        let target_prefix = self.option.target_prefix.clone().unwrap_or_default();
+
+        let remote_handle = match (&self.option.source, &self.option.target) {
+            (DataLocation::Local(_), DataLocation::Local(_)) => None,
+
             #[cfg(feature = "nfs")]
-            BackupDirection::LocalToNfs {
-                target,
-                target_prefix,
-            } => Some(crate::backup::aio::spawn_local_to_nfs_backup(
-                target,
-                control_file.clone(),
-                meta_dir.clone(),
-                ctrl_dir.clone(),
-                source_dir_base.clone(),
-                target_prefix,
-                self.option.aggregate_config,
-                copy_buffer_size,
-                retry_policy,
-                failure_recorder.clone(),
-                Arc::clone(&stats),
-                Arc::clone(&terminate_indicator),
-                phase_flags,
-            )),
+            (DataLocation::Local(_), DataLocation::Nfs(nfs_target)) => {
+                Some(crate::backup::aio::spawn_local_to_nfs_backup(
+                    nfs_target.clone(),
+                    control_file.clone(),
+                    meta_dir.clone(),
+                    ctrl_dir.clone(),
+                    source_dir_base.clone(),
+                    target_prefix,
+                    self.option.aggregate_config,
+                    copy_buffer_size,
+                    retry_policy,
+                    failure_recorder.clone(),
+                    Arc::clone(&stats),
+                    Arc::clone(&terminate_indicator),
+                    phase_flags,
+                ))
+            }
+
             #[cfg(feature = "nfs")]
-            BackupDirection::NfsToLocal { source } => {
+            (DataLocation::Nfs(nfs_source), DataLocation::Local(_)) => {
                 Some(crate::backup::aio::spawn_nfs_to_local_backup(
-                    source,
+                    nfs_source.clone(),
                     control_file.clone(),
                     meta_dir.clone(),
                     ctrl_dir.clone(),
@@ -552,52 +349,52 @@ impl BackupTask {
                     phase_flags,
                 ))
             }
+
             #[cfg(feature = "nfs")]
-            BackupDirection::NfsToNfs {
-                source,
-                target,
-                target_prefix,
-            } => Some(crate::backup::aio::spawn_nfs_to_nfs_backup(
-                source,
-                target,
-                control_file.clone(),
-                meta_dir.clone(),
-                ctrl_dir.clone(),
-                source_dir_base.clone(),
-                target_prefix,
-                self.option.aggregate_config,
-                copy_buffer_size,
-                retry_policy,
-                failure_recorder.clone(),
-                Arc::clone(&stats),
-                Arc::clone(&terminate_indicator),
-                phase_flags,
-            )),
+            (DataLocation::Nfs(nfs_source), DataLocation::Nfs(nfs_target)) => {
+                Some(crate::backup::aio::spawn_nfs_to_nfs_backup(
+                    nfs_source.clone(),
+                    nfs_target.clone(),
+                    control_file.clone(),
+                    meta_dir.clone(),
+                    ctrl_dir.clone(),
+                    source_dir_base.clone(),
+                    target_prefix,
+                    self.option.aggregate_config,
+                    copy_buffer_size,
+                    retry_policy,
+                    failure_recorder.clone(),
+                    Arc::clone(&stats),
+                    Arc::clone(&terminate_indicator),
+                    phase_flags,
+                ))
+            }
+
             #[cfg(feature = "smb")]
-            BackupDirection::LocalToSmb {
-                target,
-                target_prefix,
-            } => Some(crate::backup::aio::spawn_local_to_smb_backup(
-                target,
-                control_file.clone(),
-                meta_dir.clone(),
-                ctrl_dir.clone(),
-                source_dir_base.clone(),
-                target_prefix,
-                self.option.aggregate_config,
-                copy_buffer_size,
-                retry_policy,
-                failure_recorder.clone(),
-                Arc::clone(&stats),
-                Arc::clone(&terminate_indicator),
-                smb_connection_count,
-                smb_copy_task_count,
-                phase_flags,
-            )),
+            (DataLocation::Local(_), DataLocation::Smb(smb_target)) => {
+                Some(crate::backup::aio::spawn_local_to_smb_backup(
+                    smb_target.clone(),
+                    control_file.clone(),
+                    meta_dir.clone(),
+                    ctrl_dir.clone(),
+                    source_dir_base.clone(),
+                    target_prefix,
+                    self.option.aggregate_config,
+                    copy_buffer_size,
+                    retry_policy,
+                    failure_recorder.clone(),
+                    Arc::clone(&stats),
+                    Arc::clone(&terminate_indicator),
+                    smb_connection_count,
+                    smb_copy_task_count,
+                    phase_flags,
+                ))
+            }
+
             #[cfg(feature = "smb")]
-            BackupDirection::SmbToLocal { source } => {
+            (DataLocation::Smb(smb_source), DataLocation::Local(_)) => {
                 Some(crate::backup::aio::spawn_smb_to_local_backup(
-                    source,
+                    smb_source.clone(),
                     control_file.clone(),
                     meta_dir.clone(),
                     ctrl_dir.clone(),
@@ -614,75 +411,72 @@ impl BackupTask {
                     phase_flags,
                 ))
             }
+
             #[cfg(feature = "smb")]
-            BackupDirection::SmbToSmb {
-                source,
-                target,
-                target_prefix,
-            } => Some(crate::backup::aio::spawn_smb_to_smb_backup(
-                source,
-                target,
-                control_file.clone(),
-                meta_dir.clone(),
-                ctrl_dir.clone(),
-                source_dir_base.clone(),
-                target_prefix,
-                self.option.aggregate_config,
-                copy_buffer_size,
-                retry_policy,
-                failure_recorder.clone(),
-                Arc::clone(&stats),
-                Arc::clone(&terminate_indicator),
-                smb_connection_count,
-                smb_copy_task_count,
-                phase_flags,
-            )),
+            (DataLocation::Smb(smb_source), DataLocation::Smb(smb_target)) => {
+                Some(crate::backup::aio::spawn_smb_to_smb_backup(
+                    smb_source.clone(),
+                    smb_target.clone(),
+                    control_file.clone(),
+                    meta_dir.clone(),
+                    ctrl_dir.clone(),
+                    source_dir_base.clone(),
+                    target_prefix,
+                    self.option.aggregate_config,
+                    copy_buffer_size,
+                    retry_policy,
+                    failure_recorder.clone(),
+                    Arc::clone(&stats),
+                    Arc::clone(&terminate_indicator),
+                    smb_connection_count,
+                    smb_copy_task_count,
+                    phase_flags,
+                ))
+            }
+
             #[cfg(all(feature = "nfs", feature = "smb"))]
-            BackupDirection::NfsToSmb {
-                source,
-                target,
-                target_prefix,
-            } => Some(crate::backup::aio::spawn_nfs_to_smb_backup(
-                source,
-                target,
-                control_file.clone(),
-                meta_dir.clone(),
-                ctrl_dir.clone(),
-                source_dir_base.clone(),
-                target_prefix,
-                self.option.aggregate_config,
-                copy_buffer_size,
-                retry_policy,
-                failure_recorder.clone(),
-                Arc::clone(&stats),
-                Arc::clone(&terminate_indicator),
-                smb_connection_count,
-                smb_copy_task_count,
-                phase_flags,
-            )),
+            (DataLocation::Nfs(nfs_source), DataLocation::Smb(smb_target)) => {
+                Some(crate::backup::aio::spawn_nfs_to_smb_backup(
+                    nfs_source.clone(),
+                    smb_target.clone(),
+                    control_file.clone(),
+                    meta_dir.clone(),
+                    ctrl_dir.clone(),
+                    source_dir_base.clone(),
+                    target_prefix,
+                    self.option.aggregate_config,
+                    copy_buffer_size,
+                    retry_policy,
+                    failure_recorder.clone(),
+                    Arc::clone(&stats),
+                    Arc::clone(&terminate_indicator),
+                    smb_connection_count,
+                    smb_copy_task_count,
+                    phase_flags,
+                ))
+            }
+
             #[cfg(all(feature = "nfs", feature = "smb"))]
-            BackupDirection::SmbToNfs {
-                source,
-                target,
-                target_prefix,
-            } => Some(crate::backup::aio::spawn_smb_to_nfs_backup(
-                source,
-                target,
-                control_file.clone(),
-                meta_dir.clone(),
-                ctrl_dir.clone(),
-                source_dir_base.clone(),
-                target_prefix,
-                self.option.aggregate_config,
-                copy_buffer_size,
-                retry_policy,
-                failure_recorder.clone(),
-                Arc::clone(&stats),
-                Arc::clone(&terminate_indicator),
-                smb_connection_count,
-                smb_copy_task_count,
-                phase_flags,
-            )),
+            (DataLocation::Smb(smb_source), DataLocation::Nfs(nfs_target)) => {
+                Some(crate::backup::aio::spawn_smb_to_nfs_backup(
+                    smb_source.clone(),
+                    nfs_target.clone(),
+                    control_file.clone(),
+                    meta_dir.clone(),
+                    ctrl_dir.clone(),
+                    source_dir_base.clone(),
+                    target_prefix,
+                    self.option.aggregate_config,
+                    copy_buffer_size,
+                    retry_policy,
+                    failure_recorder.clone(),
+                    Arc::clone(&stats),
+                    Arc::clone(&terminate_indicator),
+                    smb_connection_count,
+                    smb_copy_task_count,
+                    phase_flags,
+                ))
+            }
         };
 
         if let Some(terminate_handle) = remote_handle {

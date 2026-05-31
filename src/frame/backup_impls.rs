@@ -16,6 +16,7 @@ use std::time::Duration;
 use crate::backup::aggregate::AggregateConfig;
 use crate::backup::{BackupOption, BackupTask};
 use crate::failure::{FailureLogConfig, RetryPolicy};
+use crate::frame::location::DataLocation;
 use crate::frame::traits::{FileBackup, TransferStats};
 
 // ---------------------------------------------------------------------------
@@ -174,8 +175,8 @@ impl FileBackup for LocalFileBackup {
     fn run(&self) -> Result<TransferStats, BackupTaskError> {
         let cfg = &self.config;
         let option = BackupOption::new(
-            cfg.source_dir.clone(),
-            cfg.local_target_dir.clone(),
+            DataLocation::local(cfg.source_dir.clone()),
+            DataLocation::local(cfg.local_target_dir.clone()),
             cfg.meta_dir.clone(),
             cfg.ctrl_dir.clone(),
             cfg.control_file.clone(),
@@ -237,8 +238,8 @@ mod nfs_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::local(cfg.source_dir.clone()),
+                DataLocation::nfs(self.nfs_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -250,8 +251,7 @@ mod nfs_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(
+            .target_prefix(
                 cfg.remote_target_prefix
                     .clone()
                     .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
@@ -282,8 +282,8 @@ mod nfs_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::nfs(self.nfs_source.clone()),
+                DataLocation::local(cfg.local_target_dir.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -294,8 +294,7 @@ mod nfs_impl {
             .aggregate_config(cfg.aggregate_config.clone())
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
-            .retry_policy(cfg.retry_policy)
-            .nfs_source(self.nfs_source.clone());
+            .retry_policy(cfg.retry_policy);
 
             run_backup_task(option)
         }
@@ -328,8 +327,8 @@ mod nfs_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::nfs(self.nfs_source.clone()),
+                DataLocation::nfs(self.nfs_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -341,9 +340,7 @@ mod nfs_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .nfs_source(self.nfs_source.clone())
-            .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(
+            .target_prefix(
                 cfg.remote_target_prefix
                     .clone()
                     .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
@@ -382,8 +379,8 @@ mod mixed_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::nfs(self.nfs_source.clone()),
+                DataLocation::smb(self.smb_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -395,11 +392,9 @@ mod mixed_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .nfs_source(self.nfs_source.clone())
-            .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .smb_copy_task_count(cfg.smb_copy_task_count)
-            .smb_target_d_repo_path(
+            .target_prefix(
                 cfg.remote_target_prefix
                     .clone()
                     .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
@@ -431,8 +426,8 @@ mod mixed_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::smb(self.smb_source.clone()),
+                DataLocation::nfs(self.nfs_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -444,11 +439,9 @@ mod mixed_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .smb_copy_task_count(cfg.smb_copy_task_count)
-            .nfs_target(self.nfs_target.clone())
-            .nfs_target_d_repo_path(
+            .target_prefix(
                 cfg.remote_target_prefix
                     .clone()
                     .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
@@ -485,8 +478,8 @@ mod smb_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::local(cfg.source_dir.clone()),
+                DataLocation::smb(self.smb_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -498,14 +491,8 @@ mod smb_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
-            .smb_copy_task_count(cfg.smb_copy_task_count)
-            .smb_target_d_repo_path(
-                cfg.remote_target_prefix
-                    .clone()
-                    .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),
-            );
+            .smb_copy_task_count(cfg.smb_copy_task_count);
 
             run_backup_task(option)
         }
@@ -529,8 +516,8 @@ mod smb_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::smb(self.smb_source.clone()),
+                DataLocation::local(cfg.local_target_dir.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -542,7 +529,6 @@ mod smb_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .smb_source(self.smb_source.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .smb_copy_task_count(cfg.smb_copy_task_count);
 
@@ -573,8 +559,8 @@ mod smb_impl {
         fn run(&self) -> Result<TransferStats, BackupTaskError> {
             let cfg = &self.config;
             let option = BackupOption::new(
-                cfg.source_dir.clone(),
-                cfg.local_target_dir.clone(),
+                DataLocation::smb(self.smb_source.clone()),
+                DataLocation::smb(self.smb_target.clone()),
                 cfg.meta_dir.clone(),
                 cfg.ctrl_dir.clone(),
                 cfg.control_file.clone(),
@@ -586,11 +572,9 @@ mod smb_impl {
             .copy_buffer_size(cfg.copy_buffer_size)
             .failure_log(cfg.failure_log.clone())
             .retry_policy(cfg.retry_policy)
-            .smb_source(self.smb_source.clone())
-            .smb_target(self.smb_target.clone())
             .smb_connection_count(cfg.smb_connection_count)
             .smb_copy_task_count(cfg.smb_copy_task_count)
-            .smb_target_d_repo_path(
+            .target_prefix(
                 cfg.remote_target_prefix
                     .clone()
                     .unwrap_or_else(|| extract_repo_relative_path(&cfg.local_target_dir)),

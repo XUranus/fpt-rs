@@ -47,15 +47,15 @@ fn main() {
     }
     println!("Scan complete");
 
-    let source_dir_base = PathBuf::from("/");
-    let target_dir_base = PathBuf::from("/tmp/fpt/target");
+    let source = fpt::frame::location::DataLocation::local("/");
+    let target = fpt::frame::location::DataLocation::local("/tmp/fpt/target");
     let meta_dir = PathBuf::from("/tmp/fpt/meta");
     let ctrl_dir = PathBuf::from("/tmp/fpt/ctrl");
     let control_file = PathBuf::from("/tmp/fpt/meta/ctrl.txt");
 
     let fsbackup: BackupTask = BackupOption::new(
-        source_dir_base,
-        target_dir_base,
+        source,
+        target,
         meta_dir,
         ctrl_dir,
         control_file,
