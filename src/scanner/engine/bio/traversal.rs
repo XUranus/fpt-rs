@@ -14,6 +14,7 @@
 use log::{debug, error, warn};
 use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::{
     sync::{
         atomic::{AtomicI32, Ordering},
@@ -55,7 +56,7 @@ fn record_scan_failure(
     context: &ScanWorkerContext,
     operation: &str,
     item_type: FailureItemType,
-    path: &std::path::Path,
+    path: &PathBuf,
     detail: impl Into<String>,
     attempts: u32,
 ) {
@@ -68,6 +69,202 @@ fn record_scan_failure(
             detail.into(),
             attempts,
         ));
+    }
+}
+
+/// Process a symlink entry: stat it, optionally follow if target is a directory.
+fn process_symlink_entry(
+    context: &ScanWorkerContext,
+    path: &PathBuf,
+    depth: usize,
+    path_filters: Option<&crate::scanner::filter::ScanPathFilterSet>,
+    logical_path: Option<&str>,
+    dir_result: &mut DirBatchScanResult,
+) {
+    let stats = &context.stats;
+    let dirent_queue = &context.dirent_queue;
+    debug!("Processing symlink: {:?}", path);
+    match retry_scan_io(context, || fstat::stat_file(path)) {
+        Ok((file_meta, _)) => {
+            if let (Some(filters), Some(lp)) = (path_filters, logical_path) {
+                if !filters.should_emit_file(lp) {
+                    return;
+                }
+            }
+            let file_size = file_meta.size;
+            dir_result.files.push(file_meta);
+            stats.add_file_size(file_size);
+            stats.inc_files();
+
+            if context.scan_option.meta_option.follow_symlinks {
+                if let Ok(target_meta) = std::fs::metadata(path) {
+                    if target_meta.is_dir() {
+                        if let (Some(filters), Some(lp)) = (path_filters, logical_path) {
+                            if !filters.should_descend_dir(lp) {
+                                return;
+                            }
+                        }
+                        debug!("Following symlink to directory: {:?}", path);
+                        if let Err(e) =
+                            dirent_queue.push(DirScanEntry::new(path.to_path_buf(), depth + 1))
+                        {
+                            error!("Failed to push directory to queue: {:?}", e);
+                            stats.inc_failed_dirs();
+                        } else {
+                            stats.inc_dirs();
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            error!("Failed to stat symlink {:?}: {} (may be broken)", path, e);
+            match fstat::stat_file(path) {
+                Ok(file_meta) => {
+                    dir_result.files.push(file_meta);
+                    stats.inc_files();
+                }
+                Err(_) => {
+                    stats.inc_failed_files();
+                }
+            }
+            record_scan_failure(
+                context,
+                "stat_symlink",
+                FailureItemType::Symlink,
+                path,
+                e.to_string(),
+                context.scan_option.retry_policy.max_retries + 1,
+            );
+        }
+    }
+}
+
+/// Process a subdirectory entry: apply filters and enqueue for scanning.
+fn process_dir_subentry(
+    context: &ScanWorkerContext,
+    path: &PathBuf,
+    depth: usize,
+    path_filters: Option<&crate::scanner::filter::ScanPathFilterSet>,
+    logical_path: Option<&str>,
+    dir_result: &mut DirBatchScanResult,
+) {
+    let stats = &context.stats;
+    if let (Some(filters), Some(lp)) = (path_filters, logical_path) {
+        if !filters.should_descend_dir(lp) {
+            debug!("Skipping filtered subdirectory: {:?}", path);
+            return;
+        }
+    }
+    debug!("Enqueuing subdirectory: {:?}", path);
+    if let Err(e) = context
+        .dirent_queue
+        .push(DirScanEntry::new(path.to_path_buf(), depth + 1))
+    {
+        error!("Failed to push directory to queue: {:?}", e);
+        stats.inc_failed_dirs();
+        record_scan_failure(
+            context,
+            "enqueue_dir",
+            FailureItemType::Directory,
+            path,
+            e.to_string(),
+            1,
+        );
+    } else {
+        stats.inc_dirs();
+    }
+    // Suppress unused warning for dir_result when no directory metadata is added
+    let _ = dir_result;
+}
+
+/// Process a regular file entry: apply filters and collect metadata.
+fn process_regular_file_entry(
+    context: &ScanWorkerContext,
+    path: &PathBuf,
+    path_filters: Option<&crate::scanner::filter::ScanPathFilterSet>,
+    logical_path: Option<&str>,
+    dir_result: &mut DirBatchScanResult,
+) {
+    let stats = &context.stats;
+    if let (Some(filters), Some(lp)) = (path_filters, logical_path) {
+        if !filters.should_emit_file(lp) {
+            debug!("Skipping filtered file: {:?}", path);
+            return;
+        }
+    }
+    debug!("Processing file: {:?}", path);
+    match retry_scan_io(context, || fstat::stat_file(path)) {
+        Ok((file_meta, _)) => {
+            let file_size = file_meta.size;
+            dir_result.files.push(file_meta);
+            stats.add_file_size(file_size);
+            stats.inc_files();
+        }
+        Err(e) => {
+            error!("Failed to stat file {:?}: {}", path, e);
+            stats.inc_failed_files();
+            record_scan_failure(
+                context,
+                "stat_file",
+                FailureItemType::File,
+                path,
+                e.to_string(),
+                context.scan_option.retry_policy.max_retries + 1,
+            );
+        }
+    }
+}
+
+/// Process a special file entry (block/char devices, FIFOs, sockets).
+fn process_special_file_entry(
+    context: &ScanWorkerContext,
+    path: &PathBuf,
+    file_type: std::fs::FileType,
+    path_filters: Option<&crate::scanner::filter::ScanPathFilterSet>,
+    logical_path: Option<&str>,
+    dir_result: &mut DirBatchScanResult,
+) {
+    let stats = &context.stats;
+    if let (Some(filters), Some(lp)) = (path_filters, logical_path) {
+        if !filters.should_emit_file(lp) {
+            debug!("Skipping filtered special entry: {:?}", path);
+            return;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if file_type.is_block_device() {
+            if context.scan_option.meta_option.skip_block_devices {
+                debug!("Skipping block device: {:?}", path);
+                return;
+            }
+        }
+    }
+    debug!(
+        "Processing special file: {:?} (type: {:?})",
+        path, file_type
+    );
+    match retry_scan_io(context, || fstat::stat_file(path)) {
+        Ok((file_meta, _)) => {
+            let file_size = file_meta.size;
+            dir_result.files.push(file_meta);
+            stats.add_file_size(file_size);
+            stats.inc_files();
+        }
+        Err(e) => {
+            warn!("Failed to stat special file {:?}: {} (skipping)", path, e);
+            stats.inc_failed_files();
+            record_scan_failure(
+                context,
+                "stat_special",
+                FailureItemType::Special,
+                path,
+                e.to_string(),
+                context.scan_option.retry_policy.max_retries + 1,
+            );
+        }
     }
 }
 
@@ -85,7 +282,6 @@ fn record_scan_failure(
 /// Errors during file statting are logged but do not halt the scan.
 fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
     let stats = &context.stats;
-    let dirent_queue = &context.dirent_queue;
     let output_queue = &context.output_queue;
     let scan_option = &context.scan_option;
 
@@ -192,165 +388,40 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                     .map(|_| logical_path_from_physical(&scan_option.control_path, &path));
 
                 if file_type.is_symlink() {
-                    // Handle symlinks - always record them as files, but only follow if configured
-                    debug!("Processing symlink: {:?}", path);
-                    match retry_scan_io(context, || fstat::stat_file(&path)) {
-                        Ok((file_meta, _)) => {
-                            if let (Some(filters), Some(ref lp)) =
-                                (path_filters, logical_path.as_ref())
-                            {
-                                if !filters.should_emit_file(lp) {
-                                    continue;
-                                }
-                            }
-                            let file_size = file_meta.size;
-                            dir_result.files.push(file_meta);
-                            stats.add_file_size(file_size);
-                            stats.inc_files();
-
-                            // Only follow symlink if it's a directory and follow_symlinks is enabled
-                            if scan_option.meta_option.follow_symlinks {
-                                if let Ok(target_meta) = std::fs::metadata(&path) {
-                                    if target_meta.is_dir() {
-                                        if let (Some(filters), Some(ref lp)) =
-                                            (path_filters, logical_path.as_ref())
-                                        {
-                                            if !filters.should_descend_dir(lp) {
-                                                continue;
-                                            }
-                                        }
-                                        debug!("Following symlink to directory: {:?}", path);
-                                        if let Err(e) =
-                                            dirent_queue.push(DirScanEntry::new(path, depth + 1))
-                                        {
-                                            error!("Failed to push directory to queue: {:?}", e);
-                                            stats.inc_failed_dirs();
-                                        } else {
-                                            stats.inc_dirs();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Broken symlinks will fail here, but we should still record them
-                            error!("Failed to stat symlink {:?}: {} (may be broken)", path, e);
-                            // Try to get basic info for broken symlinks
-                            match fstat::stat_file(&path) {
-                                Ok(file_meta) => {
-                                    dir_result.files.push(file_meta);
-                                    stats.inc_files();
-                                }
-                                Err(_) => {
-                                    stats.inc_failed_files();
-                                }
-                            }
-                            record_scan_failure(
-                                context,
-                                "stat_symlink",
-                                FailureItemType::Symlink,
-                                &path,
-                                e.to_string(),
-                                context.scan_option.retry_policy.max_retries + 1,
-                            );
-                        }
-                    }
-                } else if file_type.is_dir() {
-                    if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
-                        if !filters.should_descend_dir(lp) {
-                            debug!("Skipping filtered subdirectory: {:?}", path);
-                            continue;
-                        }
-                    }
-                    // Enqueue subdirectory for recursive scanning
-                    debug!("Enqueuing subdirectory: {:?}", path);
-                    if let Err(e) = dirent_queue.push(DirScanEntry::new(path, depth + 1)) {
-                        error!("Failed to push directory to queue: {:?}", e);
-                        stats.inc_failed_dirs();
-                        record_scan_failure(
-                            context,
-                            "enqueue_dir",
-                            FailureItemType::Directory,
-                            &dir_entry.path,
-                            e.to_string(),
-                            1,
-                        );
-                    } else {
-                        stats.inc_dirs();
-                    }
-                } else if file_type.is_file() {
-                    if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
-                        if !filters.should_emit_file(lp) {
-                            debug!("Skipping filtered file: {:?}", path);
-                            continue;
-                        }
-                    }
-                    // Process regular file
-                    debug!("Processing file: {:?}", path);
-                    match retry_scan_io(context, || fstat::stat_file(&path)) {
-                        Ok((file_meta, _)) => {
-                            let file_size = file_meta.size;
-                            dir_result.files.push(file_meta);
-                            stats.add_file_size(file_size);
-                            stats.inc_files();
-                        }
-                        Err(e) => {
-                            error!("Failed to stat file {:?}: {}", path, e);
-                            stats.inc_failed_files();
-                            record_scan_failure(
-                                context,
-                                "stat_file",
-                                FailureItemType::File,
-                                &path,
-                                e.to_string(),
-                                context.scan_option.retry_policy.max_retries + 1,
-                            );
-                        }
-                    }
-                } else {
-                    if let (Some(filters), Some(ref lp)) = (path_filters, logical_path.as_ref()) {
-                        if !filters.should_emit_file(lp) {
-                            debug!("Skipping filtered special entry: {:?}", path);
-                            continue;
-                        }
-                    }
-                    // Handle special files (block devices, character devices, FIFOs, sockets)
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::FileTypeExt;
-                        if file_type.is_block_device() {
-                            if scan_option.meta_option.skip_block_devices {
-                                debug!("Skipping block device: {:?}", path);
-                                continue;
-                            }
-                        }
-                    }
-
-                    // For other special files, try to stat them but don't fail if unsupported
-                    debug!(
-                        "Processing special file: {:?} (type: {:?})",
-                        path, file_type
+                    process_symlink_entry(
+                        context,
+                        &path,
+                        depth,
+                        path_filters,
+                        logical_path.as_deref(),
+                        &mut dir_result,
                     );
-                    match retry_scan_io(context, || fstat::stat_file(&path)) {
-                        Ok((file_meta, _)) => {
-                            let file_size = file_meta.size;
-                            dir_result.files.push(file_meta);
-                            stats.add_file_size(file_size);
-                            stats.inc_files();
-                        }
-                        Err(e) => {
-                            warn!("Failed to stat special file {:?}: {} (skipping)", path, e);
-                            stats.inc_failed_files();
-                            record_scan_failure(
-                                context,
-                                "stat_special",
-                                FailureItemType::Special,
-                                &path,
-                                e.to_string(),
-                                context.scan_option.retry_policy.max_retries + 1,
-                            );
-                        }
-                    }
+                } else if file_type.is_dir() {
+                    process_dir_subentry(
+                        context,
+                        &path,
+                        depth,
+                        path_filters,
+                        logical_path.as_deref(),
+                        &mut dir_result,
+                    );
+                } else if file_type.is_file() {
+                    process_regular_file_entry(
+                        context,
+                        &path,
+                        path_filters,
+                        logical_path.as_deref(),
+                        &mut dir_result,
+                    );
+                } else {
+                    process_special_file_entry(
+                        context,
+                        &path,
+                        file_type,
+                        path_filters,
+                        logical_path.as_deref(),
+                        &mut dir_result,
+                    );
                 }
             }
         }
