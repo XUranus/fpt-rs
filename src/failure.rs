@@ -39,12 +39,16 @@ impl fmt::Display for FailureLogFormat {
 }
 
 #[derive(Debug, Clone)]
+/// Configuration for writing structured failure logs.
 pub struct FailureLogConfig {
+    /// Path to the failure log file.
     pub path: PathBuf,
+    /// Output format (JSON lines or CSV).
     pub format: FailureLogFormat,
 }
 
 impl FailureLogConfig {
+    /// Create a new failure log configuration.
     pub fn new(path: impl Into<PathBuf>, format: FailureLogFormat) -> Self {
         Self {
             path: path.into(),
@@ -53,12 +57,21 @@ impl FailureLogConfig {
     }
 }
 
+/// Retry policy for I/O operations (scan, copy, NFS/SMB RPCs).
+///
+/// Controls how many times an operation is retried, the delay between retries,
+/// exponential backoff, and optional jitter to avoid thundering herd.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
+    /// Maximum number of retry attempts before recording failure.
     pub max_retries: u32,
+    /// Base delay between retries.
     pub retry_delay: Duration,
+    /// Exponential backoff multiplier (1.0 = fixed delay, 2.0 = double each time).
     pub backoff_multiplier: f64,
+    /// Upper bound on the retry delay after backoff.
     pub max_retry_delay: Duration,
+    /// Random jitter ratio 0.0..1.0 added to delay (0.0 = no jitter).
     pub jitter_ratio: f64,
 }
 
@@ -75,6 +88,7 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Create a retry policy with the given max retries and fixed delay (no backoff).
     pub fn new(max_retries: u32, retry_delay: Duration) -> Self {
         Self {
             max_retries,
@@ -84,25 +98,32 @@ impl RetryPolicy {
         }
     }
 
+    /// Enable exponential backoff. The delay grows by `backoff_multiplier` after
+    /// each failure, capped at `max_retry_delay`.
     pub fn with_backoff(mut self, backoff_multiplier: f64, max_retry_delay: Duration) -> Self {
         self.backoff_multiplier = backoff_multiplier.max(1.0);
         self.max_retry_delay = max_retry_delay.max(self.retry_delay);
         self
     }
 
+    /// Enable deterministic jitter. `jitter_ratio` (0.0..1.0) controls the
+    /// amplitude of per-attempt random variation added to the delay.
     pub fn with_jitter(mut self, jitter_ratio: f64) -> Self {
         self.jitter_ratio = jitter_ratio.clamp(0.0, 1.0);
         self
     }
 
+    /// Total number of attempts (initial + retries).
     pub fn max_attempts(self) -> u32 {
         self.max_retries.saturating_add(1)
     }
 
+    /// Returns `true` if the given 1-based attempt number should be retried.
     pub fn should_retry(self, attempt: u32) -> bool {
         attempt < self.max_attempts()
     }
 
+    /// Compute the delay before the next retry, applying backoff and jitter.
     pub fn delay_for_attempt(self, failed_attempt: u32) -> Duration {
         let exponent = failed_attempt.saturating_sub(1) as i32;
         let factor = self.backoff_multiplier.powi(exponent);
@@ -219,6 +240,7 @@ impl FailureItemType {
     }
 }
 
+/// A single failure record capturing what went wrong during a backup/scan operation.
 #[derive(Debug, Clone, Serialize)]
 pub struct FailureRecord {
     pub time: String,
@@ -232,6 +254,7 @@ pub struct FailureRecord {
 }
 
 impl FailureRecord {
+    /// Create a failure record with explicit fields.
     pub fn new(
         phase: impl Into<String>,
         operation: impl Into<String>,
@@ -287,6 +310,10 @@ impl FailureRecord {
     }
 }
 
+/// Thread-safe writer for structured failure records.
+///
+/// Wraps a file handle behind a `Mutex`. Each call to [`record`](Self::record)
+/// appends one entry (JSON line or CSV row) to the failure log.
 #[derive(Clone)]
 pub struct FailureRecorder {
     inner: Arc<Mutex<FailureRecorderInner>>,
@@ -299,6 +326,7 @@ struct FailureRecorderInner {
 }
 
 impl FailureRecorder {
+    /// Open a failure log file and write the header (for CSV) or prepare for JSON lines.
     pub fn create(config: &FailureLogConfig) -> io::Result<Self> {
         if let Some(parent) = config.path.parent() {
             fs::create_dir_all(parent)?;
@@ -470,6 +498,9 @@ pub fn failure_file_path(dir: &Path, base_name: &str, format: FailureLogFormat) 
     dir.join(format!("{base_name}.{}", format.extension()))
 }
 
+/// Retry a synchronous fallible operation according to the given policy.
+///
+/// Returns `Ok(value)` on success or `Err((error, attempts))` when retries are exhausted.
 pub fn retry_sync<T, E, F>(policy: RetryPolicy, mut op: F) -> Result<T, (E, u32)>
 where
     F: FnMut() -> Result<T, E>,
@@ -478,6 +509,7 @@ where
         .map_err(|(_, err, attempts)| (err, attempts))
 }
 
+/// Retry an async fallible operation according to the given policy.
 pub async fn retry_async<T, E, F, Fut>(policy: RetryPolicy, mut op: F) -> Result<T, (E, u32)>
 where
     F: FnMut() -> Fut,
@@ -497,6 +529,10 @@ where
     unreachable!("retry queue always returns from the loop")
 }
 
+/// Retry a synchronous operation that consumes and returns an item on failure.
+///
+/// On failure the item `I` is returned alongside the error, allowing the caller
+/// to reuse buffers or file handles across retries.
 pub fn retry_sync_item<I, T, E, F>(
     policy: RetryPolicy,
     item: I,
@@ -519,6 +555,7 @@ where
     unreachable!("retry queue always returns from the loop")
 }
 
+/// Async variant of [`retry_sync_item`].
 pub async fn retry_async_item<I, T, E, F, Fut>(
     policy: RetryPolicy,
     item: I,

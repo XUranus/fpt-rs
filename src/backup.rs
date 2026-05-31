@@ -162,6 +162,12 @@ impl std::fmt::Display for BackupError {
 impl std::error::Error for BackupError {}
 
 impl BackupOption {
+    /// Create a new backup configuration.
+    ///
+    /// The `source_dir_base` is the root of the data to back up. The `target_dir_base`
+    /// is where the copy will be created. `meta_dir` and `ctrl_dir` hold scan metadata
+    /// and control files respectively. `control_file` is the path to the main control
+    /// file listing entries to process.
     pub fn new(
         source_dir_base: PathBuf,
         target_dir_base: PathBuf,
@@ -254,11 +260,14 @@ impl BackupOption {
         self
     }
 
+    /// Set the retry policy for I/O operations (copy, stat, mkdir).
     pub fn retry_policy(mut self, policy: RetryPolicy) -> Self {
         self.retry_policy = policy;
         self
     }
 
+    /// Set the failure log configuration. When `Some`, failed operations are
+    /// recorded to a structured log file for post-mortem analysis.
     pub fn failure_log(mut self, config: Option<FailureLogConfig>) -> Self {
         self.failure_log = config;
         self
@@ -475,6 +484,10 @@ impl BackupOption {
 }
 
 impl BackupTask {
+    /// Start the backup execution.
+    ///
+    /// Spawns worker threads that read control files and copy data from source to target.
+    /// Returns a [`RunningBackup`] handle for monitoring progress and waiting on completion.
     pub fn start(self) -> Result<RunningBackup, BackupError> {
         let worker_count = self.option.worker_count;
         let copy_buffer_size = self.option.copy_buffer_size;
@@ -731,26 +744,32 @@ impl From<BackupOption> for BackupTask {
 }
 
 impl RunningBackup {
+    /// Snapshot the current copy-phase statistics (files, bytes, dirs).
     pub fn stats(&self) -> BackupStatsSnapshot {
         self.stats.snapshot()
     }
 
+    /// Snapshot hardlink-phase statistics, if the hardlink phase was enabled.
     pub fn hardlink_stats(&self) -> Option<&HardlinkStatsSnapshot> {
         self.hardlink_stats.as_ref()
     }
 
+    /// Snapshot delete-phase statistics, if the delete phase was enabled.
     pub fn delete_stats(&self) -> Option<&DeleteStatsSnapshot> {
         self.delete_stats.as_ref()
     }
 
+    /// Snapshot mtime-phase statistics, if the mtime phase was enabled.
     pub fn mtime_stats(&self) -> Option<&MtimeStatsSnapshot> {
         self.mtime_stats.as_ref()
     }
 
+    /// Returns `true` if the backup has finished (success or failure).
     pub fn complete(&self) -> bool {
         self.terminate_indicator.load(Ordering::Relaxed)
     }
 
+    /// Block until the backup completes. Returns `Ok(())` on success.
     pub fn wait(self) -> Result<(), BackupError> {
         self.terminate_handle.join().unwrap();
         Ok(())
