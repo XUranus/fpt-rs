@@ -43,11 +43,14 @@ pub fn start_meta_writers(
         let handle = std::thread::spawn(move || {
             // writer thread logic here
             let writer_shard = i as u32;
-            let mut meta_writer = MetaRepoWriter::new(meta_dir, writer_shard as u16).unwrap();
+            let mut meta_writer = MetaRepoWriter::new(meta_dir, writer_shard as u16)
+                .expect("failed to create meta writer");
             let mut dcache_writer: DirCacheWriter =
-                DirCacheWriter::new(dcache_dir, writer_shard).unwrap();
+                DirCacheWriter::new(dcache_dir, writer_shard)
+                    .expect("failed to create dir cache writer");
             let mut fcache_writer: FileCacheWriter =
-                FileCacheWriter::new(fcache_dir, writer_shard).unwrap();
+                FileCacheWriter::new(fcache_dir, writer_shard)
+                    .expect("failed to create file cache writer");
             info!("Writer thread {} started", i);
             loop {
                 // pop path from output meta queue and process
@@ -100,7 +103,9 @@ fn process_scan_result(
     // write the dir_scan_result into meta files
     //debug!("Writing dir scan result: {:#?}", dir_scan_result);
 
-    let dmeta_loc = meta_writer.write_dirmeta(&dir_scan_result.dir).unwrap();
+    let dmeta_loc = meta_writer
+        .write_dirmeta(&dir_scan_result.dir)
+        .expect("failed to write directory metadata");
     //info!("store dir {:#?} => {:#?}", dir_scan_result.dir.common.name, dmeta_loc);
 
     let mut sorted_fcaches = vec![];
@@ -109,7 +114,9 @@ fn process_scan_result(
     let fcache_fid = writer_shard;
 
     for fmeta in dir_scan_result.files {
-        let fmeta_loc = meta_writer.write_filemeta(&fmeta).unwrap();
+        let fmeta_loc = meta_writer
+            .write_filemeta(&fmeta)
+            .expect("failed to write file metadata");
 
         // Track hardlinks if enabled
         if scan_hardlinks && fmeta.links > 1 {
@@ -136,14 +143,18 @@ fn process_scan_result(
     sorted_fcaches.sort_by_key(|v| v.id);
 
     for fcache in sorted_fcaches {
-        _ = fcache_writer.write(&fcache).unwrap();
+        fcache_writer
+            .write(&fcache)
+            .expect("failed to write file cache entry");
         //debug!("write fcache {:#?}", fcache)
     }
     let mut dcache: DirCacheEntry = dir_scan_result.dir.into();
     dcache.meta_loc = dmeta_loc;
     dcache.files_count = files_count as u32;
     (dcache.fcache_fid, dcache.fcache_offset) = (fcache_fid, fcache_offset);
-    _ = dcache_writer.write(&dcache).unwrap();
+    dcache_writer
+        .write(&dcache)
+        .expect("failed to write dir cache entry");
 
     // TODO:: sort dcache later
     // TODO:: merge fcache later

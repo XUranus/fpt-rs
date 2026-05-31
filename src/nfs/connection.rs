@@ -93,7 +93,10 @@ impl NfsConnectionPool {
         // Query fsinfo on the first connection to get server transfer limits.
         {
             use nfs3_client::nfs3_types::nfs3::{FSINFO3args, Nfs3Result};
-            let root_fh = root_fh_opt.as_ref().unwrap().clone();
+            let root_fh = root_fh_opt
+                .as_ref()
+                .expect("root file handle must be resolved before fsinfo")
+                .clone();
             let mut guard = connections[0].lock().await;
             match guard.fsinfo(&FSINFO3args { fsroot: root_fh }).await {
                 Ok(Nfs3Result::Ok(ok)) => {
@@ -117,7 +120,7 @@ impl NfsConnectionPool {
 
         // Resolve sub_path: if the location specifies a sub_path, walk from
         // the export root to obtain the effective root file handle.
-        let export_fh = root_fh_opt.unwrap();
+        let export_fh = root_fh_opt.expect("NFS root file handle was not resolved");
         let root_fh = if location.sub_path.is_empty() {
             export_fh
         } else {

@@ -24,7 +24,7 @@ fn setup_logger() -> Result<(), fern::InitError> {
 }
 
 fn main() {
-    setup_logger().unwrap();
+    setup_logger().expect("failed to initialize logger");
 
     let mut scanner: Scanner = ScanOption::new(
         PathBuf::from("/tmp/fpt/ctrl"),
@@ -39,8 +39,8 @@ fn main() {
 
     scanner
         .enqueue_path(PathBuf::from("/tmp/fpt/source"))
-        .unwrap();
-    let scan = scanner.start().unwrap();
+        .expect("failed to enqueue scan path");
+    let scan = scanner.start().expect("failed to start scanner");
     while !scan.complete() {
         println!("{:#?}", scan.stats());
         std::thread::sleep(Duration::from_secs(1));
@@ -61,11 +61,11 @@ fn main() {
         control_file,
     )
     .into();
-    let task = fsbackup.start().unwrap();
+    let task = fsbackup.start().expect("failed to start backup task");
     while !task.complete() {
         let stats = task.stats();
         print!("{:#?}", stats);
         std::thread::sleep(Duration::from_secs(1));
     }
-    task.wait().unwrap();
+    task.wait().expect("backup task failed");
 }
