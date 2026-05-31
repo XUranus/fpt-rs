@@ -51,6 +51,7 @@ use phases::run_nfs_target_phases;
 #[cfg(feature = "smb")]
 use phases::run_smb_target_phases;
 
+/// Spawn a backup thread that copies local files to an NFS target via async AIO pipeline.
 #[cfg(feature = "nfs")]
 pub fn spawn_local_to_nfs_backup(
     nfs_target: NfsLocation,
@@ -116,6 +117,7 @@ pub fn spawn_local_to_nfs_backup(
     })
 }
 
+/// Spawn a backup thread that copies local files to an SMB target via async AIO pipeline.
 #[cfg(feature = "smb")]
 pub fn spawn_local_to_smb_backup(
     smb_target: SmbLocation,
@@ -187,6 +189,7 @@ pub fn spawn_local_to_smb_backup(
     })
 }
 
+/// Spawn a backup thread that copies files from an SMB source to a local target.
 #[cfg(feature = "smb")]
 pub fn spawn_smb_to_local_backup(
     smb_source: SmbLocation,
@@ -258,6 +261,7 @@ pub fn spawn_smb_to_local_backup(
     })
 }
 
+/// Spawn a backup thread that copies files between two SMB endpoints.
 #[cfg(feature = "smb")]
 pub fn spawn_smb_to_smb_backup(
     smb_source: SmbLocation,
@@ -343,6 +347,7 @@ pub fn spawn_smb_to_smb_backup(
     })
 }
 
+/// Spawn a backup thread that copies files from an NFS source to an SMB target.
 #[cfg(all(feature = "nfs", feature = "smb"))]
 pub fn spawn_nfs_to_smb_backup(
     nfs_source: NfsLocation,
@@ -423,6 +428,7 @@ pub fn spawn_nfs_to_smb_backup(
     })
 }
 
+/// Spawn a backup thread that copies files from an SMB source to an NFS target.
 #[cfg(all(feature = "nfs", feature = "smb"))]
 pub fn spawn_smb_to_nfs_backup(
     smb_source: SmbLocation,
@@ -504,6 +510,7 @@ pub fn spawn_smb_to_nfs_backup(
     })
 }
 
+/// Spawn a backup thread that copies files from an NFS source to a local target.
 #[cfg(feature = "nfs")]
 pub fn spawn_nfs_to_local_backup(
     nfs_source: NfsLocation,
@@ -569,6 +576,7 @@ pub fn spawn_nfs_to_local_backup(
     })
 }
 
+/// Spawn a backup thread that copies files between two NFS endpoints.
 #[cfg(feature = "nfs")]
 pub fn spawn_nfs_to_nfs_backup(
     nfs_source: NfsLocation,
