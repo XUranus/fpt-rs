@@ -35,8 +35,6 @@ pub enum SubtaskDirection {
         source: DataLocation,
         target: DataLocation,
         source_dir: PathBuf,
-        smb_connection_count: usize,
-        smb_copy_task_count: usize,
     },
     /// Restore subtask: restore target and source base.
     Restore {
@@ -125,8 +123,7 @@ pub fn run_backup_subtask(
         source,
         target,
         source_dir,
-        smb_connection_count,
-        smb_copy_task_count,
+        ..
     } = &config.direction
     else {
         return Err(SubtaskError::Engine(
@@ -145,8 +142,6 @@ pub fn run_backup_subtask(
     .enable_hardlink(config.enable_hardlink)
     .enable_delete(config.enable_delete)
     .enable_mtime(config.enable_mtime)
-    .smb_connection_count(*smb_connection_count)
-    .smb_copy_task_count(*smb_copy_task_count)
     .copy_buffer_size(config.copy_buffer_size)
     .failure_log(config.failure_log.clone())
     .retry_policy(config.retry_policy);

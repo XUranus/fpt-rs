@@ -75,6 +75,7 @@ pub struct ScanOption {
     /// Larger values can reduce the number of `QUERY_DIRECTORY` round-trips
     /// when scanning large directories over SMB. The SMB transport will cap
     /// this to the negotiated transact size.
+    #[cfg(feature = "smb")]
     pub smb_query_buffer_size: u32,
 
     /// Logical control-path normalization config.
@@ -251,6 +252,7 @@ impl Default for ScanOption {
                 spill_load_batch_size: 20_000,
             },
             shard_option: ShardOption::default(),
+            #[cfg(feature = "smb")]
             smb_query_buffer_size: 8 * 1024 * 1024,
             control_path: ControlPathOption {
                 physical_base: PathBuf::from("/"),
@@ -376,6 +378,7 @@ impl ScanOption {
     }
 
     /// Sets the SMB query-directory buffer size in bytes.
+    #[cfg(feature = "smb")]
     pub fn smb_query_buffer_size(mut self, size: u32) -> Self {
         self.smb_query_buffer_size = size;
         self

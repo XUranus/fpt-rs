@@ -430,7 +430,9 @@ fn cmd_backup(args: BackupCliArgs) -> Result<(), Box<dyn std::error::Error>> {
         scan_filters,
         workers,
         nfs_connections,
+        #[allow(unused_variables)]
         smb_connections,
+        #[allow(unused_variables)]
         smb_copy_tasks,
         buffer_size,
         failure_log_format,
@@ -507,7 +509,9 @@ fn cmd_backup(args: BackupCliArgs) -> Result<(), Box<dyn std::error::Error>> {
         enable_delete: delete && !matches!(format, BackupFormat::Aggregated),
         enable_mtime: mtime && !matches!(format, BackupFormat::Aggregated),
         max_concurrent_subtasks: jobs,
+        #[cfg(feature = "smb")]
         smb_connection_count: smb_connections.max(1),
+        #[cfg(feature = "smb")]
         smb_copy_task_count: smb_copy_tasks,
         copy_buffer_size: (buffer_size * 1024).clamp(256 * 1024, 4 * 1024 * 1024),
         failure_log_format: failure_log_format.map(Into::into),

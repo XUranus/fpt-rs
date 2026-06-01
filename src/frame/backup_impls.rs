@@ -43,8 +43,10 @@ pub struct BackupConfig {
     /// Override relative target prefix used for remote D_REPO writes.
     pub remote_target_prefix: Option<String>,
     /// SMB client connections per SMB endpoint for async backup paths.
+    #[cfg(feature = "smb")]
     pub smb_connection_count: usize,
     /// Maximum concurrent SMB file copy tasks. 0 means auto.
+    #[cfg(feature = "smb")]
     pub smb_copy_task_count: usize,
     /// Maximum per-file copy buffer size in bytes for local common backup paths.
     pub copy_buffer_size: usize,
@@ -76,7 +78,9 @@ impl BackupConfig {
             control_file: control_file.into(),
             aggregate_config: AggregateConfig::default(),
             remote_target_prefix: None,
+            #[cfg(feature = "smb")]
             smb_connection_count: 4,
+            #[cfg(feature = "smb")]
             smb_copy_task_count: 0,
             copy_buffer_size: 1024 * 1024,
             enable_hardlink: false,
@@ -95,10 +99,12 @@ impl BackupConfig {
         self.remote_target_prefix = prefix;
         self
     }
+    #[cfg(feature = "smb")]
     pub fn smb_connection_count(mut self, count: usize) -> Self {
         self.smb_connection_count = count.max(1);
         self
     }
+    #[cfg(feature = "smb")]
     pub fn smb_copy_task_count(mut self, count: usize) -> Self {
         self.smb_copy_task_count = count;
         self

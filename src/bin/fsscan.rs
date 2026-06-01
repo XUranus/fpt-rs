@@ -301,7 +301,6 @@ fn build_scan_option(
         .prev_meta_dir(args.prev_meta_dir.clone())
         .enable_sharding(args.shard)
         .shard_num(args.shard_num)
-        .smb_query_buffer_size(args.smb_query_buffer_mb.saturating_mul(1024 * 1024))
         .control_path(
             location.control_path_base(),
             location.logical_source_root(),

@@ -57,7 +57,9 @@ pub struct BackupJobConfig {
     pub enable_delete: bool,
     pub enable_mtime: bool,
     pub max_concurrent_subtasks: usize,
+    #[cfg(feature = "smb")]
     pub smb_connection_count: usize,
+    #[cfg(feature = "smb")]
     pub smb_copy_task_count: usize,
     pub copy_buffer_size: usize,
     pub failure_log_format: Option<FailureLogFormat>,
@@ -85,7 +87,9 @@ impl Default for BackupJobConfig {
             enable_delete: false,
             enable_mtime: false,
             max_concurrent_subtasks: 4,
+            #[cfg(feature = "smb")]
             smb_connection_count: 4,
+            #[cfg(feature = "smb")]
             smb_copy_task_count: 0,
             copy_buffer_size: 1024 * 1024,
             failure_log_format: None,
@@ -351,8 +355,6 @@ fn spawn_and_join_subtasks(
                 source: cfg.source.clone(),
                 target: cfg.target.clone(),
                 source_dir: cfg.source.base_path(),
-                smb_connection_count: cfg.smb_connection_count,
-                smb_copy_task_count: cfg.smb_copy_task_count,
             },
         };
 

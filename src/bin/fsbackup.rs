@@ -265,8 +265,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .aggregate_config(aggregate_config)
     .remote_target_prefix((!target.is_local()).then(|| String::new()))
-    .smb_connection_count(args.smb_connections)
-    .smb_copy_task_count(args.smb_copy_tasks)
     .copy_buffer_size(args.buffer_size * 1024)
     .failure_log(failure_log)
     .retry_policy(retry_policy)

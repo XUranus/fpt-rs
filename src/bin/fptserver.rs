@@ -997,7 +997,6 @@ fn run_scan_task(spec: &ScanTaskSpec) -> Result<TaskStats, Box<dyn std::error::E
         .prev_meta_dir(spec.prev_meta_dir.clone())
         .enable_sharding(spec.shard)
         .shard_num(spec.shard_num)
-        .smb_query_buffer_size(spec.smb_query_buffer_mb.saturating_mul(1024 * 1024))
         .control_path(
             location.control_path_base(),
             location.logical_source_root(),
@@ -1135,7 +1134,9 @@ fn run_backup_task(spec: &BackupTaskSpec) -> Result<TaskStats, Box<dyn std::erro
         enable_delete: spec.delete && !aggregate_enabled,
         enable_mtime: spec.mtime && !aggregate_enabled,
         max_concurrent_subtasks: spec.jobs,
+        #[cfg(feature = "smb")]
         smb_connection_count: spec.smb_connections.max(1),
+        #[cfg(feature = "smb")]
         smb_copy_task_count: spec.smb_copy_tasks,
         copy_buffer_size: (spec.buffer_size_kb * 1024).clamp(256 * 1024, 4 * 1024 * 1024),
         failure_log_format: spec.failure_log_format.map(Into::into),
