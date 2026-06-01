@@ -131,7 +131,7 @@ impl BackupStats {
 
 /// A serializable snapshot of backup statistics.
 ///
-/// Unlike [`BackupStats`], this type uses plain integers and can be safely
+/// Unlike `BackupStats`, this type uses plain integers and can be safely
 /// serialized (e.g., to JSON or binary formats) for logging, monitoring, or checkpointing.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct BackupStatsSnapshot {

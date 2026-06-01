@@ -4,8 +4,8 @@
 //! of a restore in order:
 //!
 //! 1. **Prerequisite** — verify the backup copy is accessible.
-//! 2. **Subtasks** — run each control file through [`run_restore_subtask`],
-//!    which selects [`LocalFileRestore`] or [`NfsFileRestore`] at runtime.
+//! 2. **Subtasks** — run each control file through `run_restore_subtask`,
+//!    which selects `LocalFileRestore` or `NfsFileRestore` at runtime.
 //! 3. **Post-job** — no-op (data is already at the target).
 //!
 //! M_REPO / C_REPO are always accessed locally (pre-fetched in the prereq

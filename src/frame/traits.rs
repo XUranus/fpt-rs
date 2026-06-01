@@ -130,8 +130,8 @@ pub struct JobResult {
 /// and C_REPO directories, then return aggregate statistics.
 ///
 /// ## Implementations
-/// * [`super::scanner_impls::LocalFileScanner`] — local FS via `std::fs`.
-/// * [`super::scanner_impls::NfsFileScanner`] — NFSv3 via `nfs3_client` RPCs.
+/// * `super::scanner_impls::LocalFileScanner` — local FS via `std::fs`.
+/// * `super::scanner_impls::NfsFileScanner` — NFSv3 via `nfs3_client` RPCs.
 pub trait FileScanner {
     type Error: std::error::Error + Send + 'static;
 
@@ -153,8 +153,8 @@ pub trait FileScanner {
 /// (NFS target).  Metadata reads/writes always use BIO to the local repo.
 ///
 /// ## Implementations
-/// * [`super::backup_impls::LocalFileBackup`] — BIO pipeline.
-/// * [`super::backup_impls::NfsFileBackup`] — AIO pipeline (NFS target).
+/// * `super::backup_impls::LocalFileBackup` — BIO pipeline.
+/// * `super::backup_impls::NfsFileBackup` — AIO pipeline (NFS target).
 pub trait FileBackup {
     type Error: std::error::Error + Send + 'static;
 
@@ -172,8 +172,8 @@ pub trait FileBackup {
 /// target via BIO (local) or NFS WRITE RPCs (NFS target).
 ///
 /// ## Implementations
-/// * [`super::restore_impls::LocalFileRestore`] — BIO pipeline.
-/// * [`super::restore_impls::NfsFileRestore`] — AIO pipeline (NFS target).
+/// * `super::restore_impls::LocalFileRestore` — BIO pipeline.
+/// * `super::restore_impls::NfsFileRestore` — AIO pipeline (NFS target).
 pub trait FileRestore {
     type Error: std::error::Error + Send + 'static;
 

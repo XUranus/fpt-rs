@@ -96,7 +96,7 @@ struct Args {
     buffer_size: usize,
 
     /// Structured failure log output path. If omitted and --failure-log-format is set,
-    /// defaults to <ctrl-dir>/FSBACKUP_FAILURE.<ext>.
+    /// defaults to `<ctrl-dir>/FSBACKUP_FAILURE.<ext>`.
     #[arg(long, value_name = "FILE")]
     failure_log: Option<PathBuf>,
 

@@ -5,8 +5,8 @@
 //!
 //! 1. **Prerequisite** — verify connectivity, create local repo directories.
 //! 2. **Scan** — traverse the source via [`ScanJob`] (local or NFS).
-//! 3. **Subtasks** — run each control file through [`run_backup_subtask`],
-//!    which selects the appropriate [`FileBackup`] impl at runtime.
+//! 3. **Subtasks** — run each control file through `run_backup_subtask`,
+//!    which selects the appropriate `FileBackup` impl at runtime.
 //! 4. **Post-job** — write manifest; upload M_REPO + C_REPO to NFS if needed.
 //!
 //! M_REPO and C_REPO are **always** written locally and uploaded to NFS in

@@ -1,13 +1,13 @@
-//! Concrete [`FileScanner`] implementations.
+//! Concrete `FileScanner` implementations.
 //!
 //! | Type | Source | Pipeline |
 //! |------|--------|----------|
-//! | [`LocalFileScanner`] | Local filesystem path | Blocking threads, `std::fs` |
-//! | [`NfsFileScanner`]   | NFSv3 export          | Tokio tasks, `nfs3_client` READDIRPLUS |
-//! | [`SmbFileScanner`]   | SMB share             | Tokio tasks, `smb-rs` async client |
+//! | `LocalFileScanner` | Local filesystem path | Blocking threads, `std::fs` |
+//! | `NfsFileScanner`   | NFSv3 export          | Tokio tasks, `nfs3_client` READDIRPLUS |
+//! | `SmbFileScanner`   | SMB share             | Tokio tasks, `smb-rs` async client |
 //!
 //! Both types write metadata and control files to the **local** M_REPO /
-//! C_REPO directories supplied in [`ScannerConfig`].
+//! C_REPO directories supplied in `ScannerConfig`.
 
 use std::fmt;
 use std::path::PathBuf;

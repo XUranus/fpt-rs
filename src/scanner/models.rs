@@ -136,7 +136,7 @@ impl ScanStatistics {
 
 /// A serializable snapshot of scanner statistics.
 ///
-/// Unlike [`ScanStatistics`], this type uses plain integers and can be safely
+/// Unlike `ScanStatistics`, this type uses plain integers and can be safely
 /// serialized (e.g., to JSON or binary formats) for logging, monitoring, or checkpointing.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct ScanStatsSnapshot {

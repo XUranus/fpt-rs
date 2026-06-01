@@ -45,9 +45,9 @@
 //! - [`traits::ScanStats`] / [`traits::TransferStats`] / [`traits::JobResult`]
 //!
 //! **Implementations**:
-//! - [`scanner_impls::LocalFileScanner`] / [`scanner_impls::NfsFileScanner`]
-//! - [`backup_impls::LocalFileBackup`] / [`backup_impls::NfsFileBackup`]
-//! - [`restore_impls::LocalFileRestore`] / [`restore_impls::NfsFileRestore`]
+//! - [`scanner_impls::LocalFileScanner`] (+ NFS/SMB variants when features enabled)
+//! - [`backup_impls::LocalFileBackup`] (+ NFS/SMB variants when features enabled)
+//! - [`restore_impls::LocalFileRestore`] (+ NFS/SMB variants when features enabled)
 //!
 //! **Job orchestrators**:
 //! - [`backup_job::FileBackupJob`] (alias: `BackupJob`) + [`backup_job::BackupJobConfig`]

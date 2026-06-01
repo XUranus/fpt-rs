@@ -44,7 +44,7 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     fcache: Option<PathBuf>,
 
-    /// Inspect a control file like copy_<hash>.control.bin / hardlink_<hash>.control.bin
+    /// Inspect a control file like `copy_<hash>.control.bin` / `hardlink_<hash>.control.bin`
     #[arg(long, value_name = "FILE")]
     control: Option<PathBuf>,
 

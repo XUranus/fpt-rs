@@ -1,9 +1,9 @@
-//! Concrete [`FileRestore`] implementations.
+//! Concrete `FileRestore` implementations.
 //!
 //! | Type | Target | Pipeline |
 //! |------|--------|----------|
-//! | [`LocalFileRestore`] | Local filesystem path | Blocking BIO threads, `std::fs` |
-//! | [`NfsFileRestore`]   | NFSv3 export          | Tokio AIO tasks, `nfs3_client` WRITE RPCs |
+//! | `LocalFileRestore` | Local filesystem path | Blocking BIO threads, `std::fs` |
+//! | `NfsFileRestore`   | NFSv3 export          | Tokio AIO tasks, `nfs3_client` WRITE RPCs |
 //!
 //! Both types read D_REPO data from the local staging directory and write
 //! to the target.  Only the **write destination** differs.

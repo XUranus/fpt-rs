@@ -89,9 +89,9 @@ impl<T> BlockingQueue<T> {
     /// Closes the queue, preventing further pushes.
     ///
     /// After calling `close()`:
-    /// - Any subsequent call to [`push`] will panic.
-    /// - Consumers calling [`pop`] will continue to receive remaining items.
-    /// - Once the queue is empty, [`pop`] returns `None` to signal completion.
+    /// - Any subsequent call to `push` will panic.
+    /// - Consumers calling `pop` will continue to receive remaining items.
+    /// - Once the queue is empty, `pop` returns `None` to signal completion.
     ///
     /// This method is idempotent and safe to call multiple times.
     ///
@@ -121,7 +121,7 @@ impl<T> BlockingQueue<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the queue has been closed via [`close`].
+    /// Panics if the queue has been closed via `close()`.
     ///
     /// # Examples
     ///

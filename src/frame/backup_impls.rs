@@ -1,10 +1,10 @@
-//! Concrete [`FileBackup`] implementations.
+//! Concrete `FileBackup` implementations.
 //!
 //! | Type | Target | Pipeline |
 //! |------|--------|----------|
-//! | [`LocalFileBackup`] | Local filesystem path | Blocking BIO threads, `std::fs` |
-//! | [`NfsFileBackup`]   | NFSv3 export          | Tokio AIO tasks, `nfs3_client` WRITE RPCs |
-//! | [`SmbFileBackup`]   | SMB share             | Tokio AIO tasks, `smb-rs` async client |
+//! | `LocalFileBackup` | Local filesystem path | Blocking BIO threads, `std::fs` |
+//! | `NfsFileBackup`   | NFSv3 export          | Tokio AIO tasks, `nfs3_client` WRITE RPCs |
+//! | `SmbFileBackup`   | SMB share             | Tokio AIO tasks, `smb-rs` async client |
 //!
 //! Both types read source data and metadata from local paths.  Only the
 //! **data write destination** differs.
@@ -25,7 +25,7 @@ use crate::frame::traits::{FileBackup, TransferStats};
 
 /// Configuration for a single backup subtask execution.
 ///
-/// Both [`LocalFileBackup`] and [`NfsFileBackup`] accept this struct.
+/// Both `LocalFileBackup` and `NfsFileBackup` accept this struct.
 #[derive(Debug, Clone)]
 pub struct BackupConfig {
     /// Local source root directory.

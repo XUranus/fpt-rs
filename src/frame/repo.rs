@@ -21,7 +21,7 @@
 //!
 //! For jobs with an NFS *target*, the `copy_root` lives inside a
 //! configurable `local_temp_dir` (default `/tmp/fpt`).  After all
-//! subtasks finish, the [`PostJob`] copies D\_REPO (if NFS target was *not*
+//! subtasks finish, the `PostJob` copies D\_REPO (if NFS target was *not*
 //! used for direct writes), M\_REPO, and C\_REPO to the final destination.
 
 use std::io;
@@ -169,7 +169,7 @@ impl RepoLayout {
 /// (e.g., an NFS server).
 ///
 /// M\_REPO and C\_REPO are always written locally; D\_REPO may be written
-/// directly to NFS.  After the job completes, [`PostJob`] transfers the
+/// directly to NFS.  After the job completes, `PostJob` transfers the
 /// locally-written repos to the final destination.
 #[derive(Debug, Clone)]
 pub struct TempRepoConfig {

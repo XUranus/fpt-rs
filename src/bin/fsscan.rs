@@ -145,7 +145,7 @@ struct Args {
     stats_only: bool,
 
     /// Structured failure log output path. If omitted and --failure-log-format is set,
-    /// defaults to <ctrl-dir>/SCAN_FAILURE.<ext>.
+    /// defaults to `<ctrl-dir>/SCAN_FAILURE.<ext>`.
     #[arg(long, value_name = "FILE")]
     failure_log: Option<PathBuf>,
 
