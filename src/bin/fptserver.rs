@@ -12,7 +12,8 @@ use fpt::frame::{
     BackupJobConfig, BackupRestoreJob, DataLocation, FileBackupJob, FileRestoreJob,
     RestoreJobConfig, ScanConfig, TempRepoConfig,
 };
-use fpt::scanner::{ScanOption, ScanPathFilterSet, Scanner};
+use fpt::localfs::Scanner;
+use fpt::scanner::{ScanOption, ScanPathFilterSet};
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -1051,7 +1052,7 @@ fn run_scan_task(spec: &ScanTaskSpec) -> Result<TaskStats, Box<dyn std::error::E
                 .thread_name("fpt-fptserver-scan-nfs")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) =
-                rt.block_on(fpt::scanner::run_nfs_scan(&loc, scan_option))?;
+                rt.block_on(fpt::nfs::scanner::run_nfs_scan(&loc, scan_option))?;
             Ok(TaskStats::Scan {
                 total_files,
                 total_dirs,
@@ -1067,7 +1068,7 @@ fn run_scan_task(spec: &ScanTaskSpec) -> Result<TaskStats, Box<dyn std::error::E
                 .thread_name("fpt-fptserver-scan-smb")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) =
-                rt.block_on(fpt::scanner::run_smb_scan(&loc, scan_option))?;
+                rt.block_on(fpt::smb::scanner::run_smb_scan(&loc, scan_option))?;
             Ok(TaskStats::Scan {
                 total_files,
                 total_dirs,

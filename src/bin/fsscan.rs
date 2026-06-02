@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 
 use fpt::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use fpt::frame::DataLocation;
-use fpt::scanner::{ScanOption, ScanPathFilterSet, Scanner};
+use fpt::localfs::Scanner;
+use fpt::scanner::{ScanOption, ScanPathFilterSet};
 use clap::Parser;
 
 /// Fpt Filesystem Scanner
@@ -370,7 +371,7 @@ fn run_scan(
                 .thread_name("fpt-fsscan-nfs")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) = rt
-                .block_on(fpt::scanner::run_nfs_scan(loc, scan_option))
+                .block_on(fpt::nfs::scanner::run_nfs_scan(loc, scan_option))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,
@@ -387,7 +388,7 @@ fn run_scan(
                 .thread_name("fpt-fsscan-smb")
                 .build()?;
             let (total_files, total_dirs, total_size_bytes, failed_files, failed_dirs) = rt
-                .block_on(fpt::scanner::run_smb_scan(loc, scan_option))
+                .block_on(fpt::smb::scanner::run_smb_scan(loc, scan_option))
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
             Ok(ScanSummary {
                 total_files,

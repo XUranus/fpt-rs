@@ -590,3 +590,81 @@ async fn readlink_target(
         Nfs3Result::Err((stat, _)) => Err(NfsError::Nfs(stat, "readlink".to_string())),
     }
 }
+
+// ---------------------------------------------------------------------------
+// AsyncDirScanner adapter + run_nfs_scan entry point
+// ---------------------------------------------------------------------------
+
+use std::future::Future;
+use std::pin::Pin;
+
+use crate::scanner::engine::aio::{run_aio_scan, AsyncDirScanner};
+
+/// Wrapper for [`NfsScanner`] that adapts its extra parameters
+/// (`root_fh`, `root_path`) into the [`AsyncDirScanner`] trait.
+pub(crate) struct NfsScanAdapter {
+    pub scanner: NfsScanner,
+    pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
+    pub root_path: String,
+}
+
+impl AsyncDirScanner for NfsScanAdapter {
+    type Error = NfsError;
+
+    fn scan(
+        self,
+        scan_option: Arc<ScanOption>,
+        tx: tokio::sync::mpsc::Sender<DirBatchScanResult>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>> {
+        Box::pin(async move {
+            self.scanner
+                .scan(self.root_fh, self.root_path, &scan_option, tx)
+                .await
+        })
+    }
+}
+
+/// Run a full NFS scan and write metadata/control files to disk.
+pub async fn run_nfs_scan(
+    location: &NfsLocation,
+    scan_option: ScanOption,
+) -> Result<(u64, u64, u64, u64, u64), String> {
+    let pool = crate::nfs::connection::NfsConnectionPool::new(location)
+        .await
+        .map_err(|e| format!("NFS connect failed: {e}"))?;
+
+    let root_fh = pool.root_fh();
+    let root_path = if location.sub_path.is_empty() {
+        location.export.clone()
+    } else {
+        format!(
+            "{}/{}",
+            location.export.trim_end_matches('/'),
+            location.sub_path.trim_start_matches('/')
+        )
+    };
+
+    let failure_recorder = scan_option
+        .failure_log
+        .as_ref()
+        .and_then(|cfg| FailureRecorder::create(cfg).ok());
+
+    let nfs_scanner = NfsScanner::new(location, scan_option.retry_policy, failure_recorder)
+        .await
+        .map_err(|e| format!("NFS scanner init failed: {e}"))?;
+
+    let adapter = NfsScanAdapter {
+        scanner: nfs_scanner,
+        root_fh,
+        root_path,
+    };
+
+    let result = run_aio_scan(adapter, scan_option).await?;
+    Ok((
+        result.total_files,
+        result.total_dirs,
+        result.total_size,
+        result.failed_files,
+        result.failed_dirs,
+    ))
+}

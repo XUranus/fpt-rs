@@ -492,3 +492,55 @@ async fn close_resource(resource: Resource) -> Result<(), String> {
         Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
     }
 }
+
+// ---------------------------------------------------------------------------
+// AsyncDirScanner adapter + run_smb_scan entry point
+// ---------------------------------------------------------------------------
+
+use std::future::Future;
+use std::pin::Pin;
+
+use crate::scanner::engine::aio::{run_aio_scan, AsyncDirScanner};
+
+/// Wrapper for [`SmbScanner`] implementing [`AsyncDirScanner`].
+pub(crate) struct SmbScanAdapter {
+    pub scanner: SmbScanner,
+}
+
+impl AsyncDirScanner for SmbScanAdapter {
+    type Error = String;
+
+    fn scan(
+        self,
+        scan_option: Arc<ScanOption>,
+        tx: tokio::sync::mpsc::Sender<DirBatchScanResult>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>> {
+        Box::pin(async move { self.scanner.scan(&scan_option, tx).await })
+    }
+}
+
+/// Run a full SMB scan and write metadata/control files to disk.
+pub async fn run_smb_scan(
+    location: &SmbLocation,
+    scan_option: ScanOption,
+) -> Result<(u64, u64, u64, u64, u64), String> {
+    let failure_recorder = scan_option
+        .failure_log
+        .as_ref()
+        .and_then(|cfg| FailureRecorder::create(cfg).ok());
+
+    let smb_scanner = SmbScanner::new(location, scan_option.retry_policy, failure_recorder).await?;
+
+    let adapter = SmbScanAdapter {
+        scanner: smb_scanner,
+    };
+
+    let result = run_aio_scan(adapter, scan_option).await?;
+    Ok((
+        result.total_files,
+        result.total_dirs,
+        result.total_size,
+        result.failed_files,
+        result.failed_dirs,
+    ))
+}

@@ -82,8 +82,8 @@ impl From<crate::frame::scanner_impls::SmbScanError> for ScanError {
     }
 }
 
-impl From<crate::scanner::ScanError> for ScanError {
-    fn from(e: crate::scanner::ScanError) -> Self {
+impl From<crate::localfs::ScanError> for ScanError {
+    fn from(e: crate::localfs::ScanError) -> Self {
         ScanError::LocalScan(crate::frame::scanner_impls::LocalScanError::Start(e))
     }
 }

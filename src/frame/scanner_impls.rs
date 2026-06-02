@@ -151,7 +151,7 @@ impl ScannerConfig {
 #[derive(Debug)]
 pub enum LocalScanError {
     Enqueue(String),
-    Start(crate::scanner::ScanError),
+    Start(crate::localfs::ScanError),
 }
 
 impl fmt::Display for LocalScanError {
@@ -165,8 +165,8 @@ impl fmt::Display for LocalScanError {
 
 impl std::error::Error for LocalScanError {}
 
-impl From<crate::scanner::ScanError> for LocalScanError {
-    fn from(e: crate::scanner::ScanError) -> Self {
+impl From<crate::localfs::ScanError> for LocalScanError {
+    fn from(e: crate::localfs::ScanError) -> Self {
         LocalScanError::Start(e)
     }
 }
@@ -199,12 +199,10 @@ impl FileScanner for LocalFileScanner {
     type Error = LocalScanError;
 
     fn scan(&self) -> Result<ScanStats, LocalScanError> {
-        use crate::scanner::Scanner;
-
         let scan_option = self
             .config
             .to_scan_option(self.source.clone(), "/", "local");
-        let mut scanner = Scanner::new(scan_option);
+        let mut scanner = crate::localfs::Scanner::new(scan_option);
         scanner
             .enqueue_path(self.source.clone())
             .map_err(|e| LocalScanError::Enqueue(e.to_string()))?;
@@ -309,7 +307,7 @@ mod nfs_impl {
                 .map_err(NfsScanError::Runtime)?;
 
             let (tot_files, tot_dirs, tot_size, failed_files, failed_dirs) = rt
-                .block_on(crate::scanner::run_nfs_scan(&self.source, scan_option))
+                .block_on(crate::nfs::scanner::run_nfs_scan(&self.source, scan_option))
                 .map_err(NfsScanError::Scan)?;
 
             Ok(ScanStats {
@@ -387,7 +385,7 @@ mod smb_impl {
 
             let source = self.source.clone();
             let (tot_files, tot_dirs, tot_size, failed_files, failed_dirs) = rt
-                .block_on(crate::scanner::run_smb_scan(&source, scan_option))
+                .block_on(crate::smb::scanner::run_smb_scan(&source, scan_option))
                 .map_err(SmbScanError::Scan)?;
 
             Ok(ScanStats {

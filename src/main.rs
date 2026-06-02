@@ -2,7 +2,8 @@ use std::{path::PathBuf, time::Duration};
 
 use fpt::{
     backup::{BackupOption, BackupTask},
-    scanner::{options::ScanOption, Scanner},
+    localfs::Scanner,
+    scanner::options::ScanOption,
 };
 
 fn setup_logger() -> Result<(), fern::InitError> {
