@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+#[cfg(any(feature = "nfs", feature = "smb"))]
 use std::sync::Arc;
 
 /// A connected backup source, ready to produce data.

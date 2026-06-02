@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+#[cfg(any(feature = "nfs", feature = "smb"))]
 use std::sync::Arc;
 
 use crate::backup::PhaseFlags;
