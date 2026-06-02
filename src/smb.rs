@@ -321,7 +321,7 @@ fn parse_query_credentials(query: Option<&str>) -> (Option<String>, Option<Strin
     (username, password)
 }
 
-async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
+pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
     match resource {
         smb_client::Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
         smb_client::Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),

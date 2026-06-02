@@ -271,7 +271,7 @@ impl SmbScanner {
             Resource::Directory(dir) => dir,
             other => {
                 log::warn!("SMB path {} did not resolve to a directory", task.path);
-                let _ = close_resource(other).await;
+                let _ = crate::smb::close_resource(other).await;
                 return DirScanOutput {
                     batch: None,
                     children: Vec::new(),
@@ -461,7 +461,7 @@ impl SmbScanner {
             }
             Resource::Pipe(_) => 1,
         };
-        close_resource(resource).await?;
+        crate::smb::close_resource(resource).await?;
         self.metrics.add_link_count(started);
         Ok(links)
     }
@@ -483,14 +483,6 @@ fn should_skip(
         .meta_option
         .skip_entries
         .contains(&name.to_string())
-}
-
-async fn close_resource(resource: Resource) -> Result<(), String> {
-    match resource {
-        Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
-        Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
-        Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -63,11 +63,5 @@ pub fn share_relative_path(location: &SmbLocation, relative_path: &str) -> Strin
     }
 }
 
-/// Close an SMB resource (file, directory, or pipe) regardless of its type.
-pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
-    match resource {
-        smb_client::Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
-        smb_client::Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
-        smb_client::Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
-    }
-}
+// Re-export from parent module for backward compatibility.
+pub use crate::smb::close_resource;
