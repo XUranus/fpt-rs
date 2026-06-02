@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 pub(crate) mod aio;
+pub(crate) mod connection;
 pub(crate) mod fstat;
 pub(crate) mod scanner;
 

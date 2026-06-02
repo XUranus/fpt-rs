@@ -1,290 +1,19 @@
-//! Async SMB transport helpers shared by scanner, backup, and post-job flows.
+//! SMB write operations: directory creation, file writing, and streaming copy.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use log::warn;
-use tokio::sync::Mutex;
 
+use crate::smb::aio::metrics::SmbCopyMetrics;
+use crate::smb::aio::path_util::{
+    close_resource, join_relative, normalize_relative_path, relative_unc_path,
+    SMB_DEFAULT_READ_CHUNK, SMB_DEFAULT_WRITE_CHUNK, SMB_MAX_SAFE_READ_CHUNK, SMB_MAX_SAFE_WRITE_CHUNK,
+};
+use crate::smb::connection::{connect_client, same_share, DirCache, SmbClientPool};
 use crate::smb::SmbLocation;
-
-pub mod delete;
-pub mod hardlink;
-pub mod mtime;
-
-pub type DirCache = Arc<Mutex<HashSet<String>>>;
-
-pub struct SmbClientPool {
-    clients: Vec<Arc<smb_client::Client>>,
-    next: AtomicUsize,
-}
-
-const SMB_DEFAULT_WRITE_CHUNK: usize = 256 * 1024;
-const SMB_DEFAULT_READ_CHUNK: usize = 1024 * 1024;
-const SMB_MAX_SAFE_WRITE_CHUNK: usize = 256 * 1024;
-pub const SMB_MAX_SAFE_READ_CHUNK: usize = 2 * 1024 * 1024;
-
-#[derive(Debug, Default)]
-pub struct SmbCopyMetrics {
-    pub ensure_dir_count: AtomicU64,
-    pub ensure_dir_ns: AtomicU64,
-    pub ensure_dir_max_ns: AtomicU64,
-    pub source_open_count: AtomicU64,
-    pub source_open_ns: AtomicU64,
-    pub source_open_max_ns: AtomicU64,
-    pub target_open_count: AtomicU64,
-    pub target_open_ns: AtomicU64,
-    pub target_open_max_ns: AtomicU64,
-    pub srv_copy_count: AtomicU64,
-    pub srv_copy_ns: AtomicU64,
-    pub srv_copy_max_ns: AtomicU64,
-    pub srv_copy_bytes: AtomicU64,
-    pub srv_copy_fallback_count: AtomicU64,
-    pub read_count: AtomicU64,
-    pub read_ns: AtomicU64,
-    pub read_max_ns: AtomicU64,
-    pub read_bytes: AtomicU64,
-    pub write_count: AtomicU64,
-    pub write_ns: AtomicU64,
-    pub write_max_ns: AtomicU64,
-    pub write_bytes: AtomicU64,
-    pub source_close_count: AtomicU64,
-    pub source_close_ns: AtomicU64,
-    pub source_close_max_ns: AtomicU64,
-    pub source_close_deferred: AtomicU64,
-    pub target_close_count: AtomicU64,
-    pub target_close_ns: AtomicU64,
-    pub target_close_max_ns: AtomicU64,
-    pub target_close_deferred: AtomicU64,
-    pub copy_active: AtomicU64,
-    pub copy_active_max: AtomicU64,
-    pub read_active: AtomicU64,
-    pub read_active_max: AtomicU64,
-    pub write_active: AtomicU64,
-    pub write_active_max: AtomicU64,
-}
-
-impl SmbCopyMetrics {
-    fn add_with_max(counter: &AtomicU64, nanos: &AtomicU64, max_ns: &AtomicU64, started: Instant) {
-        let elapsed = duration_ns(started.elapsed());
-        counter.fetch_add(1, Ordering::Relaxed);
-        nanos.fetch_add(elapsed, Ordering::Relaxed);
-        update_atomic_max(max_ns, elapsed);
-    }
-
-    fn add_io(
-        counter: &AtomicU64,
-        nanos: &AtomicU64,
-        max_ns: &AtomicU64,
-        bytes: &AtomicU64,
-        byte_count: u64,
-        started: Instant,
-    ) {
-        let elapsed = duration_ns(started.elapsed());
-        counter.fetch_add(1, Ordering::Relaxed);
-        nanos.fetch_add(elapsed, Ordering::Relaxed);
-        bytes.fetch_add(byte_count, Ordering::Relaxed);
-        update_atomic_max(max_ns, elapsed);
-    }
-
-    fn active_guard<'a>(active: &'a AtomicU64, active_max: &'a AtomicU64) -> ActiveMetricGuard<'a> {
-        let current = active.fetch_add(1, Ordering::Relaxed) + 1;
-        update_atomic_max(active_max, current);
-        ActiveMetricGuard { active }
-    }
-
-    pub fn timing_summary(&self) -> String {
-        let read_count = self.read_count.load(Ordering::Relaxed);
-        let read_ns = self.read_ns.load(Ordering::Relaxed);
-        let read_bytes = self.read_bytes.load(Ordering::Relaxed);
-        let srv_copy_count = self.srv_copy_count.load(Ordering::Relaxed);
-        let srv_copy_ns = self.srv_copy_ns.load(Ordering::Relaxed);
-        let srv_copy_bytes = self.srv_copy_bytes.load(Ordering::Relaxed);
-        let write_count = self.write_count.load(Ordering::Relaxed);
-        let write_ns = self.write_ns.load(Ordering::Relaxed);
-        let write_bytes = self.write_bytes.load(Ordering::Relaxed);
-        format!(
-            "ensure_dir={} total={} avg={} max={}, source_open={} total={} avg={} max={}, target_open={} total={} avg={} max={}, srv_copy={} bytes={} avg_bytes={} total={} avg={} max={} rate={} fallback={}, read={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, write={} bytes={} avg_bytes={} total={} avg={} max={} rate={}, active_max: copy={} read={} write={}, source_close={} total={} avg={} max={} deferred={}, target_close={} total={} avg={} max={} deferred={}",
-            self.ensure_dir_count.load(Ordering::Relaxed),
-            format_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.ensure_dir_ns.load(Ordering::Relaxed), self.ensure_dir_count.load(Ordering::Relaxed)),
-            format_duration_ns(self.ensure_dir_max_ns.load(Ordering::Relaxed)),
-            self.source_open_count.load(Ordering::Relaxed),
-            format_duration_ns(self.source_open_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.source_open_ns.load(Ordering::Relaxed), self.source_open_count.load(Ordering::Relaxed)),
-            format_duration_ns(self.source_open_max_ns.load(Ordering::Relaxed)),
-            self.target_open_count.load(Ordering::Relaxed),
-            format_duration_ns(self.target_open_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.target_open_ns.load(Ordering::Relaxed), self.target_open_count.load(Ordering::Relaxed)),
-            format_duration_ns(self.target_open_max_ns.load(Ordering::Relaxed)),
-            srv_copy_count,
-            format_bytes(srv_copy_bytes),
-            format_bytes(avg_u64(srv_copy_bytes, srv_copy_count)),
-            format_duration_ns(srv_copy_ns),
-            avg_duration_ns(srv_copy_ns, srv_copy_count),
-            format_duration_ns(self.srv_copy_max_ns.load(Ordering::Relaxed)),
-            format_rate(srv_copy_bytes, srv_copy_ns),
-            self.srv_copy_fallback_count.load(Ordering::Relaxed),
-            read_count,
-            format_bytes(read_bytes),
-            format_bytes(avg_u64(read_bytes, read_count)),
-            format_duration_ns(read_ns),
-            avg_duration_ns(read_ns, read_count),
-            format_duration_ns(self.read_max_ns.load(Ordering::Relaxed)),
-            format_rate(read_bytes, read_ns),
-            write_count,
-            format_bytes(write_bytes),
-            format_bytes(avg_u64(write_bytes, write_count)),
-            format_duration_ns(write_ns),
-            avg_duration_ns(write_ns, write_count),
-            format_duration_ns(self.write_max_ns.load(Ordering::Relaxed)),
-            format_rate(write_bytes, write_ns),
-            self.copy_active_max.load(Ordering::Relaxed),
-            self.read_active_max.load(Ordering::Relaxed),
-            self.write_active_max.load(Ordering::Relaxed),
-            self.source_close_count.load(Ordering::Relaxed),
-            format_duration_ns(self.source_close_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.source_close_ns.load(Ordering::Relaxed), self.source_close_count.load(Ordering::Relaxed)),
-            format_duration_ns(self.source_close_max_ns.load(Ordering::Relaxed)),
-            self.source_close_deferred.load(Ordering::Relaxed),
-            self.target_close_count.load(Ordering::Relaxed),
-            format_duration_ns(self.target_close_ns.load(Ordering::Relaxed)),
-            avg_duration_ns(self.target_close_ns.load(Ordering::Relaxed), self.target_close_count.load(Ordering::Relaxed)),
-            format_duration_ns(self.target_close_max_ns.load(Ordering::Relaxed)),
-            self.target_close_deferred.load(Ordering::Relaxed),
-        )
-    }
-}
-
-struct ActiveMetricGuard<'a> {
-    active: &'a AtomicU64,
-}
-
-impl Drop for ActiveMetricGuard<'_> {
-    fn drop(&mut self) {
-        self.active.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-fn update_atomic_max(max: &AtomicU64, value: u64) {
-    let mut current = max.load(Ordering::Relaxed);
-    while value > current {
-        match max.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => break,
-            Err(observed) => current = observed,
-        }
-    }
-}
-
-fn duration_ns(duration: Duration) -> u64 {
-    duration.as_nanos().min(u128::from(u64::MAX)) as u64
-}
-
-fn format_duration_ns(ns: u64) -> String {
-    let ms = ns as f64 / 1_000_000.0;
-    format!("{ms:.3}ms")
-}
-
-fn avg_duration_ns(total_ns: u64, count: u64) -> String {
-    if count == 0 {
-        "0.000ms".to_string()
-    } else {
-        format_duration_ns(total_ns / count)
-    }
-}
-
-fn avg_u64(total: u64, count: u64) -> u64 {
-    if count == 0 {
-        0
-    } else {
-        total / count
-    }
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let bytes_f = bytes as f64;
-    if bytes_f >= GIB {
-        format!("{:.2}GiB", bytes_f / GIB)
-    } else if bytes_f >= MIB {
-        format!("{:.2}MiB", bytes_f / MIB)
-    } else if bytes_f >= KIB {
-        format!("{:.2}KiB", bytes_f / KIB)
-    } else {
-        format!("{bytes}B")
-    }
-}
-
-fn format_rate(bytes: u64, ns: u64) -> String {
-    if bytes == 0 || ns == 0 {
-        return "0.00B/s".to_string();
-    }
-    let seconds = ns as f64 / 1_000_000_000.0;
-    format!("{}/s", format_bytes((bytes as f64 / seconds) as u64))
-}
-
-fn same_share(source: &SmbLocation, target: &SmbLocation) -> bool {
-    source.host.eq_ignore_ascii_case(&target.host)
-        && source.share.eq_ignore_ascii_case(&target.share)
-        && source.port == target.port
-        && source.username == target.username
-        && source.password == target.password
-}
-
-/// Create a new shared directory existence cache for SMB mkdir deduplication.
-pub fn new_dir_cache() -> DirCache {
-    Arc::new(Mutex::new(HashSet::new()))
-}
-
-/// Connect and authenticate an SMB client to the given share location.
-pub async fn connect_client(location: &SmbLocation) -> Result<Arc<smb_client::Client>, String> {
-    let client = Arc::new(smb_client::Client::new(crate::smb::client_config(location)));
-    let share_root = location.share_unc_path()?;
-    let username = location.username.as_deref().unwrap_or("");
-    let password = location.password.clone().unwrap_or_default();
-
-    client
-        .share_connect(&share_root, username, password)
-        .await
-        .map_err(|e| format!("share connect {}: {e}", location.display_string()))?;
-
-    Ok(client)
-}
-
-impl SmbClientPool {
-    pub async fn connect(location: &SmbLocation, size: usize) -> Result<Arc<Self>, String> {
-        let pool_size = size.max(1);
-        let mut clients = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            clients.push(connect_client(location).await?);
-        }
-        Ok(Arc::new(Self {
-            clients,
-            next: AtomicUsize::new(0),
-        }))
-    }
-
-    pub fn client(&self) -> Arc<smb_client::Client> {
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.clients.len();
-        Arc::clone(&self.clients[idx])
-    }
-
-    pub fn size(&self) -> usize {
-        self.clients.len().max(1)
-    }
-
-    pub async fn close(&self) -> Result<(), String> {
-        for client in &self.clients {
-            client.close().await.map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
-}
 
 /// Ensure a directory exists on the SMB share, creating it (and parents) if needed.
 /// Uses a shared cache to skip redundant mkdir calls.
@@ -432,6 +161,10 @@ pub async fn write_relative_file_chunk(
     Ok(())
 }
 
+/// Copy a file between two SMB locations using streaming read/write.
+///
+/// Attempts server-side copy (`srv_copy`) first; falls back to client-side
+/// read-then-write if the server doesn't support it.
 pub async fn copy_relative_file_streaming(
     source_pool: &Arc<SmbClientPool>,
     source_location: &SmbLocation,
@@ -684,8 +417,9 @@ pub async fn copy_relative_file_streaming(
     Ok(())
 }
 
+/// Upload a local directory tree to an SMB share.
 pub async fn upload_local_dir_to_smb(
-    local_dir: &std::path::Path,
+    local_dir: &Path,
     location: &SmbLocation,
     target_prefix: &str,
 ) -> Result<(), String> {
@@ -694,7 +428,7 @@ pub async fn upload_local_dir_to_smb(
     }
 
     let client = connect_client(location).await?;
-    let dir_cache = new_dir_cache();
+    let dir_cache = super::new_dir_cache();
     ensure_relative_directory(&client, location, &dir_cache, target_prefix).await?;
 
     let mut stack = vec![(
@@ -731,106 +465,19 @@ pub async fn upload_local_dir_to_smb(
     Ok(())
 }
 
+/// Upload a single local file to an SMB share.
 pub async fn upload_local_file_to_smb(
-    local_file: &std::path::Path,
+    local_file: &Path,
     location: &SmbLocation,
     remote_path: &str,
 ) -> Result<(), String> {
     let data =
         std::fs::read(local_file).map_err(|e| format!("read {}: {e}", local_file.display()))?;
     let client = connect_client(location).await?;
-    let dir_cache = new_dir_cache();
+    let dir_cache = super::new_dir_cache();
     write_relative_file(&client, location, &dir_cache, remote_path, &data).await?;
     client.close().await.map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// Build a UNC path for a file relative to the share location.
-pub fn relative_unc_path(
-    location: &SmbLocation,
-    relative_path: &str,
-) -> Result<smb_client::UncPath, String> {
-    let relative_path = normalize_relative_path(relative_path);
-    let root = location.root_unc_path()?;
-    if relative_path.is_empty() {
-        Ok(root)
-    } else {
-        Ok(root.with_add_path(&relative_path))
-    }
-}
-
-/// Normalize a path for SMB use: convert backslashes, trim leading/trailing slashes.
-pub fn normalize_relative_path(path: &str) -> String {
-    path.replace('\\', "/").trim_matches('/').to_string()
-}
-
-pub fn target_relative_path(source_dir_base: &Path, target_prefix: &str, path: &str) -> String {
-    let rel = relative_path_buf(source_dir_base, Path::new(path));
-    let prefixed = if target_prefix.is_empty() {
-        rel
-    } else {
-        Path::new(target_prefix).join(rel)
-    };
-    normalize_relative_path(&prefixed.to_string_lossy())
-}
-
-pub fn share_relative_path(location: &SmbLocation, relative_path: &str) -> String {
-    let relative_path = normalize_relative_path(relative_path);
-    if location.sub_path.is_empty() {
-        relative_path.replace('/', "\\")
-    } else if relative_path.is_empty() {
-        location.sub_path.replace('/', "\\")
-    } else {
-        format!(
-            "{}\\{}",
-            location.sub_path.replace('/', "\\"),
-            relative_path.replace('/', "\\")
-        )
-    }
-}
-
-fn join_relative(base: &str, child: &str) -> String {
-    let child = normalize_relative_path(child);
-    if base.is_empty() {
-        child
-    } else if child.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}/{child}")
-    }
-}
-
-fn relative_path_buf(source_dir_base: &Path, path: &Path) -> PathBuf {
-    path.strip_prefix(source_dir_base)
-        .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| {
-            if path.is_absolute() {
-                let logical_root_name = source_dir_base.file_name().and_then(|n| n.to_str());
-                let first_segment = path
-                    .strip_prefix("/")
-                    .ok()
-                    .and_then(|p| p.iter().next())
-                    .and_then(|s| s.to_str());
-                if logical_root_name.is_some() && logical_root_name == first_segment {
-                    return path
-                        .strip_prefix("/")
-                        .map(|r| r.to_path_buf())
-                        .unwrap_or_else(|_| path.to_path_buf());
-                }
-            }
-            path.file_name()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| path.to_path_buf())
-        })
-}
-
-/// Close an SMB resource (file, directory, or pipe) regardless of its type.
-pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
-    match resource {
-        smb_client::Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
-        smb_client::Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
-        smb_client::Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
-    }
 }
 
 async fn negotiated_write_chunk(client: &smb_client::Client, location: &SmbLocation) -> usize {
