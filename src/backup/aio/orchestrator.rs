@@ -232,7 +232,7 @@ async fn run_copy_for_source_target(
             BackupSource::Nfs { pool: source_pool },
             BackupTarget::Smb { location: target_loc, pool: target_pool },
         ) => {
-            crate::backup::aio::directions::copy_pipelines::run_nfs_to_smb_copy_pipeline(
+            crate::nfs::backup::pipeline::run_nfs_to_smb(
                 params.control_file.clone(),
                 params.meta_dir.clone(),
                 params.source_dir_base.clone(),
@@ -304,7 +304,7 @@ async fn run_copy_for_source_target(
             BackupSource::Smb { location: src_loc, pool: src_pool },
             BackupTarget::Nfs { pool: tgt_pool },
         ) => {
-            crate::backup::aio::directions::copy_pipelines::run_smb_to_nfs_copy_pipeline(
+            crate::smb::backup::pipeline::run_smb_to_nfs(
                 params.control_file.clone(),
                 params.meta_dir.clone(),
                 params.source_dir_base.clone(),

@@ -22,6 +22,8 @@ use crate::smb::SmbLocation;
 
 const SMB_MAX_CONCURRENT_TASKS: usize = 32;
 const SMB_TASKS_PER_CONNECTION: usize = 8;
+#[cfg(feature = "nfs")]
+const NFS_MAX_CONCURRENT_TASKS: usize = 16;
 
 #[cfg(feature = "smb")]
 pub async fn run_local_to_smb_copy_pipeline(
@@ -713,7 +715,7 @@ async fn run_smb_to_smb_aggregate_pipeline(
 }
 
 #[cfg(feature = "smb")]
-fn smb_copy_task_limit(pool_size: usize, configured_tasks: usize) -> usize {
+pub(crate) fn smb_copy_task_limit(pool_size: usize, configured_tasks: usize) -> usize {
     if configured_tasks > 0 {
         return configured_tasks.clamp(1, SMB_MAX_CONCURRENT_TASKS);
     }
@@ -759,4 +761,60 @@ where
             Err(err) => return Err(err),
         }
     }
+}
+
+/// SMB → NFS: cross-transport copy pipeline.
+#[cfg(feature = "nfs")]
+pub async fn run_smb_to_nfs(
+    control_file: PathBuf,
+    meta_dir: PathBuf,
+    smb_source_base: PathBuf,
+    target_prefix: String,
+    aggregate_config: AggregateConfig,
+    source_location: SmbLocation,
+    source_pool: Arc<crate::smb::aio::SmbClientPool>,
+    target_pool: Arc<crate::nfs::connection::NfsConnectionPool>,
+    stats: Arc<BackupStats>,
+    copy_buffer_size: usize,
+    smb_copy_task_count: usize,
+    retry_policy: RetryPolicy,
+    failure_recorder: Option<FailureRecorder>,
+) {
+    use crate::backup::aio::aggregation::AggregatingTarget;
+    use crate::backup::aio::entry::EntryMapping;
+    use crate::backup::aio::transport::clamp_copy_buffer_size;
+    use crate::nfs::aio::writer::new_dir_handle_cache;
+    use crate::nfs::backup::transport::NfsTarget;
+
+    let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);
+    let max_concurrent_tasks =
+        smb_copy_task_limit(source_pool.size(), smb_copy_task_count).min(NFS_MAX_CONCURRENT_TASKS);
+    let _ = smb_source_base;
+    let target_prefix = PathBuf::from(target_prefix);
+    let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
+    let target = NfsTarget {
+        pool: Arc::clone(&target_pool),
+        dir_cache: new_dir_handle_cache(),
+        root_fh: target_pool.root_fh(),
+        write_chunk: target_pool.server_wtmax,
+        buffer_size: copy_buffer_size,
+    };
+    let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
+
+    run_smb_source_copy_pipeline(
+        control_file,
+        meta_dir,
+        mapping,
+        source_location,
+        source_pool,
+        target,
+        stats,
+        "SMB->NFS",
+        max_concurrent_tasks,
+        copy_buffer_size,
+        aggregate_config,
+        retry_policy,
+        failure_recorder,
+    )
+    .await;
 }

@@ -5,8 +5,6 @@
 //!   transport (local, NFS, SMB) and run post-copy phases.
 //! - **Orchestrator** ([`orchestrator`]) — composes source + target into a
 //!   single generic backup pipeline.
-//! - **Direction-specific pipelines** ([`directions`]) — legacy per-direction
-//!   orchestrators for cross-transport (NFS↔SMB).
 //! - **Generic copy pipeline** ([`pipeline`], [`executor`]) — parameterized
 //!   by [`transport::SourceReader`] / [`transport::TargetWriter`] traits.
 
@@ -14,7 +12,6 @@
 pub const DEFAULT_SMB_POOL_SIZE: usize = 2;
 
 pub(crate) mod aggregation;
-pub(crate) mod directions;
 pub(crate) mod entry;
 pub(crate) mod executor;
 pub(crate) mod local_fs;
