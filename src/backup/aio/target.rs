@@ -67,6 +67,7 @@ impl BackupTarget {
     }
 
     /// Run post-copy phases (hardlink, delete, mtime) for this target.
+    #[allow(unused_variables)]
     pub async fn run_post_copy_phases(
         &self,
         ctrl_dir: &PathBuf,

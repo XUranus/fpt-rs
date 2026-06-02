@@ -125,6 +125,7 @@ async fn run_backup(
 }
 
 /// Dispatch the copy pipeline based on source+target combination.
+#[allow(unused_variables)]
 async fn run_copy_for_source_target(
     source: &BackupSource,
     target: &BackupTarget,
