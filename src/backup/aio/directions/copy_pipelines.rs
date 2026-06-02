@@ -17,7 +17,11 @@ use crate::backup::aio::entry::EntryMapping;
 #[cfg(all(feature = "nfs", feature = "smb"))]
 use crate::backup::aio::pipeline::run_copy_pipeline;
 #[cfg(all(feature = "nfs", feature = "smb"))]
-use crate::backup::aio::transport::{clamp_copy_buffer_size, NfsSource, NfsTarget, SmbTarget};
+use crate::backup::aio::transport::clamp_copy_buffer_size;
+#[cfg(all(feature = "nfs", feature = "smb"))]
+use crate::nfs::backup::transport::{NfsSource, NfsTarget};
+#[cfg(all(feature = "nfs", feature = "smb"))]
+use crate::smb::backup::transport::SmbTarget;
 #[cfg(all(feature = "nfs", feature = "smb"))]
 use crate::backup::stats::BackupStats;
 #[cfg(all(feature = "nfs", feature = "smb"))]

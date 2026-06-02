@@ -907,7 +907,7 @@ fn run_restore_copy_phase(
                     })?;
                 let root_fh = pool.root_fh();
                 let write_chunk = pool.server_wtmax.max(4096);
-                let target = crate::backup::aio::transport::NfsTarget {
+                let target = crate::nfs::backup::transport::NfsTarget {
                     pool,
                     dir_cache: crate::nfs::aio::writer::new_dir_handle_cache(),
                     root_fh,
@@ -940,7 +940,7 @@ fn run_restore_copy_phase(
                         .map_err(|e| {
                             RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
                         })?;
-                let target = crate::backup::aio::transport::SmbTarget {
+                let target = crate::smb::backup::transport::SmbTarget {
                     location: smb_target,
                     pool,
                     dir_cache: crate::smb::aio::new_dir_cache(),

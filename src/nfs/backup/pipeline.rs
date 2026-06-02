@@ -10,9 +10,8 @@ use crate::backup::aggregate::AggregateConfig;
 use crate::backup::aio::aggregation::AggregatingTarget;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::pipeline::run_copy_pipeline;
-use crate::backup::aio::transport::{
-    clamp_copy_buffer_size, LocalSource, LocalTarget, NfsSource, NfsTarget,
-};
+use crate::backup::aio::transport::{clamp_copy_buffer_size, LocalSource, LocalTarget};
+use crate::nfs::backup::transport::{NfsSource, NfsTarget};
 use crate::backup::stats::BackupStats;
 use crate::failure::{FailureRecorder, RetryPolicy};
 use crate::nfs::aio::{reader::new_file_handle_cache, writer::new_dir_handle_cache};

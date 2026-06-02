@@ -1,14 +1,16 @@
-//! Transport adapters for the generic async backup pipeline.
+//! Transport traits and local filesystem implementations for the generic async backup pipeline.
+//!
+//! NFS and SMB transport implementations live in their respective modules:
+//! - [`crate::nfs::backup::transport`]
+//! - [`crate::smb::backup::transport`]
 
 use std::path::PathBuf;
-#[cfg(any(feature = "nfs", feature = "smb"))]
-use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use tokio::task;
 
 use crate::backup::aio::local_fs::{read_local_file_chunk, write_local_file_chunk};
-use crate::backup::copy_block::CopyBlock;
+pub use crate::backup::copy_block::CopyBlock;
 use crate::backup::fcb::FileControlBlock;
 
 pub const DEFAULT_COPY_BUFFER_SIZE: usize = 1024 * 1024;
@@ -131,154 +133,5 @@ impl TargetWriter for LocalTarget {
                 Err(msg) => Err((block, msg)),
             }
         })
-    }
-}
-
-#[cfg(feature = "nfs")]
-#[derive(Clone)]
-pub struct NfsSource {
-    pub pool: Arc<crate::nfs::connection::NfsConnectionPool>,
-    pub dir_cache: crate::nfs::aio::reader::FileHandleCache,
-    pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
-    pub read_chunk: u32,
-    pub buffer_size: usize,
-}
-
-#[cfg(feature = "nfs")]
-impl SourceReader for NfsSource {
-    fn read_block(
-        &self,
-        block: CopyBlock,
-    ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
-        use crate::nfs::aio::reader::{nfs_read_task, NfsReaderResult};
-        let this = self.clone();
-        Box::pin(async move {
-            let fcb = block.into_fcb();
-            match nfs_read_task(
-                fcb,
-                Arc::clone(&this.pool),
-                Arc::clone(&this.dir_cache),
-                this.root_fh.clone(),
-                this.read_chunk
-                    .min(clamp_copy_buffer_size(this.buffer_size) as u32),
-                clamp_copy_buffer_size(this.buffer_size),
-            )
-            .await
-            {
-                NfsReaderResult::Read(fcb) => Ok(CopyBlock::from_fcb(fcb)),
-                NfsReaderResult::Failed(fcb, msg) => Err((CopyBlock::from_fcb(fcb), msg)),
-            }
-        })
-    }
-}
-
-#[cfg(feature = "nfs")]
-#[derive(Clone)]
-pub struct NfsTarget {
-    pub pool: Arc<crate::nfs::connection::NfsConnectionPool>,
-    pub dir_cache: crate::nfs::aio::writer::DirHandleCache,
-    pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
-    pub write_chunk: u32,
-    pub buffer_size: usize,
-}
-
-#[cfg(feature = "nfs")]
-impl TargetWriter for NfsTarget {
-    fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>> {
-        let this = self.clone();
-        Box::pin(async move {
-            crate::nfs::aio::writer::get_or_create_dir(
-                &this.pool,
-                &this.dir_cache,
-                &path.to_string_lossy(),
-                &this.root_fh,
-            )
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-        })
-    }
-
-    fn write_block(
-        &self,
-        block: CopyBlock,
-    ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
-        use crate::nfs::aio::writer::{nfs_write_task, NfsWriterResult};
-        let this = self.clone();
-        Box::pin(async move {
-            let fcb = block.into_fcb();
-            match nfs_write_task(
-                fcb,
-                Arc::clone(&this.pool),
-                Arc::clone(&this.dir_cache),
-                this.root_fh.clone(),
-                this.write_chunk
-                    .min(clamp_copy_buffer_size(this.buffer_size) as u32),
-            )
-            .await
-            {
-                NfsWriterResult::Written(fcb) => Ok(CopyBlock::from_fcb(fcb)),
-                NfsWriterResult::Failed(fcb, msg) => Err((CopyBlock::from_fcb(fcb), msg)),
-            }
-        })
-    }
-}
-
-#[cfg(feature = "smb")]
-#[derive(Clone)]
-pub struct SmbTarget {
-    pub location: crate::smb::SmbLocation,
-    pub pool: Arc<crate::smb::aio::SmbClientPool>,
-    pub dir_cache: crate::smb::aio::DirCache,
-    pub buffer_size: usize,
-}
-
-#[cfg(feature = "smb")]
-impl TargetWriter for SmbTarget {
-    fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>> {
-        let this = self.clone();
-        Box::pin(async move {
-            let client = this.pool.client();
-            crate::smb::aio::ensure_relative_directory(
-                &client,
-                &this.location,
-                &this.dir_cache,
-                &path.to_string_lossy().replace('\\', "/"),
-            )
-            .await
-        })
-    }
-
-    fn write_block(
-        &self,
-        mut block: CopyBlock,
-    ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
-        let this = self.clone();
-        Box::pin(async move {
-            let rel_path = block.dst_path.to_string_lossy().replace('\\', "/");
-            let client = this.pool.client();
-            match crate::smb::aio::write_relative_file_chunk(
-                &client,
-                &this.location,
-                &this.dir_cache,
-                &rel_path,
-                &block.data,
-                block.dst_offset,
-                clamp_copy_buffer_size(this.buffer_size),
-            )
-            .await
-            {
-                Ok(()) => {
-                    block.dst_offset = block.dst_offset.saturating_add(block.data.len() as u64);
-                    Ok(block)
-                }
-                Err(msg) => Err((block, msg)),
-            }
-        })
-    }
-
-    fn finish(&self) -> BoxFuture<'static, Result<(), String>> {
-        let this = self.clone();
-        Box::pin(async move { this.pool.close().await })
     }
 }
