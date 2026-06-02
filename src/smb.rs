@@ -6,7 +6,8 @@
 
 use std::path::PathBuf;
 
-pub(crate) mod aio;
+pub mod aio;
+pub mod backup;
 pub(crate) mod connection;
 pub(crate) mod fstat;
 pub mod scanner;

@@ -31,13 +31,13 @@ pub(crate) mod transport;
 pub use crate::nfs::backup::local_to_nfs::spawn as spawn_local_to_nfs_backup;
 
 #[cfg(feature = "smb")]
-pub use directions::local_to_smb::spawn as spawn_local_to_smb_backup;
+pub use crate::smb::backup::local_to_smb::spawn as spawn_local_to_smb_backup;
 
 #[cfg(feature = "smb")]
-pub use directions::smb_to_local::spawn as spawn_smb_to_local_backup;
+pub use crate::smb::backup::smb_to_local::spawn as spawn_smb_to_local_backup;
 
 #[cfg(feature = "smb")]
-pub use directions::smb_to_smb::spawn as spawn_smb_to_smb_backup;
+pub use crate::smb::backup::smb_to_smb::spawn as spawn_smb_to_smb_backup;
 
 #[cfg(all(feature = "nfs", feature = "smb"))]
 pub use directions::nfs_to_smb::spawn as spawn_nfs_to_smb_backup;
