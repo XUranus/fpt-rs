@@ -15,20 +15,20 @@
 #[cfg(feature = "smb")]
 pub const DEFAULT_SMB_POOL_SIZE: usize = 2;
 
-mod aggregation;
+pub(crate) mod aggregation;
 pub(crate) mod directions;
 pub(crate) mod entry;
-mod executor;
+pub(crate) mod executor;
 pub(crate) mod local_fs;
 pub(crate) mod path_util;
-mod phases;
-mod pipeline;
+pub(crate) mod phases;
+pub(crate) mod pipeline;
 pub(crate) mod transport;
 
 // Re-export spawn functions from per-direction modules for backward compatibility.
 
 #[cfg(feature = "nfs")]
-pub use directions::local_to_nfs::spawn as spawn_local_to_nfs_backup;
+pub use crate::nfs::backup::local_to_nfs::spawn as spawn_local_to_nfs_backup;
 
 #[cfg(feature = "smb")]
 pub use directions::local_to_smb::spawn as spawn_local_to_smb_backup;
@@ -46,7 +46,7 @@ pub use directions::nfs_to_smb::spawn as spawn_nfs_to_smb_backup;
 pub use directions::smb_to_nfs::spawn as spawn_smb_to_nfs_backup;
 
 #[cfg(feature = "nfs")]
-pub use directions::nfs_to_local::spawn as spawn_nfs_to_local_backup;
+pub use crate::nfs::backup::nfs_to_local::spawn as spawn_nfs_to_local_backup;
 
 #[cfg(feature = "nfs")]
-pub use directions::nfs_to_nfs::spawn as spawn_nfs_to_nfs_backup;
+pub use crate::nfs::backup::nfs_to_nfs::spawn as spawn_nfs_to_nfs_backup;

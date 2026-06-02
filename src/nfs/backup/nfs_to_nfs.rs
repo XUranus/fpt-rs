@@ -8,11 +8,10 @@ use std::thread;
 use log::info;
 
 use crate::backup::aggregate::AggregateConfig;
-use crate::backup::aio::phases::run_nfs_target_phases;
 use crate::backup::stats::BackupStats;
 use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
-use crate::nfs::aio::{reader::new_file_handle_cache, writer::new_dir_handle_cache};
+use crate::nfs::backup::pipeline;
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::NfsLocation;
 
@@ -107,7 +106,7 @@ pub async fn run(
     stats: Arc<BackupStats>,
     phase_flags: PhaseFlags,
 ) {
-    super::copy_pipelines::run_aio_nfs_to_nfs_pipeline(
+    pipeline::run_nfs_to_nfs(
         control_file,
         meta_dir,
         source_dir_base.clone(),
@@ -122,10 +121,10 @@ pub async fn run(
     )
     .await;
 
-    let file_cache = new_file_handle_cache();
-    let dir_cache = new_dir_handle_cache();
+    let file_cache = crate::nfs::aio::reader::new_file_handle_cache();
+    let dir_cache = crate::nfs::aio::writer::new_dir_handle_cache();
 
-    run_nfs_target_phases(
+    crate::backup::aio::phases::run_nfs_target_phases(
         &ctrl_dir,
         &source_dir_base,
         &target_prefix,

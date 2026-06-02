@@ -1,4 +1,4 @@
-//! NFS → Local backup direction.
+//! Local → NFS backup direction.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,21 +8,21 @@ use std::thread;
 use log::info;
 
 use crate::backup::aggregate::AggregateConfig;
-use crate::backup::aio::phases::run_local_target_phases;
 use crate::backup::stats::BackupStats;
 use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
+use crate::nfs::backup::pipeline;
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::NfsLocation;
 
-/// Spawn a backup thread that copies files from an NFS source to a local target.
+/// Spawn a backup thread that copies local files to an NFS target via async AIO pipeline.
 pub fn spawn(
-    nfs_source: NfsLocation,
+    nfs_target: NfsLocation,
     control_file: PathBuf,
     meta_dir: PathBuf,
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
-    target_dir_base: PathBuf,
+    target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
     retry_policy: RetryPolicy,
@@ -34,29 +34,29 @@ pub fn spawn(
     thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
-            .thread_name("fpt-nfs-to-local")
+            .thread_name("fpt-local-to-nfs")
             .build()
         {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("NFS→local: failed to build async runtime: {e}");
+                eprintln!("local→NFS: failed to build async runtime: {e}");
                 terminate_indicator.store(true, Ordering::Relaxed);
                 return;
             }
         };
 
         rt.block_on(async {
-            let pool = match NfsConnectionPool::new(&nfs_source).await {
+            let pool = match NfsConnectionPool::new(&nfs_target).await {
                 Ok(p) => p,
                 Err(e) => {
-                    eprintln!("NFS→local: failed to connect: {e}");
+                    eprintln!("local→NFS: failed to connect: {e}");
                     return;
                 }
             };
 
             info!(
-                "NFS→local: connected to {} (rtmax={})",
-                nfs_source.host, pool.server_rtmax
+                "local→NFS: connected to {} (wtmax={})",
+                nfs_target.host, pool.server_wtmax
             );
 
             run(
@@ -64,7 +64,7 @@ pub fn spawn(
                 meta_dir,
                 ctrl_dir,
                 source_dir_base,
-                target_dir_base,
+                target_prefix,
                 aggregate_config,
                 copy_buffer_size,
                 retry_policy,
@@ -80,13 +80,13 @@ pub fn spawn(
     })
 }
 
-/// Run a full backup pipeline for NFS source → local target.
+/// Run a full backup pipeline for local source → NFS target.
 pub async fn run(
     control_file: PathBuf,
     meta_dir: PathBuf,
     ctrl_dir: PathBuf,
     source_dir_base: PathBuf,
-    target_dir_base: PathBuf,
+    target_prefix: String,
     aggregate_config: AggregateConfig,
     copy_buffer_size: usize,
     retry_policy: RetryPolicy,
@@ -95,27 +95,31 @@ pub async fn run(
     stats: Arc<BackupStats>,
     phase_flags: PhaseFlags,
 ) {
-    super::copy_pipelines::run_aio_nfs_to_local_pipeline(
+    pipeline::run_local_to_nfs(
         control_file,
-        meta_dir.clone(),
+        meta_dir,
         source_dir_base.clone(),
-        target_dir_base.clone(),
+        target_prefix.clone(),
         aggregate_config,
-        pool,
-        stats,
+        Arc::clone(&pool),
+        Arc::clone(&stats),
         copy_buffer_size,
         retry_policy,
         failure_recorder.clone(),
     )
     .await;
 
-    run_local_target_phases(
+    let file_cache = crate::nfs::aio::reader::new_file_handle_cache();
+    let dir_cache = crate::nfs::aio::writer::new_dir_handle_cache();
+
+    crate::backup::aio::phases::run_nfs_target_phases(
         &ctrl_dir,
-        &meta_dir,
         &source_dir_base,
-        &target_dir_base,
+        &target_prefix,
+        pool,
+        file_cache,
+        dir_cache,
         phase_flags,
-        retry_policy,
-        failure_recorder.as_ref(),
-    );
+    )
+    .await;
 }

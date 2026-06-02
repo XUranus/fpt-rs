@@ -18,7 +18,7 @@ use crate::nfs::connection::NfsConnectionPool;
 use crate::smb::SmbLocation;
 
 #[cfg(any(feature = "nfs", feature = "smb"))]
-pub(super) fn run_local_target_phases(
+pub(crate) fn run_local_target_phases(
     ctrl_dir: &PathBuf,
     meta_dir: &PathBuf,
     source_dir_base: &PathBuf,
@@ -93,7 +93,7 @@ pub(super) fn run_local_target_phases(
 }
 
 #[cfg(feature = "nfs")]
-pub(super) async fn run_nfs_target_phases(
+pub(crate) async fn run_nfs_target_phases(
     ctrl_dir: &PathBuf,
     source_dir_base: &PathBuf,
     target_prefix: &str,
@@ -153,7 +153,7 @@ pub(super) async fn run_nfs_target_phases(
 }
 
 #[cfg(feature = "smb")]
-pub(super) async fn run_smb_target_phases(
+pub(crate) async fn run_smb_target_phases(
     ctrl_dir: &PathBuf,
     source_dir_base: &PathBuf,
     target_prefix: &str,

@@ -23,7 +23,8 @@
 
 use std::path::PathBuf;
 
-pub(crate) mod aio;
+pub mod aio;
+pub mod backup;
 pub mod connection;
 pub mod error;
 pub(crate) mod fstat;
