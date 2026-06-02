@@ -3,7 +3,7 @@ pub mod failure;
 pub mod frame;
 pub mod logging;
 pub mod native;
-pub mod path_util;
+pub use utility::path_util;
 pub mod scanner;
 pub mod utility;
 

@@ -16,7 +16,6 @@ pub(crate) mod entry;
 pub(crate) mod executor;
 pub(crate) mod local_fs;
 pub mod orchestrator;
-pub(crate) mod path_util;
 pub(crate) mod phases;
 pub(crate) mod pipeline;
 pub mod source;

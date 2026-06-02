@@ -8,10 +8,11 @@ use std::time::Instant;
 use log::warn;
 
 use crate::smb::aio::metrics::SmbCopyMetrics;
-use crate::smb::aio::path_util::{
-    close_resource, join_relative, normalize_relative_path, relative_unc_path,
-    SMB_DEFAULT_READ_CHUNK, SMB_DEFAULT_WRITE_CHUNK, SMB_MAX_SAFE_READ_CHUNK, SMB_MAX_SAFE_WRITE_CHUNK,
+use crate::smb::aio::{
+    close_resource, relative_unc_path, SMB_DEFAULT_READ_CHUNK, SMB_DEFAULT_WRITE_CHUNK,
+    SMB_MAX_SAFE_READ_CHUNK, SMB_MAX_SAFE_WRITE_CHUNK,
 };
+use crate::path_util::{join_relative, normalize_relative_path};
 use crate::smb::connection::{connect_client, same_share, DirCache, SmbClientPool};
 use crate::smb::SmbLocation;
 
