@@ -223,14 +223,3 @@ impl<T> BlockingQueue<T> {
         inner.1
     }
 }
-
-// // Implement Clone only if T is Clone — useful for sharing the queue handle
-// impl<T: Clone> Clone for BlockingQueue<T> {
-//     fn clone(&self) -> Self {
-//         Self {
-//             inner: self.inner.clone(),
-//             not_full: Condvar::new(),        // Note: Condvar isn't cloneable, so we create a new one
-//             not_empty: Condvar::new(),       // This is safe: all Condvars point to the same Mutex state
-//         }
-//     }
-// }

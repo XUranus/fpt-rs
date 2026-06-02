@@ -20,10 +20,10 @@ use crate::scanner::{BlockingQueue, ScanWorkerContext};
 use crate::utility::SpillQueue;
 
 /// A trait abstracting over protocol-specific async directory scanners.
-#[allow(dead_code)]
 ///
 /// Both [`crate::nfs::NfsScanner`] and [`crate::smb::SmbScanner`] implement
 /// this trait (the NFS impl is defined inline below due to signature differences).
+#[allow(dead_code)] // used when nfs or smb feature is enabled
 pub trait AsyncDirScanner: Send + 'static {
     /// The error type returned by the scan.
     type Error: std::fmt::Display + Send + 'static;
@@ -37,7 +37,7 @@ pub trait AsyncDirScanner: Send + 'static {
 }
 
 /// Result of a completed async scan.
-#[allow(dead_code)]
+#[allow(dead_code)] // used when nfs or smb feature is enabled
 pub struct AioScanResult {
     pub total_files: u64,
     pub total_dirs: u64,
@@ -47,7 +47,6 @@ pub struct AioScanResult {
 }
 
 /// Run a full async scan: spawn scanner, bridge to BlockingQueue, write metadata.
-#[allow(dead_code)]
 ///
 /// This function handles the shared scaffolding that was previously duplicated
 /// between `run_nfs_scan` and `run_smb_scan`:
@@ -57,6 +56,7 @@ pub struct AioScanResult {
 /// 4. Bridge results from tokio mpsc → BlockingQueue
 /// 5. Wait for scanner completion
 /// 6. Close queue, join writers, generate control files
+#[allow(dead_code)] // used when nfs or smb feature is enabled
 pub async fn run_aio_scan<S>(
     scanner: S,
     scan_option: ScanOption,

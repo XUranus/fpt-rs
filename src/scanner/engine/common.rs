@@ -2,39 +2,31 @@
 //!
 //! Extracts duplicated patterns from `bio/traversal.rs`, `nfs/scanner.rs`,
 //! and `smb/scanner.rs`:
-//! - Async retry wrapper
 //! - Failure recording
 
 use crate::failure::{FailureItemType, FailureRecorder, FailureRecord, RetryPolicy};
 
 // ---------------------------------------------------------------------------
-// Async retry
+// Async retry (thin wrapper over failure::retry_async)
 // ---------------------------------------------------------------------------
 
-/// Generic async retry wrapper used by NFS and SMB scanners.
+/// Generic async retry wrapper that strips the attempt count from the error.
 ///
-/// Retries `op` up to `retry_policy.max_retries` times with exponential backoff.
-#[allow(dead_code)]
+/// Delegates to [`crate::failure::retry_async`] which preserves attempt metadata.
+/// This wrapper exists because scanner callers expect `Result<T, E>` while
+/// the failure module returns `Result<T, (E, u32)>`.
+#[allow(dead_code)] // used when nfs or smb feature is enabled
 pub(crate) async fn retry_async<F, Fut, T, E>(
     retry_policy: RetryPolicy,
-    mut op: F,
+    op: F,
 ) -> Result<T, E>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        match op().await {
-            Ok(value) => return Ok(value),
-            Err(err) if retry_policy.should_retry(attempts) => {
-                tokio::time::sleep(retry_policy.delay_for_attempt(attempts)).await;
-                let _ = &err;
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    crate::failure::retry_async(retry_policy, op)
+        .await
+        .map_err(|(err, _attempt)| err)
 }
 
 // ---------------------------------------------------------------------------
