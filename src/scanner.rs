@@ -43,7 +43,7 @@ use crate::{
     utility::{BlockingQueue, SpillQueue},
 };
 
-mod engine;
+pub(crate) mod engine;
 pub mod filter;
 pub mod metadata;
 pub(crate) mod models;

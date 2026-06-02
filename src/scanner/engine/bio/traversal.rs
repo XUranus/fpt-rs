@@ -24,9 +24,10 @@ use std::{
 };
 
 use crate::{
-    failure::{FailureItemType, FailureRecord},
+    failure::FailureItemType,
     native::fstat,
     scanner::{
+        engine::common::record_scan_failure,
         filter::logical_path_from_physical,
         models::{DirBatchScanResult, DirScanEntry},
         ScanWorkerContext,
@@ -52,25 +53,6 @@ where
     }
 }
 
-fn record_scan_failure(
-    context: &ScanWorkerContext,
-    operation: &str,
-    item_type: FailureItemType,
-    path: &PathBuf,
-    detail: impl Into<String>,
-    attempts: u32,
-) {
-    if let Some(recorder) = &context.failure_recorder {
-        recorder.record(FailureRecord::from_detail(
-            "scan",
-            operation,
-            item_type,
-            path.to_string_lossy(),
-            detail.into(),
-            attempts,
-        ));
-    }
-}
 
 /// Process a symlink entry: stat it, optionally follow if target is a directory.
 fn process_symlink_entry(
@@ -129,10 +111,10 @@ fn process_symlink_entry(
                 }
             }
             record_scan_failure(
-                context,
+                context.failure_recorder.as_ref(),
                 "stat_symlink",
                 FailureItemType::Symlink,
-                path,
+                &path.to_string_lossy(),
                 e.to_string(),
                 context.scan_option.retry_policy.max_retries + 1,
             );
@@ -164,10 +146,10 @@ fn process_dir_subentry(
         error!("Failed to push directory to queue: {:?}", e);
         stats.inc_failed_dirs();
         record_scan_failure(
-            context,
+            context.failure_recorder.as_ref(),
             "enqueue_dir",
             FailureItemType::Directory,
-            path,
+            &path.to_string_lossy(),
             e.to_string(),
             1,
         );
@@ -205,10 +187,10 @@ fn process_regular_file_entry(
             error!("Failed to stat file {:?}: {}", path, e);
             stats.inc_failed_files();
             record_scan_failure(
-                context,
+                context.failure_recorder.as_ref(),
                 "stat_file",
                 FailureItemType::File,
-                path,
+                &path.to_string_lossy(),
                 e.to_string(),
                 context.scan_option.retry_policy.max_retries + 1,
             );
@@ -257,10 +239,10 @@ fn process_special_file_entry(
             warn!("Failed to stat special file {:?}: {} (skipping)", path, e);
             stats.inc_failed_files();
             record_scan_failure(
-                context,
+                context.failure_recorder.as_ref(),
                 "stat_special",
                 FailureItemType::Special,
-                path,
+                &path.to_string_lossy(),
                 e.to_string(),
                 context.scan_option.retry_policy.max_retries + 1,
             );
@@ -305,10 +287,10 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
             error!("Failed to stat directory {:?}: {}", dir_entry.path, e);
             stats.inc_failed_dirs();
             record_scan_failure(
-                context,
+                context.failure_recorder.as_ref(),
                 "stat_dir",
                 FailureItemType::Directory,
-                &dir_entry.path,
+                &dir_entry.path.to_string_lossy(),
                 e.to_string(),
                 context.scan_option.retry_policy.max_retries + 1,
             );
@@ -329,10 +311,10 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         );
                         stats.inc_failed_files(); // Treat as file error (conservative)
                         record_scan_failure(
-                            context,
+                            context.failure_recorder.as_ref(),
                             "read_dir_entry",
                             FailureItemType::Unknown,
-                            &dir_entry.path,
+                            &dir_entry.path.to_string_lossy(),
                             e.to_string(),
                             1,
                         );
@@ -347,10 +329,10 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
                         error!("Failed to determine file type for {:?}: {}", path, e);
                         stats.inc_failed_files();
                         record_scan_failure(
-                            context,
+                            context.failure_recorder.as_ref(),
                             "file_type",
                             FailureItemType::Unknown,
-                            &path,
+                            &path.to_string_lossy(),
                             e.to_string(),
                             context.scan_option.retry_policy.max_retries + 1,
                         );
@@ -429,10 +411,10 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
             error!("Failed to open directory {:?}: {}", dir_entry.path, e);
             stats.inc_failed_dirs();
             record_scan_failure(
-                context,
+                context.failure_recorder.as_ref(),
                 "open_dir",
                 FailureItemType::Directory,
-                &dir_entry.path,
+                &dir_entry.path.to_string_lossy(),
                 e.to_string(),
                 context.scan_option.retry_policy.max_retries + 1,
             );

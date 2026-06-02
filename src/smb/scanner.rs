@@ -15,7 +15,7 @@ use smb_client::{
 };
 use tokio::sync::mpsc;
 
-use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::failure::{FailureItemType, FailureRecorder, RetryPolicy};
 use crate::scanner::filter::logical_path_from_physical;
 use crate::scanner::models::DirBatchScanResult;
 use crate::scanner::options::ScanOption;
@@ -231,16 +231,17 @@ impl SmbScanner {
         };
 
         let open_started = Instant::now();
-        let resource = match retry_smb(self.retry_policy, || {
+        let resource = match crate::scanner::engine::common::retry_async(self.retry_policy, || {
             self.client.create_file(&task.unc, &open_args)
         })
         .await
+        .map_err(|e| e.to_string())
         {
             Ok(r) => r,
             Err(e) => {
                 self.metrics.add_dir_open(open_started);
                 log::error!("SMB open dir {} failed: {}", task.path, e);
-                self.record_failure(
+                crate::scanner::engine::common::record_scan_failure(self.failure_recorder.as_ref(),
                     "open_dir",
                     FailureItemType::Directory,
                     &task.path,
@@ -282,7 +283,7 @@ impl SmbScanner {
             smb_seed_to_dir_meta(seed, &task.path, self.devno)
         } else {
             let query_info_started = Instant::now();
-            match retry_smb(self.retry_policy, || dir.query_info::<FileAllInformation>()).await {
+            match crate::scanner::engine::common::retry_async(self.retry_policy, || dir.query_info::<FileAllInformation>()).await.map_err(|e| e.to_string()) {
                 Ok(info) => {
                     self.metrics.add_dir_query_info(query_info_started);
                     smb_all_info_to_dir_meta(&info, &task.path, self.devno)
@@ -320,20 +321,21 @@ impl SmbScanner {
         let dir = Arc::new(dir);
         {
             let query_started = Instant::now();
-            let query_result = retry_smb(self.retry_policy, || {
+            let query_result = crate::scanner::engine::common::retry_async(self.retry_policy, || {
                 Directory::query_with_options::<FileIdBothDirectoryInformation>(
                     &dir,
                     "*",
                     scan_option.smb_query_buffer_size,
                 )
             })
-            .await;
+            .await
+            .map_err(|e| e.to_string());
             self.metrics.add_dir_query(query_started);
             let mut stream = match query_result {
                 Ok(stream) => stream,
                 Err(e) => {
                     log::error!("SMB query dir failed for {}: {}", task.path, e);
-                    self.record_failure(
+                    crate::scanner::engine::common::record_scan_failure(self.failure_recorder.as_ref(),
                         "query_directory",
                         FailureItemType::Directory,
                         &task.path,
@@ -352,7 +354,7 @@ impl SmbScanner {
                     Ok(entry) => entry,
                     Err(e) => {
                         log::warn!("SMB dir entry read failed in {}: {}", task.path, e);
-                        self.record_failure(
+                        crate::scanner::engine::common::record_scan_failure(self.failure_recorder.as_ref(),
                             "read_dir_entry",
                             FailureItemType::Unknown,
                             &task.path,
@@ -435,23 +437,26 @@ impl SmbScanner {
         let started = Instant::now();
         let open_args =
             FileCreateArgs::make_open_existing(FileAccessMask::new().with_generic_read(true));
-        let resource = retry_smb(self.retry_policy, || {
+        let resource = crate::scanner::engine::common::retry_async(self.retry_policy, || {
             self.client.create_file(path, &open_args)
         })
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
         let links = match &resource {
             Resource::File(file) => {
-                let standard = retry_smb(self.retry_policy, || {
+                let standard = crate::scanner::engine::common::retry_async(self.retry_policy, || {
                     file.query_info::<FileStandardInformation>()
                 })
-                .await?;
+                .await
+                .map_err(|e| e.to_string())?;
                 u64::from(standard.number_of_links)
             }
             Resource::Directory(dir) => {
-                let standard = retry_smb(self.retry_policy, || {
+                let standard = crate::scanner::engine::common::retry_async(self.retry_policy, || {
                     dir.query_info::<FileStandardInformation>()
                 })
-                .await?;
+                .await
+                .map_err(|e| e.to_string())?;
                 u64::from(standard.number_of_links)
             }
             Resource::Pipe(_) => 1,
@@ -461,25 +466,6 @@ impl SmbScanner {
         Ok(links)
     }
 
-    fn record_failure(
-        &self,
-        operation: &str,
-        item_type: FailureItemType,
-        path: &str,
-        detail: impl Into<String>,
-        attempts: u32,
-    ) {
-        if let Some(recorder) = &self.failure_recorder {
-            recorder.record(FailureRecord::from_detail(
-                "scan",
-                operation,
-                item_type,
-                path.to_string(),
-                detail.into(),
-                attempts,
-            ));
-        }
-    }
 }
 
 fn should_skip(
@@ -504,25 +490,5 @@ async fn close_resource(resource: Resource) -> Result<(), String> {
         Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
         Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
         Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
-    }
-}
-
-async fn retry_smb<F, Fut, T, E>(retry_policy: RetryPolicy, mut op: F) -> Result<T, String>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
-{
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        match op().await {
-            Ok(value) => return Ok(value),
-            Err(err) if retry_policy.should_retry(attempts) => {
-                tokio::time::sleep(retry_policy.delay_for_attempt(attempts)).await;
-                let _ = err;
-            }
-            Err(err) => return Err(err.to_string()),
-        }
     }
 }

@@ -25,7 +25,7 @@ use nfs3_client::nfs3_types::nfs3::{
 };
 use tokio::sync::{mpsc, Semaphore};
 
-use crate::failure::{FailureItemType, FailureRecord, FailureRecorder, RetryPolicy};
+use crate::failure::{FailureItemType, FailureRecorder, RetryPolicy};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
 use crate::nfs::fstat::{nfs_fattr3_to_dir_meta, nfs_fattr3_to_file_meta};
@@ -273,7 +273,7 @@ async fn resolve_entry_attrs(
         Nfs3Option::Some(a) => Some(a.clone()),
         Nfs3Option::None => match entry.name_handle.clone() {
             Nfs3Option::Some(fh) => {
-                match retry_nfs(shared.retry_policy, || async {
+                match crate::scanner::engine::common::retry_async(shared.retry_policy, || async {
                     let _permit = sem
                         .acquire()
                         .await
@@ -288,7 +288,7 @@ async fn resolve_entry_attrs(
                     Ok(Nfs3Result::Ok(ok)) => Some(ok.obj_attributes),
                     Ok(Nfs3Result::Err((stat, _))) => {
                         log::warn!("NFS getattr failed for {child_path}: {stat}");
-                        record_nfs_failure(
+                        crate::scanner::engine::common::record_scan_failure(
                             shared.failure_recorder.as_ref(),
                             "getattr_entry",
                             FailureItemType::Unknown,
@@ -336,7 +336,7 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
     }
     // Get directory attributes via getattr.
     let dir_attrs = {
-        let res = retry_nfs(shared.retry_policy, || async {
+        let res = crate::scanner::engine::common::retry_async(shared.retry_policy, || async {
             let _permit = sem
                 .acquire()
                 .await
@@ -352,7 +352,7 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
         match res {
             Nfs3Result::Ok(ok) => ok.obj_attributes,
             Nfs3Result::Err((stat, _)) => {
-                record_nfs_failure(
+                crate::scanner::engine::common::record_scan_failure(
                     shared.failure_recorder.as_ref(),
                     "getattr_dir",
                     FailureItemType::Directory,
@@ -375,7 +375,7 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
 
     loop {
         log::debug!("NFS READDIRPLUS: dir={dir_path} cookie={cookie:?}");
-        let res = retry_nfs(shared.retry_policy, || async {
+        let res = crate::scanner::engine::common::retry_async(shared.retry_policy, || async {
             let _permit = sem
                 .acquire()
                 .await
@@ -396,7 +396,7 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
         let ok = match res {
             Nfs3Result::Ok(ok) => ok,
             Nfs3Result::Err((stat, _)) => {
-                record_nfs_failure(
+                crate::scanner::engine::common::record_scan_failure(
                     shared.failure_recorder.as_ref(),
                     "readdirplus",
                     FailureItemType::Directory,
@@ -488,7 +488,7 @@ async fn scan_one_dir(request: NfsDirScan<'_>) -> Result<(), NfsError> {
                             Ok(t) => Some(t),
                             Err(e) => {
                                 log::warn!("NFS readlink failed for {child_path}: {e}");
-                                record_nfs_failure(
+                                crate::scanner::engine::common::record_scan_failure(
                                     shared.failure_recorder.as_ref(),
                                     "readlink",
                                     FailureItemType::Symlink,
@@ -571,7 +571,7 @@ async fn readlink_target(
     fh: &nfs_fh3,
     retry_policy: RetryPolicy,
 ) -> Result<String, NfsError> {
-    let res = retry_nfs(retry_policy, || async {
+    let res = crate::scanner::engine::common::retry_async(retry_policy, || async {
         let mut conn = pool.acquire().await;
         conn.readlink(&READLINK3args {
             symlink: fh.clone(),
@@ -588,44 +588,5 @@ async fn readlink_target(
                 .map_err(|e| NfsError::Path(format!("readlink returned non-UTF-8 path: {e}")))
         }
         Nfs3Result::Err((stat, _)) => Err(NfsError::Nfs(stat, "readlink".to_string())),
-    }
-}
-
-async fn retry_nfs<F, Fut, T>(retry_policy: RetryPolicy, mut op: F) -> Result<T, NfsError>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, NfsError>>,
-{
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        match op().await {
-            Ok(value) => return Ok(value),
-            Err(err) if retry_policy.should_retry(attempts) => {
-                tokio::time::sleep(retry_policy.delay_for_attempt(attempts)).await;
-                let _ = &err;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-fn record_nfs_failure(
-    recorder: Option<&FailureRecorder>,
-    operation: &str,
-    item_type: FailureItemType,
-    path: &str,
-    detail: String,
-    attempts: u32,
-) {
-    if let Some(recorder) = recorder {
-        recorder.record(FailureRecord::from_detail(
-            "scan",
-            operation,
-            item_type,
-            path.to_string(),
-            detail,
-            attempts,
-        ));
     }
 }

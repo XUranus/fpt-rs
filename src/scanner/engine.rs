@@ -22,6 +22,7 @@ use crate::frame::control_files::primary_control_file_path;
 
 pub mod bio;
 pub(crate) mod aio;
+pub(crate) mod common;
 
 // generate meta data to files
 pub fn start_meta_writers(
