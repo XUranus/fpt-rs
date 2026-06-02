@@ -1,6 +1,6 @@
 //! Async backup execution for remote-involved data paths.
 //!
-//! This module is the remote counterpart to [`crate::backup::local`]:
+//! This module is the remote counterpart to [`crate::backup::bio`]:
 //! - Direction-specific **copy** pipelines live under `backup/aio/directions/`.
 //! - Direction-specific **orchestrators** (spawn + run) live under
 //!   `backup/aio/directions/{local_to_nfs, nfs_to_local, ...}.rs`.

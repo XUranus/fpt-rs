@@ -2,7 +2,7 @@ use std::path::Path;
 
 use log::{error, info};
 
-use crate::backup::local::{delete, hardlink, mtime};
+use crate::backup::bio::{delete, hardlink, mtime};
 use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
 

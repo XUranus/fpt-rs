@@ -1,6 +1,6 @@
 use crate::backup::{
-    aggregate::AggregateConfig, local::delete::DeleteStatsSnapshot,
-    local::hardlink::HardlinkStatsSnapshot, local::mtime::MtimeStatsSnapshot, stats::BackupStats,
+    aggregate::AggregateConfig, bio::delete::DeleteStatsSnapshot,
+    bio::hardlink::HardlinkStatsSnapshot, bio::mtime::MtimeStatsSnapshot, stats::BackupStats,
 };
 use crate::failure::{FailureLogConfig, FailureRecorder, RetryPolicy};
 use crate::frame::control_files::classify_control_file_name;
@@ -14,7 +14,7 @@ use std::{
     thread,
 };
 
-mod local;
+mod bio;
 pub(crate) mod copy_block;
 mod copy_plan;
 pub(crate) mod fcb;
@@ -488,7 +488,7 @@ impl BackupTask {
             ));
         }
 
-        let terminate_handle = local::spawn_local_backup_pipeline(
+        let terminate_handle = bio::spawn_local_backup_pipeline(
             control_file,
             source_dir_base,
             target_dir_base,
@@ -1040,7 +1040,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         return Ok(());
     }
 
-    crate::backup::local::hardlink::run_hardlink_phase(
+    crate::backup::bio::hardlink::run_hardlink_phase(
         &option.ctrl_dir,
         &option.meta_dir,
         &option.original_source_base,
@@ -1105,7 +1105,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         return Ok(());
     }
 
-    crate::backup::local::delete::run_delete_phase(
+    crate::backup::bio::delete::run_delete_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
@@ -1169,7 +1169,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         return Ok(());
     }
 
-    crate::backup::local::mtime::run_mtime_phase(
+    crate::backup::bio::mtime::run_mtime_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
