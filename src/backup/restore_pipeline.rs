@@ -227,9 +227,9 @@ pub async fn run_restore_copy_pipeline<T>(
                             log::warn!("{log_prefix}: failed to create symlink parent dir {:?}: {e}", parent);
                         }
                     }
-                    match crate::backup::local_metadata::create_symlink(&symlink_full_path, symlink_target) {
+                    match crate::native::backup::local_metadata::create_symlink(&symlink_full_path, symlink_target) {
                         Ok(()) => {
-                            crate::backup::local_metadata::restore_common_metadata(
+                            crate::native::backup::local_metadata::restore_common_metadata(
                                 &symlink_full_path, &meta.common,
                             );
                             stats.lock().unwrap().files_restored += 1;
@@ -307,7 +307,7 @@ pub async fn run_restore_copy_pipeline<T>(
                         if block.read_complete() && block.write_complete() {
                             debug!("{log_prefix}: restored {:?} (attr=0x{:x})", restore_rel, block.meta.common.attr);
                             // Restore metadata (attributes, xattrs, ACLs)
-                            crate::backup::local_metadata::restore_common_metadata(
+                            crate::native::backup::local_metadata::restore_common_metadata(
                                 &restore_full_path, &block.meta.common,
                             );
                             let mut guard = stats2.lock().unwrap();

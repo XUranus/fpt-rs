@@ -8,9 +8,9 @@ use log::{error, info};
 use crate::backup::aggregate_engine::PendingLocalFile;
 use crate::backup::aggregate_local::LocalAggregateState;
 use crate::backup::copy_plan::{CopyPlanEntry, FileCopyPlan};
-use crate::backup::local_block::copy_stream;
-use crate::backup::local_metadata::{create_symlink, restore_common_metadata};
 use crate::backup::stats::BackupStats;
+use crate::native::backup::local_block::copy_stream;
+use crate::native::backup::local_metadata::{create_symlink, restore_common_metadata};
 use crate::failure::{
     retry_sync_item, FailureItemType, FailureRecord, FailureRecorder, RetryPolicy,
 };

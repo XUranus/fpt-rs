@@ -1,6 +1,6 @@
 use crate::backup::{
-    aggregate::AggregateConfig, bio::delete::DeleteStatsSnapshot,
-    bio::hardlink::HardlinkStatsSnapshot, bio::mtime::MtimeStatsSnapshot, stats::BackupStats,
+    aggregate::AggregateConfig,
+    stats::BackupStats,
 };
 use crate::failure::{FailureLogConfig, FailureRecorder, RetryPolicy};
 use crate::frame::control_files::classify_control_file_name;
@@ -14,15 +14,15 @@ use std::{
     thread,
 };
 
-mod bio;
 pub(crate) mod copy_block;
-mod copy_plan;
+pub(crate) mod copy_plan;
 pub(crate) mod fcb;
-mod local_block;
-mod local_executor;
-mod local_metadata;
-mod phases;
-mod stats;
+pub(crate) mod stats;
+
+// Re-export snapshot types used in RunningBackup fields
+pub(crate) use crate::native::backup::bio::delete::DeleteStatsSnapshot;
+pub(crate) use crate::native::backup::bio::hardlink::HardlinkStatsSnapshot;
+pub(crate) use crate::native::backup::bio::mtime::MtimeStatsSnapshot;
 pub use stats::BackupStatsSnapshot;
 
 // Aggregate backup/restore modules
@@ -30,7 +30,7 @@ pub mod aggregate;
 pub(crate) mod aggregate_dir_index;
 pub(crate) mod aggregate_engine;
 pub(crate) mod aggregate_index;
-mod aggregate_local;
+pub(crate) mod aggregate_local;
 pub(crate) mod aggregate_restore;
 mod restore_pipeline;
 
@@ -488,7 +488,7 @@ impl BackupTask {
             ));
         }
 
-        let terminate_handle = bio::spawn_local_backup_pipeline(
+        let terminate_handle = crate::native::backup::bio::spawn_local_backup_pipeline(
             control_file,
             source_dir_base,
             target_dir_base,
@@ -1040,7 +1040,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         return Ok(());
     }
 
-    crate::backup::bio::hardlink::run_hardlink_phase(
+    crate::native::backup::bio::hardlink::run_hardlink_phase(
         &option.ctrl_dir,
         &option.meta_dir,
         &option.original_source_base,
@@ -1105,7 +1105,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         return Ok(());
     }
 
-    crate::backup::bio::delete::run_delete_phase(
+    crate::native::backup::bio::delete::run_delete_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
@@ -1169,7 +1169,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         return Ok(());
     }
 
-    crate::backup::bio::mtime::run_mtime_phase(
+    crate::native::backup::bio::mtime::run_mtime_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,

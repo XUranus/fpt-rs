@@ -52,7 +52,7 @@ pub fn write_local_file_chunk(
     // Mark file as sparse on first write (Windows only)
     if mark_sparse && offset == 0 {
         #[cfg(windows)]
-        crate::backup::local_metadata::mark_file_sparse(path);
+        crate::native::backup::local_metadata::mark_file_sparse(path);
     }
 
     file.seek(SeekFrom::Start(offset))

@@ -2,12 +2,12 @@ use crate::backup::aggregate::AggregateConfig;
 use crate::backup::aggregate_engine::AggregateBackupEngine;
 use crate::backup::aggregate_local::LocalAggregateState;
 use crate::backup::copy_plan::{produce_local_copy_plan, FileCopyPlan};
-use crate::backup::local_executor::{
-    execute_local_file_plan, execute_local_plan_entry, flush_local_aggregate_state,
-};
-use crate::backup::phases::run_local_followup_phases;
 use crate::backup::stats::BackupStats;
 use crate::backup::PhaseFlags;
+use crate::native::backup::local_executor::{
+    execute_local_file_plan, execute_local_plan_entry, flush_local_aggregate_state,
+};
+use crate::native::backup::phases::run_local_followup_phases;
 use crate::failure::{FailureRecorder, RetryPolicy};
 use log::{error, info};
 use std::io;

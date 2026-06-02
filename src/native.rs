@@ -1,3 +1,4 @@
+pub mod backup;
 pub(crate) mod fstat;
 mod fwrite_meta;
 

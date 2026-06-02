@@ -14,7 +14,7 @@ use crate::backup::aggregate::{
 };
 use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
 use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
-use crate::backup::local_block::copy_exact_file_to_writer;
+use crate::native::backup::local_block::copy_exact_file_to_writer;
 
 #[derive(Debug)]
 pub struct PendingLocalFile {
