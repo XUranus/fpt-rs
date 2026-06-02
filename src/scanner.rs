@@ -198,7 +198,7 @@ impl Scanner {
         };
 
         // Start worker threads
-        let traversal_handles = bio::traversal::start_workers(&self.context, worker_count);
+        let traversal_handles = bio::start_workers(&self.context, worker_count);
         let writer_handles = if self.context.scan_option.stats_only {
             engine::start_stats_consumers(&self.context, writer_count.max(1))
         } else {
