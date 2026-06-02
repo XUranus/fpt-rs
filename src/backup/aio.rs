@@ -1,16 +1,14 @@
 //! Async backup execution for remote-involved data paths.
 //!
-//! This module is the remote counterpart to [`crate::backup::bio`]:
-//! - Direction-specific **copy** pipelines live under `backup/aio/directions/`.
-//! - Direction-specific **orchestrators** (spawn + run) live under
-//!   `backup/aio/directions/{local_to_nfs, nfs_to_local, ...}.rs`.
-//! - NFS target **post-copy phases** (hardlink/delete/mtime) reuse the RPC
-//!   helpers under [`crate::nfs::aio`].
-//! - SMB target post-copy phases reuse the helpers under [`crate::smb::aio`].
-//! - Local target post-copy phases reuse the existing BIO phase handlers.
-//!
-//! The public entry points here are direction-level orchestrators so callers
-//! do not need to manually stitch together copy and post-copy phases.
+//! This module provides:
+//! - **Source/Target abstractions** ([`source`], [`target`]) — connect to any
+//!   transport (local, NFS, SMB) and run post-copy phases.
+//! - **Orchestrator** ([`orchestrator`]) — composes source + target into a
+//!   single generic backup pipeline.
+//! - **Direction-specific pipelines** ([`directions`]) — legacy per-direction
+//!   orchestrators for cross-transport (NFS↔SMB).
+//! - **Generic copy pipeline** ([`pipeline`], [`executor`]) — parameterized
+//!   by [`transport::SourceReader`] / [`transport::TargetWriter`] traits.
 
 #[cfg(feature = "smb")]
 pub const DEFAULT_SMB_POOL_SIZE: usize = 2;
@@ -20,9 +18,12 @@ pub(crate) mod directions;
 pub(crate) mod entry;
 pub(crate) mod executor;
 pub(crate) mod local_fs;
+pub mod orchestrator;
 pub(crate) mod path_util;
 pub(crate) mod phases;
 pub(crate) mod pipeline;
+pub mod source;
+pub mod target;
 pub(crate) mod transport;
 
 // Re-export spawn functions from per-direction modules for backward compatibility.
