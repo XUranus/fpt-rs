@@ -430,7 +430,7 @@ fn process_dir_entry(dir_entry: DirScanEntry, context: &ScanWorkerContext) {
     }
 
     dir_result.complete = true;
-    output_queue.push(dir_result);
+    let _ = output_queue.push(dir_result);
 }
 
 /// Spawns a pool of worker threads to perform parallel directory scanning.

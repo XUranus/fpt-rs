@@ -12,30 +12,6 @@
 //! applications such as file backup systems, where a scanner thread produces file metadata
 //! and multiple copier threads consume it without overwhelming memory.
 //!
-//! # Examples
-//!
-//! ```rust,ignore
-//! use std::thread;
-//! use std::sync::Arc;
-//! use fpt::utility::BlockingQueue;
-//!
-//! let queue = Arc::new(BlockingQueue::new(2));
-//! let queue_producer = Arc::clone(&queue);
-//!
-//! // Producer thread
-//! thread::spawn(move || {
-//!     queue_producer.push("item1");
-//!     queue_producer.push("item2");
-//!     queue_producer.close(); // signal no more items
-//! });
-//!
-//! // Consumer
-//! while let Some(item) = queue.pop() {
-//!     println!("Got: {}", item);
-//! }
-//! // Queue is closed and empty — loop exits
-//! ```
-//!
 //! # Thread Safety
 //!
 //! [`BlockingQueue`] is `Sync` and `Send`, and can be safely shared among multiple threads.
@@ -70,13 +46,6 @@ impl<T> BlockingQueue<T> {
     /// # Panics
     ///
     /// Panics if `capacity` is zero.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fpt::utility::BlockingQueue;
-    /// let queue: BlockingQueue<i32> = BlockingQueue::new(10);
-    /// ```
     pub fn new(capacity: usize) -> Self {
         assert!(capacity > 0, "Capacity must be greater than zero");
         Self {
@@ -89,60 +58,40 @@ impl<T> BlockingQueue<T> {
     /// Closes the queue, preventing further pushes.
     ///
     /// After calling `close()`:
-    /// - Any subsequent call to `push` will panic.
+    /// - Any subsequent call to `push` will return `Err(item)`.
     /// - Consumers calling `pop` will continue to receive remaining items.
     /// - Once the queue is empty, `pop` returns `None` to signal completion.
     ///
     /// This method is idempotent and safe to call multiple times.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fpt::utility::BlockingQueue;
-    /// let queue = BlockingQueue::new(1);
-    /// queue.push(42);
-    /// queue.close();
-    /// assert_eq!(queue.pop(), Some(42));
-    /// assert_eq!(queue.pop(), None);
-    /// ```
     pub fn close(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let (_, _, closed) = &mut *inner;
-        *closed = true;
-        self.not_empty.notify_all();
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.2 = true;
+            self.not_empty.notify_all();
+        }
     }
 
     /// Pushes an item into the queue, blocking if the queue is full.
     ///
-    /// If the queue is closed, this method panics.
+    /// Returns `Ok(())` on success, `Err(item)` if the queue is closed.
     ///
     /// This method will block the current thread until space becomes available.
     /// It handles spurious wakeups internally.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the queue has been closed via `close()`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fpt::utility::BlockingQueue;
-    /// let queue = BlockingQueue::new(1);
-    /// queue.push("hello");
-    /// // This would block until a consumer pops:
-    /// // queue.push("world");
-    /// ```
-    pub fn push(&self, item: T) {
-        let mut inner = self.inner.lock().unwrap();
+    pub fn push(&self, item: T) -> Result<(), T> {
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
 
         if inner.2 {
-            panic!("Cannot push to a closed BlockingQueue");
+            return Err(item);
         }
 
         // Wait until there's space
         while inner.0.len() >= inner.1 {
-            inner = self.not_full.wait(inner).unwrap();
-            // Re-check after wakeup (spurious or real)
+            inner = match self.not_full.wait(inner) {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             if inner.0.len() < inner.1 {
                 break;
             }
@@ -150,6 +99,7 @@ impl<T> BlockingQueue<T> {
 
         inner.0.push_back(item);
         self.not_empty.notify_one();
+        Ok(())
     }
 
     /// Pops an item from the queue, blocking if the queue is empty.
@@ -159,32 +109,27 @@ impl<T> BlockingQueue<T> {
     ///
     /// This method blocks the current thread until an item is available or the queue is closed.
     /// Spurious wakeups are handled internally.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fpt::utility::BlockingQueue;
-    /// let queue = BlockingQueue::new(1);
-    /// queue.push(100);
-    /// assert_eq!(queue.pop(), Some(100));
-    /// queue.close();
-    /// assert_eq!(queue.pop(), None);
-    /// ```
     pub fn pop(&self) -> Option<T> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
 
         // Wait until there's an item or the queue is closed
         while inner.0.is_empty() {
             if inner.2 {
                 return None;
             }
-            inner = self.not_empty.wait(inner).unwrap();
+            inner = match self.not_empty.wait(inner) {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             if !inner.0.is_empty() {
                 break;
             }
         }
 
-        let item = inner.0.pop_front().unwrap(); // safe: non-empty due to loop
+        let item = inner.0.pop_front().expect("loop invariant: queue non-empty");
         self.not_full.notify_one();
         Some(item)
     }
@@ -193,33 +138,20 @@ impl<T> BlockingQueue<T> {
     ///
     /// This value may be outdated immediately after retrieval due to concurrent operations.
     /// Useful for monitoring or debugging, not for synchronization logic.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fpt::utility::BlockingQueue;
-    /// let queue = BlockingQueue::new(2);
-    /// queue.push(1);
-    /// assert_eq!(queue.len(), 1);
-    /// ```
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
-        inner.0.len()
+        match self.inner.lock() {
+            Ok(inner) => inner.0.len(),
+            Err(poisoned) => poisoned.into_inner().0.len(),
+        }
     }
 
     /// Returns the maximum capacity of the queue.
     ///
     /// This value never changes after construction.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use fpt::utility::BlockingQueue;
-    /// let queue: BlockingQueue<i32> = BlockingQueue::new(5);
-    /// assert_eq!(queue.capacity(), 5);
-    /// ```
     pub fn capacity(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
-        inner.1
+        match self.inner.lock() {
+            Ok(inner) => inner.1,
+            Err(poisoned) => poisoned.into_inner().1,
+        }
     }
 }

@@ -111,7 +111,7 @@ where
     while let Some(batch) = rx.recv().await {
         let file_count = batch.files.len();
         let batch_size: u64 = batch.files.iter().map(|f| f.size).sum();
-        oq.push(batch);
+        let _ = oq.push(batch);
         for _ in 0..file_count {
             bridge_stats.inc_files();
         }

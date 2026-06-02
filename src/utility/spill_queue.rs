@@ -204,7 +204,7 @@ where
             })
             .collect();
         if !cache_entries.is_empty() {
-            panic!("Cache directory {:?} is not empty", cache_dir);
+            return Err(SpillQueueError::InvalidConfig);
         }
 
         let inner = SpillQueueInner {
@@ -351,13 +351,17 @@ where
     /// If there are already disk batches, the `unspilled_count` items (newest in memory) are
     /// preserved during the spill to maintain order.
     fn spill_to_disk(&mut self) -> Result<(), SpillQueueError> {
-        assert!(self.memory_queue.len() >= self.memory_upper_bound);
+        if self.memory_queue.len() < self.memory_upper_bound {
+            return Err(SpillQueueError::InvalidConfig);
+        }
 
         let spill_count = self.spill_load_batch_size;
 
         // Save unspilled items (newest in memory) to preserve order
         let repush_count = if self.in_disk_batch_count > 0 {
-            assert!(self.unspilled_count >= spill_count);
+            if self.unspilled_count < spill_count {
+                return Err(SpillQueueError::InvalidConfig);
+            }
             self.unspilled_count - spill_count
         } else {
             0
@@ -408,8 +412,9 @@ where
     /// queue. The unspilled items (if any) are temporarily removed and re-appended afterward to
     /// maintain correct order.
     fn load_from_disk(&mut self) -> Result<(), SpillQueueError> {
-        assert!(self.memory_queue.len() < self.memory_lower_bound);
-        assert!(self.in_disk_batch_count > 0);
+        if self.memory_queue.len() >= self.memory_lower_bound || self.in_disk_batch_count == 0 {
+            return Err(SpillQueueError::InvalidConfig);
+        }
 
         let cache_entries: Vec<_> = fs::read_dir(&self.cache_dir)?
             .filter_map(|entry| entry.ok())
@@ -420,12 +425,9 @@ where
             })
             .collect();
 
-        assert_eq!(
-            cache_entries.len(),
-            1,
-            "Expected exactly one cache file for front ID {}",
-            self.front_cache_id
-        );
+        if cache_entries.len() != 1 {
+            return Err(SpillQueueError::InvalidConfig);
+        }
 
         let earliest = &cache_entries[0];
         debug!("Loading from cache file: {:?}", earliest.path());
