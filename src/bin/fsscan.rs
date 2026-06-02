@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use fpt::failure::{failure_file_path, FailureLogConfig, FailureLogFormat, RetryPolicy};
 use fpt::frame::DataLocation;
-use fpt::localfs::Scanner;
+use fpt::native::Scanner;
 use fpt::scanner::{ScanOption, ScanPathFilterSet};
 use clap::Parser;
 

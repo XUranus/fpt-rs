@@ -1,9 +1,8 @@
 pub mod backup;
 pub mod failure;
 pub mod frame;
-pub mod localfs;
 pub mod logging;
-pub(crate) mod native;
+pub mod native;
 pub mod path_util;
 pub mod scanner;
 pub mod utility;

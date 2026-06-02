@@ -12,7 +12,7 @@ use fpt::frame::{
     BackupJobConfig, BackupRestoreJob, DataLocation, FileBackupJob, FileRestoreJob,
     RestoreJobConfig, ScanConfig, TempRepoConfig,
 };
-use fpt::localfs::Scanner;
+use fpt::native::Scanner;
 use fpt::scanner::{ScanOption, ScanPathFilterSet};
 use chrono::Utc;
 use clap::{Parser, ValueEnum};

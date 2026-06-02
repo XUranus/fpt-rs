@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::backup::{BackupTask, RestoreStats, RestoreTask};
-use crate::localfs::{RunningScan, Scanner};
+use crate::native::{RunningScan, Scanner};
 use crate::scanner::ScanStatsSnapshot;
 
 use super::traits::{FileScanner, ScanStats};

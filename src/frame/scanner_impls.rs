@@ -151,7 +151,7 @@ impl ScannerConfig {
 #[derive(Debug)]
 pub enum LocalScanError {
     Enqueue(String),
-    Start(crate::localfs::ScanError),
+    Start(crate::native::ScanError),
 }
 
 impl fmt::Display for LocalScanError {
@@ -165,8 +165,8 @@ impl fmt::Display for LocalScanError {
 
 impl std::error::Error for LocalScanError {}
 
-impl From<crate::localfs::ScanError> for LocalScanError {
-    fn from(e: crate::localfs::ScanError) -> Self {
+impl From<crate::native::ScanError> for LocalScanError {
+    fn from(e: crate::native::ScanError) -> Self {
         LocalScanError::Start(e)
     }
 }
@@ -202,7 +202,7 @@ impl FileScanner for LocalFileScanner {
         let scan_option = self
             .config
             .to_scan_option(self.source.clone(), "/", "local");
-        let mut scanner = crate::localfs::Scanner::new(scan_option);
+        let mut scanner = crate::native::Scanner::new(scan_option);
         scanner
             .enqueue_path(self.source.clone())
             .map_err(|e| LocalScanError::Enqueue(e.to_string()))?;

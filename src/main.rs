@@ -2,7 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use fpt::{
     backup::{BackupOption, BackupTask},
-    localfs::Scanner,
+    native::Scanner,
     scanner::options::ScanOption,
 };
 
