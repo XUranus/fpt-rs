@@ -12,8 +12,8 @@ use crate::backup::aggregate::{
     should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateLayout,
     AggregateStats, ThreadSafeSnowflake, AGGREGATE_DIR_NAME, AGGREGATE_ROOT_DIR,
 };
-use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
-use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
+use super::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
+use super::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::native::backup::local_block::copy_exact_file_to_writer;
 
 #[derive(Debug)]
@@ -271,7 +271,7 @@ impl AggregateBackupEngine {
 #[derive(Debug)]
 pub enum AggregateEngineError {
     Io(io::Error),
-    Index(crate::backup::aggregate_index::AggregateIndexError),
+    Index(super::aggregate_index::AggregateIndexError),
     Other(String),
 }
 
@@ -293,8 +293,8 @@ impl From<io::Error> for AggregateEngineError {
     }
 }
 
-impl From<crate::backup::aggregate_index::AggregateIndexError> for AggregateEngineError {
-    fn from(e: crate::backup::aggregate_index::AggregateIndexError) -> Self {
+impl From<super::aggregate_index::AggregateIndexError> for AggregateEngineError {
+    fn from(e: super::aggregate_index::AggregateIndexError) -> Self {
         AggregateEngineError::Index(e)
     }
 }

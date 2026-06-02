@@ -14,9 +14,9 @@ use log::{debug, error, info, warn};
 use tokio::sync::{mpsc, Semaphore};
 
 use crate::backup::aggregate::{AggregateLayout, AGGREGATE_DIR_NAME, AGGREGATE_ROOT_DIR};
-use crate::backup::aggregate_dir_index::{read_dir_index, SQLITE_INDEX_FILE_NAME};
-use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
-use crate::backup::aggregate_restore::AggregateRestoreEngine;
+use crate::backup::aggregate::aggregate_dir_index::{read_dir_index, SQLITE_INDEX_FILE_NAME};
+use crate::backup::aggregate::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
+use crate::backup::aggregate::aggregate_restore::AggregateRestoreEngine;
 use crate::backup::aio::entry::EntryMapping;
 use crate::backup::aio::transport::{SourceReader, TargetWriter};
 use crate::backup::copy_block::CopyBlock;

@@ -27,11 +27,6 @@ pub use stats::BackupStatsSnapshot;
 
 // Aggregate backup/restore modules
 pub mod aggregate;
-pub(crate) mod aggregate_dir_index;
-pub(crate) mod aggregate_engine;
-pub(crate) mod aggregate_index;
-pub(crate) mod aggregate_local;
-pub(crate) mod aggregate_restore;
 mod restore_pipeline;
 
 // Async I/O pipeline (used for remote targets / sources such as NFS and SMB).

@@ -1,6 +1,6 @@
 use crate::backup::aggregate::AggregateConfig;
-use crate::backup::aggregate_engine::AggregateBackupEngine;
-use crate::backup::aggregate_local::LocalAggregateState;
+use crate::backup::aggregate::aggregate_engine::AggregateBackupEngine;
+use crate::backup::aggregate::aggregate_local::LocalAggregateState;
 use crate::backup::copy_plan::{produce_local_copy_plan, FileCopyPlan};
 use crate::backup::stats::BackupStats;
 use crate::backup::PhaseFlags;

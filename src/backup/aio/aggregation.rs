@@ -12,9 +12,9 @@ use crate::backup::aggregate::{
     should_aggregate, AggregateBlobMeta, AggregateConfig, AggregateFileEntry, AggregateLayout,
     PendingFile, ThreadSafeSnowflake, AGGREGATE_DIR_NAME, AGGREGATE_ROOT_DIR,
 };
-use crate::backup::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
-use crate::backup::aggregate_engine::parent_dir_of;
-use crate::backup::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
+use crate::backup::aggregate::aggregate_dir_index::{write_dir_index, SQLITE_INDEX_FILE_NAME};
+use crate::backup::aggregate::aggregate_engine::parent_dir_of;
+use crate::backup::aggregate::aggregate_index::{AggregateIndex, BINARY_INDEX_FILE_NAME};
 use crate::backup::aio::transport::TargetWriter;
 use crate::backup::copy_block::CopyBlock;
 use crate::backup::fcb::{FileControlBlock, SourceHandleState};

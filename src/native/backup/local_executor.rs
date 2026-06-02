@@ -5,8 +5,8 @@ use std::sync::atomic::Ordering;
 
 use log::{error, info};
 
-use crate::backup::aggregate_engine::PendingLocalFile;
-use crate::backup::aggregate_local::LocalAggregateState;
+use crate::backup::aggregate::aggregate_engine::PendingLocalFile;
+use crate::backup::aggregate::aggregate_local::LocalAggregateState;
 use crate::backup::copy_plan::{CopyPlanEntry, FileCopyPlan};
 use crate::backup::stats::BackupStats;
 use crate::native::backup::local_block::copy_stream;

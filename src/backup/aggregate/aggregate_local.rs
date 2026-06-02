@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use crate::backup::aggregate_engine::{AggregateBackupEngine, PendingLocalFile};
+use super::aggregate_engine::{AggregateBackupEngine, PendingLocalFile};
 
 struct PendingLocalBuffer {
     files: Vec<PendingLocalFile>,

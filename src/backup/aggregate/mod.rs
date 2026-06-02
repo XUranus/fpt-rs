@@ -25,6 +25,12 @@
 //! 2. Read blob file and extract specific byte ranges
 //! 3. Write extracted files to destination
 
+pub mod aggregate_dir_index;
+pub mod aggregate_engine;
+pub mod aggregate_index;
+pub mod aggregate_local;
+pub mod aggregate_restore;
+
 pub(crate) const AGGREGATE_ROOT_DIR: &str = ".AGGR";
 pub(crate) const AGGREGATE_DIR_NAME: &str = ".AGGR_DIR";
 pub(crate) const DEFAULT_AGGREGATE_SHARDS: u16 = 16;
