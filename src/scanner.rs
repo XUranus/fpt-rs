@@ -327,17 +327,12 @@ pub async fn run_nfs_scan(
 ) -> Result<(u64, u64, u64, u64, u64), String> {
     use crate::nfs::connection::NfsConnectionPool;
     use crate::nfs::NfsScanner;
-    use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
+    use crate::scanner::engine::aio::{run_aio_scan, NfsScanAdapter};
 
-    // Build connection pool and obtain the root file handle.
     let pool = NfsConnectionPool::new(location)
         .await
         .map_err(|e| format!("NFS connect failed: {e}"))?;
 
-    // Compute the absolute path and file handle for the scan root.
-    // NfsConnectionPool::new already resolves sub_path via LOOKUP RPCs,
-    // so pool.root_fh() points to the sub_path directory (or the export root
-    // if sub_path is empty).
     let root_fh = pool.root_fh();
     let root_path = if location.sub_path.is_empty() {
         location.export.clone()
@@ -349,102 +344,28 @@ pub async fn run_nfs_scan(
         )
     };
 
-    // Create the shared output queue and statistics.
-    let output_queue = Arc::new(BlockingQueue::<DirBatchScanResult>::new(1000));
-    let stats = Arc::new(ScanStatistics::default());
     let failure_recorder = scan_option
         .failure_log
         .as_ref()
         .and_then(|cfg| FailureRecorder::create(cfg).ok());
 
-    // Create a writer_count context.
-    let writer_count = scan_option.writer_count;
-    let scan_opt_arc = Arc::new(scan_option);
+    let nfs_scanner = NfsScanner::new(location, scan_option.retry_policy, failure_recorder)
+        .await
+        .map_err(|e| format!("NFS scanner init failed: {e}"))?;
 
-    // Build a minimal ScanWorkerContext so we can reuse start_meta_writers.
-    let context = ScanWorkerContext {
-        scan_option: Arc::clone(&scan_opt_arc),
-        dirent_queue: Arc::new(
-            SpillQueue::new(
-                scan_opt_arc.queue_option.temp_dir.clone(),
-                scan_opt_arc.queue_option.memory_upper_bound,
-                scan_opt_arc.queue_option.memory_lower_bound,
-                scan_opt_arc.queue_option.spill_load_batch_size,
-            )
-            .map_err(|e| format!("queue init failed: {e}"))?,
-        ),
-        output_queue: Arc::clone(&output_queue),
-        stats: Arc::clone(&stats),
-        failure_recorder: failure_recorder.clone(),
+    let adapter = NfsScanAdapter {
+        scanner: nfs_scanner,
+        root_fh,
+        root_path,
     };
 
-    // Start metadata writers (they drain output_queue synchronously).
-    let writer_handles = if scan_opt_arc.stats_only {
-        start_stats_consumers(&context, writer_count.max(1))
-    } else {
-        start_meta_writers(&context, writer_count, None)
-    };
-
-    // Create an NfsScanner and a tokio mpsc channel.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
-    let nfs_scanner = NfsScanner::new(
-        location,
-        scan_opt_arc.retry_policy,
-        failure_recorder.clone(),
-    )
-    .await
-    .map_err(|e| format!("NFS scanner init failed: {e}"))?;
-
-    // Spawn the NFS scan task.
-    let scan_opt_for_task = Arc::clone(&scan_opt_arc);
-    let scan_handle = tokio::spawn(async move {
-        nfs_scanner
-            .scan(root_fh, root_path, &scan_opt_for_task, tx)
-            .await
-    });
-
-    // Bridge: forward DirBatchScanResult items from tokio mpsc → BlockingQueue.
-    let oq = Arc::clone(&output_queue);
-    let bridge_stats = Arc::clone(&stats);
-    while let Some(batch) = rx.recv().await {
-        let file_count = batch.files.len();
-        let batch_size: u64 = batch.files.iter().map(|f| f.size).sum();
-        oq.push(batch);
-        for _ in 0..file_count {
-            bridge_stats.inc_files();
-        }
-        bridge_stats.add_file_size(batch_size);
-        bridge_stats.inc_dirs();
-    }
-
-    // Wait for the NFS scan to complete.
-    if let Err(e) = scan_handle.await {
-        return Err(format!("NFS scan task panicked: {e:?}"));
-    }
-
-    // Signal the writers that no more items are coming.
-    output_queue.close();
-
-    // Wait for metadata writers to finish.
-    for h in writer_handles {
-        let _ = h.join();
-    }
-
-    if !scan_opt_arc.stats_only {
-        // Generate control files (copy/hardlink/delete/mtime)
-        engine::generate_control_files(&scan_opt_arc)
-            .map_err(|e| format!("generate_control_files failed: {e}"))?;
-        normalize_control_artifacts(&scan_opt_arc)
-            .map_err(|e| format!("normalize control artifacts failed: {e}"))?;
-    }
-
-    let snap = stats.snapshot();
+    let result = run_aio_scan(adapter, scan_option).await?;
     Ok((
-        snap.tot_files,
-        snap.tot_dirs,
-        snap.tot_size,
-        snap.failed_files,
-        snap.failed_dirs,
+        result.total_files,
+        result.total_dirs,
+        result.total_size,
+        result.failed_files,
+        result.failed_dirs,
     ))
 }
 
@@ -456,90 +377,31 @@ pub async fn run_smb_scan(
     location: &crate::smb::SmbLocation,
     scan_option: ScanOption,
 ) -> Result<(u64, u64, u64, u64, u64), String> {
-    use crate::scanner::engine::{self, start_meta_writers, start_stats_consumers};
+    use crate::scanner::engine::aio::{run_aio_scan, SmbScanAdapter};
     use crate::smb::scanner::SmbScanner;
 
-    let output_queue = Arc::new(BlockingQueue::<DirBatchScanResult>::new(1000));
-    let stats = Arc::new(ScanStatistics::default());
     let failure_recorder = scan_option
         .failure_log
         .as_ref()
         .and_then(|cfg| FailureRecorder::create(cfg).ok());
 
-    let writer_count = scan_option.writer_count;
-    let scan_opt_arc = Arc::new(scan_option);
+    let smb_scanner = SmbScanner::new(location, scan_option.retry_policy, failure_recorder).await?;
 
-    let context = ScanWorkerContext {
-        scan_option: Arc::clone(&scan_opt_arc),
-        dirent_queue: Arc::new(
-            SpillQueue::new(
-                scan_opt_arc.queue_option.temp_dir.clone(),
-                scan_opt_arc.queue_option.memory_upper_bound,
-                scan_opt_arc.queue_option.memory_lower_bound,
-                scan_opt_arc.queue_option.spill_load_batch_size,
-            )
-            .map_err(|e| format!("queue init failed: {e}"))?,
-        ),
-        output_queue: Arc::clone(&output_queue),
-        stats: Arc::clone(&stats),
-        failure_recorder: failure_recorder.clone(),
+    let adapter = SmbScanAdapter {
+        scanner: smb_scanner,
     };
 
-    let writer_handles = if scan_opt_arc.stats_only {
-        start_stats_consumers(&context, writer_count.max(1))
-    } else {
-        start_meta_writers(&context, writer_count, None)
-    };
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<DirBatchScanResult>(256);
-    let scanner = SmbScanner::new(location, scan_opt_arc.retry_policy, failure_recorder).await?;
-    let scan_opt_for_task = Arc::clone(&scan_opt_arc);
-
-    let scan_handle = tokio::spawn(async move { scanner.scan(&scan_opt_for_task, tx).await });
-
-    let oq = Arc::clone(&output_queue);
-    let bridge_stats = Arc::clone(&stats);
-    while let Some(batch) = rx.recv().await {
-        let file_count = batch.files.len();
-        let batch_size: u64 = batch.files.iter().map(|f| f.size).sum();
-        oq.push(batch);
-        for _ in 0..file_count {
-            bridge_stats.inc_files();
-        }
-        bridge_stats.add_file_size(batch_size);
-        bridge_stats.inc_dirs();
-    }
-
-    match scan_handle.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(e),
-        Err(e) => return Err(format!("SMB scan task panicked: {e:?}")),
-    }
-
-    output_queue.close();
-
-    for h in writer_handles {
-        let _ = h.join();
-    }
-
-    if !scan_opt_arc.stats_only {
-        engine::generate_control_files(&scan_opt_arc)
-            .map_err(|e| format!("generate_control_files failed: {e}"))?;
-        normalize_control_artifacts(&scan_opt_arc)
-            .map_err(|e| format!("normalize control artifacts failed: {e}"))?;
-    }
-
-    let snap = stats.snapshot();
+    let result = run_aio_scan(adapter, scan_option).await?;
     Ok((
-        snap.tot_files,
-        snap.tot_dirs,
-        snap.tot_size,
-        snap.failed_files,
-        snap.failed_dirs,
+        result.total_files,
+        result.total_dirs,
+        result.total_size,
+        result.failed_files,
+        result.failed_dirs,
     ))
 }
 
-fn normalize_control_artifacts(scan_option: &ScanOption) -> Result<(), String> {
+pub(crate) fn normalize_control_artifacts(scan_option: &ScanOption) -> Result<(), String> {
     normalize_copy_controls(scan_option)?;
     normalize_delete_control_file(scan_option)?;
     normalize_mtime_control_file(scan_option)?;
