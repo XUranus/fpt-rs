@@ -7,7 +7,7 @@
 //! The reader iterates `HardlinkEntry` as interleaved `Inode` / `File` variants.
 //! We accumulate them into groups and process each group once complete.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
@@ -136,7 +136,7 @@ async fn process_group(
     }
 
     // The first file is the primary (already backed up in the copy phase).
-    let primary_nfs = to_target_relative_path(source_dir_base, target_prefix, &files[0]);
+    let primary_nfs = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, &files[0]);
     let primary_fh = match resolve_path(pool, src_cache, &primary_nfs, root_fh).await {
         Ok(fh) => fh,
         Err(e) => {
@@ -150,7 +150,7 @@ async fn process_group(
 
     // Create hard links for secondary files.
     for secondary_path in files.iter().skip(1) {
-        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, secondary_path);
+        let nfs_path = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, secondary_path);
         let (parent, link_name) = split_path(&nfs_path);
 
         let parent_fh = match get_or_create_dir(pool, dst_dir_cache, &parent, root_fh).await {
@@ -189,36 +189,6 @@ async fn process_group(
             }
         }
     }
-}
-
-fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
-    let rel = Path::new(path)
-        .strip_prefix(base)
-        .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| {
-            let p = Path::new(path);
-            let logical_root_name = base.file_name().and_then(|n| n.to_str());
-            let first_segment = p
-                .strip_prefix("/")
-                .ok()
-                .and_then(|p| p.iter().next())
-                .and_then(|s| s.to_str());
-            if logical_root_name.is_some() && logical_root_name == first_segment {
-                p.strip_prefix("/")
-                    .map(|r| r.to_path_buf())
-                    .unwrap_or_else(|_| PathBuf::from(path))
-            } else {
-                p.file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(path))
-            }
-        });
-    let prefixed = if target_prefix.is_empty() {
-        rel
-    } else {
-        Path::new(target_prefix).join(rel)
-    };
-    prefixed.to_string_lossy().into_owned()
 }
 
 fn split_path(path: &str) -> (String, String) {

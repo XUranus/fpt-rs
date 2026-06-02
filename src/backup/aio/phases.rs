@@ -9,7 +9,7 @@ use log::error;
 use log::info;
 
 #[cfg(any(feature = "nfs", feature = "smb"))]
-use crate::backup::bio::{delete, hardlink, mtime};
+use crate::backup::local::{delete, hardlink, mtime};
 use crate::backup::PhaseFlags;
 use crate::failure::{FailureRecorder, RetryPolicy};
 #[cfg(feature = "nfs")]

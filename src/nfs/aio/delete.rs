@@ -4,7 +4,7 @@
 //! the corresponding files and directories from the NFS target using `remove`
 //! and `rmdir` RPCs.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
@@ -79,7 +79,7 @@ pub async fn run_nfs_delete_phase(
 
     // Delete files.
     for path_str in &file_paths {
-        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, path_str);
+        let nfs_path = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, path_str);
         match delete_file(&pool, &dir_cache, &root_fh, &nfs_path).await {
             Ok(true) => {
                 debug!("NFS deleted file {nfs_path}");
@@ -98,7 +98,7 @@ pub async fn run_nfs_delete_phase(
     // Delete directories deepest-first (reverse sort).
     dir_paths.sort_by(|a, b| b.cmp(a));
     for path_str in &dir_paths {
-        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, path_str);
+        let nfs_path = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, path_str);
         match delete_dir(&pool, &dir_cache, &root_fh, &nfs_path).await {
             Ok(true) => {
                 debug!("NFS deleted dir {nfs_path}");
@@ -173,36 +173,6 @@ async fn delete_dir(
         Nfs3Result::Err((nfsstat3::NFS3ERR_NOENT, _)) => Ok(false),
         Nfs3Result::Err((stat, _)) => Err(NfsError::Nfs(stat, format!("rmdir {path}"))),
     }
-}
-
-fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
-    let rel = Path::new(path)
-        .strip_prefix(base)
-        .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| {
-            let p = Path::new(path);
-            let logical_root_name = base.file_name().and_then(|n| n.to_str());
-            let first_segment = p
-                .strip_prefix("/")
-                .ok()
-                .and_then(|p| p.iter().next())
-                .and_then(|s| s.to_str());
-            if logical_root_name.is_some() && logical_root_name == first_segment {
-                p.strip_prefix("/")
-                    .map(|r| r.to_path_buf())
-                    .unwrap_or_else(|_| PathBuf::from(path))
-            } else {
-                p.file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(path))
-            }
-        });
-    let prefixed = if target_prefix.is_empty() {
-        rel
-    } else {
-        Path::new(target_prefix).join(rel)
-    };
-    prefixed.to_string_lossy().into_owned()
 }
 
 fn split_path(path: &str) -> (String, String) {

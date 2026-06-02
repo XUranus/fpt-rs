@@ -4,7 +4,7 @@
 //! directory modification times on the NFS target using `setattr` RPCs with
 //! `SET_TO_CLIENT_TIME`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use log::{debug, error, info, warn};
@@ -67,7 +67,7 @@ pub async fn run_nfs_mtime_phase(
         };
 
         stats.dirs_processed += 1;
-        let nfs_path = to_target_relative_path(source_dir_base, target_prefix, &entry.path);
+        let nfs_path = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, &entry.path);
 
         let dir_fh = match resolve_path(&pool, &dir_cache, &nfs_path, &root_fh).await {
             Ok(fh) => fh,
@@ -125,34 +125,4 @@ pub async fn run_nfs_mtime_phase(
         stats.dirs_restored, stats.dirs_failed, stats.dirs_skipped
     );
     stats
-}
-
-fn to_target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
-    let rel = Path::new(path)
-        .strip_prefix(base)
-        .map(|r| r.to_path_buf())
-        .unwrap_or_else(|_| {
-            let p = Path::new(path);
-            let logical_root_name = base.file_name().and_then(|n| n.to_str());
-            let first_segment = p
-                .strip_prefix("/")
-                .ok()
-                .and_then(|p| p.iter().next())
-                .and_then(|s| s.to_str());
-            if logical_root_name.is_some() && logical_root_name == first_segment {
-                p.strip_prefix("/")
-                    .map(|r| r.to_path_buf())
-                    .unwrap_or_else(|_| PathBuf::from(path))
-            } else {
-                p.file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| PathBuf::from(path))
-            }
-        });
-    let prefixed = if target_prefix.is_empty() {
-        rel
-    } else {
-        Path::new(target_prefix).join(rel)
-    };
-    prefixed.to_string_lossy().into_owned()
 }
