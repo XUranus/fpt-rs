@@ -136,7 +136,7 @@ async fn process_group(
     }
 
     // The first file is the primary (already backed up in the copy phase).
-    let primary_nfs = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, &files[0]);
+    let primary_nfs = crate::path_util::target_relative_path(source_dir_base, target_prefix, &files[0]);
     let primary_fh = match resolve_path(pool, src_cache, &primary_nfs, root_fh).await {
         Ok(fh) => fh,
         Err(e) => {
@@ -150,7 +150,7 @@ async fn process_group(
 
     // Create hard links for secondary files.
     for secondary_path in files.iter().skip(1) {
-        let nfs_path = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, secondary_path);
+        let nfs_path = crate::path_util::target_relative_path(source_dir_base, target_prefix, secondary_path);
         let (parent, link_name) = split_path(&nfs_path);
 
         let parent_fh = match get_or_create_dir(pool, dst_dir_cache, &parent, root_fh).await {

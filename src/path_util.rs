@@ -133,6 +133,58 @@ pub fn is_root_entry(logical_path: &str) -> bool {
     !normalized[1..].contains('/')
 }
 
+/// Normalize a path for remote transport use: convert backslashes, trim slashes.
+pub fn normalize_relative_path(path: &str) -> String {
+    path.replace('\\', "/").trim_matches('/').to_string()
+}
+
+/// Join two relative path segments.
+pub fn join_relative(base: &str, child: &str) -> String {
+    let child = normalize_relative_path(child);
+    if base.is_empty() {
+        child
+    } else if child.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}/{child}")
+    }
+}
+
+/// Compute the target-relative path for a file in a remote backup target.
+///
+/// Given a local `base` directory (the scan root), a `target_prefix` (e.g.
+/// `COPY_COMMON_FULL_xxx/D_REPO`), and an absolute `path`, returns the
+/// path as it should appear on the remote target.
+pub fn target_relative_path(base: &Path, target_prefix: &str, path: &str) -> String {
+    let rel = Path::new(path)
+        .strip_prefix(base)
+        .map(|r| r.to_path_buf())
+        .unwrap_or_else(|_| {
+            let p = Path::new(path);
+            let logical_root_name = base.file_name().and_then(|n| n.to_str());
+            let first_segment = p
+                .strip_prefix("/")
+                .ok()
+                .and_then(|p| p.iter().next())
+                .and_then(|s| s.to_str());
+            if logical_root_name.is_some() && logical_root_name == first_segment {
+                p.strip_prefix("/")
+                    .map(|r| r.to_path_buf())
+                    .unwrap_or_else(|_| PathBuf::from(path))
+            } else {
+                p.file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from(path))
+            }
+        });
+    let prefixed = if target_prefix.is_empty() {
+        rel
+    } else {
+        Path::new(target_prefix).join(rel)
+    };
+    normalize_relative_path(&prefixed.to_string_lossy())
+}
+
 /// Map a metadata path (logical or native string) to a target filesystem path
 /// by stripping a native source base prefix and joining with a native target base.
 ///

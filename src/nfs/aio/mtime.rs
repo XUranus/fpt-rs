@@ -67,7 +67,7 @@ pub async fn run_nfs_mtime_phase(
         };
 
         stats.dirs_processed += 1;
-        let nfs_path = crate::backup::aio::path_util::target_relative_path(source_dir_base, target_prefix, &entry.path);
+        let nfs_path = crate::path_util::target_relative_path(source_dir_base, target_prefix, &entry.path);
 
         let dir_fh = match resolve_path(&pool, &dir_cache, &nfs_path, &root_fh).await {
             Ok(fh) => fh,
