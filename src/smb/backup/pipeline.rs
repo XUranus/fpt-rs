@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, Semaphore};
 use crate::backup::aggregate::{should_aggregate, AggregateConfig};
 use crate::backup::aio::aggregation::AggregatingTarget;
 use crate::backup::aio::entry::EntryMapping;
-use crate::backup::aio::executor::execute_smb_source_file_plan;
+use crate::smb::backup::executor::execute_smb_source_file_plan;
 use crate::backup::aio::pipeline::run_copy_pipeline;
 use crate::backup::aio::transport::{clamp_copy_buffer_size, LocalSource, LocalTarget, TargetWriter};
 use crate::smb::backup::transport::SmbTarget;
