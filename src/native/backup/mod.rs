@@ -10,3 +10,4 @@ pub(crate) mod local_executor;
 pub(crate) mod local_metadata;
 pub(crate) mod phases;
 pub(crate) mod phases_impl;
+pub(crate) mod restore_ops;

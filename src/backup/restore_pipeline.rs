@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use crate::backup::aio::restore_ops::RestoreOps;
 use std::time::{Duration, UNIX_EPOCH};
 
 use log::{debug, error, info, warn};
@@ -227,11 +229,10 @@ pub async fn run_restore_copy_pipeline<T>(
                             log::warn!("{log_prefix}: failed to create symlink parent dir {:?}: {e}", parent);
                         }
                     }
-                    match crate::native::backup::local_metadata::create_symlink(&symlink_full_path, symlink_target) {
+                    let restore_ops = crate::native::backup::restore_ops::LocalRestoreOps;
+                    match restore_ops.create_symlink(&symlink_full_path, symlink_target) {
                         Ok(()) => {
-                            crate::native::backup::local_metadata::restore_common_metadata(
-                                &symlink_full_path, &meta.common,
-                            );
+                            restore_ops.restore_metadata(&symlink_full_path, &meta.common);
                             stats.lock().unwrap().files_restored += 1;
                         }
                         Err(e) => {
@@ -307,9 +308,8 @@ pub async fn run_restore_copy_pipeline<T>(
                         if block.read_complete() && block.write_complete() {
                             debug!("{log_prefix}: restored {:?} (attr=0x{:x})", restore_rel, block.meta.common.attr);
                             // Restore metadata (attributes, xattrs, ACLs)
-                            crate::native::backup::local_metadata::restore_common_metadata(
-                                &restore_full_path, &block.meta.common,
-                            );
+                            let restore_ops = crate::native::backup::restore_ops::LocalRestoreOps;
+                            restore_ops.restore_metadata(&restore_full_path, &block.meta.common);
                             let mut guard = stats2.lock().unwrap();
                             guard.files_restored += 1;
                             guard.bytes_restored += block.file_size;
