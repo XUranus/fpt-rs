@@ -44,6 +44,7 @@ pub(crate) mod aio {
     pub mod entry;
     pub mod local_fs;
     pub mod orchestrator;
+    pub mod phases_trait;
     pub mod source;
     pub mod target;
     pub mod transport;
