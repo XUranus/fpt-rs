@@ -6,6 +6,7 @@ use crate::backup::aio::restore_ops::RestoreOps;
 use crate::scanner::metadata::MetaCommon;
 
 /// Local filesystem restore operations (symlink creation, metadata restoration).
+#[derive(Clone)]
 pub struct LocalRestoreOps;
 
 impl RestoreOps for LocalRestoreOps {

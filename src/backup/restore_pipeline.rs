@@ -152,12 +152,13 @@ impl SourceReader for LocalRepoRestoreSource {
     }
 }
 
-pub async fn run_restore_copy_pipeline<T>(
+pub async fn run_restore_copy_pipeline<T, R>(
     control_file: PathBuf,
     meta_dir: PathBuf,
     original_source_base: PathBuf,
     source: LocalRepoRestoreSource,
     target: T,
+    restore_ops: R,
     target_local_base: Option<PathBuf>,
     policy: RestorePolicy,
     stats: Arc<Mutex<RestoreStats>>,
@@ -165,6 +166,7 @@ pub async fn run_restore_copy_pipeline<T>(
     max_concurrent_tasks: usize,
 ) where
     T: TargetWriter,
+    R: RestoreOps + Clone + Send + Sync + 'static,
 {
     if target_local_base.is_none() && policy != RestorePolicy::Replace {
         warn!("{log_prefix}: restore policy {policy:?} is only enforced for local targets; remote target will use Replace semantics");
@@ -229,7 +231,6 @@ pub async fn run_restore_copy_pipeline<T>(
                             log::warn!("{log_prefix}: failed to create symlink parent dir {:?}: {e}", parent);
                         }
                     }
-                    let restore_ops = crate::native::backup::restore_ops::LocalRestoreOps;
                     match restore_ops.create_symlink(&symlink_full_path, symlink_target) {
                         Ok(()) => {
                             restore_ops.restore_metadata(&symlink_full_path, &meta.common);
@@ -248,6 +249,7 @@ pub async fn run_restore_copy_pipeline<T>(
                 let stats2 = Arc::clone(&stats);
                 let task_sem2 = Arc::clone(&task_sem);
                 let local_target_base2 = target_local_base.clone();
+                let restore_ops2 = restore_ops.clone();
 
                 let h = tokio::spawn(async move {
                     let _permit = task_sem2.acquire_owned().await.unwrap();
@@ -308,8 +310,7 @@ pub async fn run_restore_copy_pipeline<T>(
                         if block.read_complete() && block.write_complete() {
                             debug!("{log_prefix}: restored {:?} (attr=0x{:x})", restore_rel, block.meta.common.attr);
                             // Restore metadata (attributes, xattrs, ACLs)
-                            let restore_ops = crate::native::backup::restore_ops::LocalRestoreOps;
-                            restore_ops.restore_metadata(&restore_full_path, &block.meta.common);
+                            restore_ops2.restore_metadata(&restore_full_path, &block.meta.common);
                             let mut guard = stats2.lock().unwrap();
                             guard.files_restored += 1;
                             guard.bytes_restored += block.file_size;
