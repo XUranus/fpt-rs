@@ -67,6 +67,9 @@ impl BackupTarget {
     }
 
     /// Run post-copy phases (hardlink, delete, mtime) for this target.
+    ///
+    /// Uses the [`PostCopyPhases`] trait to dispatch to the correct
+    /// transport-specific phase runner.
     #[allow(unused_variables)]
     pub async fn run_post_copy_phases(
         &self,
@@ -77,43 +80,30 @@ impl BackupTarget {
         retry_policy: RetryPolicy,
         failure_recorder: Option<&FailureRecorder>,
     ) {
+        use crate::backup::aio::phases_trait::PostCopyPhases;
+
         match self {
-            BackupTarget::Local { target_dir_base } => {
-                crate::backup::aio::phases::run_local_target_phases(
-                    ctrl_dir,
-                    &PathBuf::new(), // meta_dir not needed for local phases
-                    source_dir_base,
-                    target_dir_base,
-                    phase_flags,
-                    retry_policy,
-                    failure_recorder,
-                );
+            BackupTarget::Local { .. } => {
+                let phases = crate::native::backup::phases_impl::LocalPostCopyPhases;
+                phases.run_all_phases(ctrl_dir, source_dir_base, target_prefix, phase_flags, retry_policy, failure_recorder).await;
             }
             #[cfg(feature = "nfs")]
             BackupTarget::Nfs { pool } => {
                 let file_cache = crate::nfs::aio::reader::new_file_handle_cache();
                 let dir_cache = crate::nfs::aio::writer::new_dir_handle_cache();
-                crate::backup::aio::phases::run_nfs_target_phases(
-                    ctrl_dir,
-                    source_dir_base,
-                    target_prefix,
-                    Arc::clone(pool),
+                let phases = crate::nfs::backup::phases_impl::NfsPostCopyPhases {
+                    pool: Arc::clone(pool),
                     file_cache,
                     dir_cache,
-                    phase_flags,
-                )
-                .await;
+                };
+                phases.run_all_phases(ctrl_dir, source_dir_base, target_prefix, phase_flags, retry_policy, failure_recorder).await;
             }
             #[cfg(feature = "smb")]
             BackupTarget::Smb { location, .. } => {
-                crate::backup::aio::phases::run_smb_target_phases(
-                    ctrl_dir,
-                    source_dir_base,
-                    target_prefix,
+                let phases = crate::smb::backup::phases_impl::SmbPostCopyPhases {
                     location,
-                    phase_flags,
-                )
-                .await;
+                };
+                phases.run_all_phases(ctrl_dir, source_dir_base, target_prefix, phase_flags, retry_policy, failure_recorder).await;
             }
         }
     }
