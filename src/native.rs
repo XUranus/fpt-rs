@@ -2,7 +2,7 @@ pub mod backup;
 pub(crate) mod fstat;
 mod fwrite_meta;
 
-pub mod bio;
+pub mod scanner;
 
 use log::{error, info};
 use std::{
@@ -128,7 +128,7 @@ impl Scanner {
             None
         };
 
-        let traversal_handles = bio::start_workers(&self.context, worker_count);
+        let traversal_handles = scanner::start_workers(&self.context, worker_count);
         let writer_handles = if self.context.scan_option.stats_only {
             engine::start_stats_consumers(&self.context, writer_count.max(1))
         } else {

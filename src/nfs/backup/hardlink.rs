@@ -14,8 +14,8 @@ use log::{debug, error, info, warn};
 use nfs3_client::nfs3_types::nfs3::{diropargs3, filename3, nfs_fh3, LINK3args, Nfs3Result};
 
 use crate::frame::control_files::find_primary_control_file;
-use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
-use crate::nfs::aio::writer::{get_or_create_dir, DirHandleCache};
+use crate::nfs::backup::reader::{resolve_path, FileHandleCache};
+use crate::nfs::backup::writer::{get_or_create_dir, DirHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::scanner::metadata::{HardlinkControlFileReader, HardlinkEntry};
 

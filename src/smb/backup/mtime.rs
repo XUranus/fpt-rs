@@ -28,7 +28,7 @@ pub async fn run_smb_mtime_phase(
         return stats;
     };
 
-    let client = match crate::smb::aio::connect_client(location).await {
+    let client = match crate::smb::connect_client(location).await {
         Ok(client) => client,
         Err(e) => {
             error!("SMB mtime phase: connect failed: {e}");
@@ -57,8 +57,8 @@ pub async fn run_smb_mtime_phase(
 
         stats.dirs_processed += 1;
         let rel =
-            crate::smb::aio::target_relative_path(source_dir_base, target_prefix, &entry.path);
-        let unc = match crate::smb::aio::relative_unc_path(location, &rel) {
+            crate::smb::target_relative_path(source_dir_base, target_prefix, &entry.path);
+        let unc = match crate::smb::relative_unc_path(location, &rel) {
             Ok(unc) => unc,
             Err(e) => {
                 warn!("SMB mtime: invalid path {}: {}", rel, e);
@@ -82,7 +82,7 @@ pub async fn run_smb_mtime_phase(
         let dir = match resource {
             smb_client::Resource::Directory(dir) => dir,
             other => {
-                let _ = crate::smb::aio::close_resource(other).await;
+                let _ = crate::smb::close_resource(other).await;
                 stats.dirs_skipped += 1;
                 continue;
             }

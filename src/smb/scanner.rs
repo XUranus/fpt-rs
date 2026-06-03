@@ -144,7 +144,7 @@ impl SmbScanner {
         retry_policy: RetryPolicy,
         failure_recorder: Option<FailureRecorder>,
     ) -> Result<Self, String> {
-        let client = crate::smb::aio::connect_client(location).await?;
+        let client = crate::smb::connect_client(location).await?;
 
         Ok(Self {
             client,

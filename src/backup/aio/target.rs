@@ -28,7 +28,7 @@ pub enum BackupTarget {
     #[cfg(feature = "smb")]
     Smb {
         location: crate::smb::SmbLocation,
-        pool: Arc<crate::smb::aio::SmbClientPool>,
+        pool: Arc<crate::smb::SmbClientPool>,
     },
 }
 
@@ -52,7 +52,7 @@ impl BackupTarget {
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(loc) => {
-                let pool = crate::smb::aio::SmbClientPool::connect(
+                let pool = crate::smb::SmbClientPool::connect(
                     loc,
                     smb_connection_count.max(1),
                 )
@@ -89,8 +89,8 @@ impl BackupTarget {
             }
             #[cfg(feature = "nfs")]
             BackupTarget::Nfs { pool } => {
-                let file_cache = crate::nfs::aio::reader::new_file_handle_cache();
-                let dir_cache = crate::nfs::aio::writer::new_dir_handle_cache();
+                let file_cache = crate::nfs::backup::reader::new_file_handle_cache();
+                let dir_cache = crate::nfs::backup::writer::new_dir_handle_cache();
                 let phases = crate::nfs::backup::phases_impl::NfsPostCopyPhases {
                     pool: Arc::clone(pool),
                     file_cache,

@@ -13,7 +13,7 @@ use nfs3_client::nfs3_types::nfs3::{
 };
 
 use crate::frame::control_files::find_primary_control_file;
-use crate::nfs::aio::reader::{resolve_path, FileHandleCache};
+use crate::nfs::backup::reader::{resolve_path, FileHandleCache};
 use crate::nfs::connection::NfsConnectionPool;
 use crate::nfs::error::NfsError;
 use crate::scanner::metadata::{DeleteControlFileReader, DeleteEntryType};

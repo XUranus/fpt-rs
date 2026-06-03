@@ -5,7 +5,7 @@
 //! ([`crate::nfs::NfsScanner`], [`crate::smb::SmbScanner`]) is passed in as
 //! a generic `AsyncDirScanner` implementation.
 //!
-//! This is the async counterpart to [`super::bio`] which handles
+//! This is the async counterpart to [`super::bio`] (local filesystem) which handles
 //! local filesystem scanning via blocking OS threads.
 
 use std::future::Future;

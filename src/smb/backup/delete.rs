@@ -29,7 +29,7 @@ pub async fn run_smb_delete_phase(
         return stats;
     };
 
-    let client = match crate::smb::aio::connect_client(location).await {
+    let client = match crate::smb::connect_client(location).await {
         Ok(client) => client,
         Err(e) => {
             error!("SMB delete phase: connect failed: {e}");
@@ -65,7 +65,7 @@ pub async fn run_smb_delete_phase(
     }
 
     for path in &file_paths {
-        let rel = crate::smb::aio::target_relative_path(source_dir_base, target_prefix, path);
+        let rel = crate::smb::target_relative_path(source_dir_base, target_prefix, path);
         match mark_delete_pending(&client, location, &rel, false).await {
             Ok(true) => {
                 debug!("SMB deleted file {}", rel);
@@ -83,7 +83,7 @@ pub async fn run_smb_delete_phase(
 
     dir_paths.sort_by(|a, b| b.cmp(a));
     for path in &dir_paths {
-        let rel = crate::smb::aio::target_relative_path(source_dir_base, target_prefix, path);
+        let rel = crate::smb::target_relative_path(source_dir_base, target_prefix, path);
         match mark_delete_pending(&client, location, &rel, true).await {
             Ok(true) => {
                 debug!("SMB deleted dir {}", rel);
@@ -116,7 +116,7 @@ pub(crate) async fn mark_delete_pending(
     relative_path: &str,
     expect_dir: bool,
 ) -> Result<bool, String> {
-    let unc = crate::smb::aio::relative_unc_path(location, relative_path)?;
+    let unc = crate::smb::relative_unc_path(location, relative_path)?;
     let open_args = smb_client::FileCreateArgs::make_open_existing(
         smb_client::FileAccessMask::new().with_generic_all(true),
     );
@@ -159,7 +159,7 @@ pub(crate) async fn mark_delete_pending(
                 .map_err(|e| format!("close {}: {e}", unc))?;
         }
         other => {
-            crate::smb::aio::close_resource(other).await?;
+            crate::smb::close_resource(other).await?;
             return Ok(false);
         }
     }

@@ -23,7 +23,7 @@ impl crate::backup::aio::phases_trait::PostCopyPhases for LocalPostCopyPhases {
         failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("Starting hardlink phase...");
-        match super::bio::hardlink::run_hardlink_phase(
+        match super::local::hardlink::run_hardlink_phase(
             ctrl_dir,
             &Path::new(""),
             source_dir_base,
@@ -53,7 +53,7 @@ impl crate::backup::aio::phases_trait::PostCopyPhases for LocalPostCopyPhases {
         failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("Starting delete phase...");
-        match super::bio::delete::run_delete_phase(
+        match super::local::delete::run_delete_phase(
             ctrl_dir,
             source_dir_base,
             &ctrl_dir.join("target"),
@@ -82,7 +82,7 @@ impl crate::backup::aio::phases_trait::PostCopyPhases for LocalPostCopyPhases {
         failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("Starting mtime phase...");
-        match super::bio::mtime::run_mtime_phase(
+        match super::local::mtime::run_mtime_phase(
             ctrl_dir,
             source_dir_base,
             &ctrl_dir.join("target"),

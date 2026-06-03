@@ -26,7 +26,7 @@ use crate::smb::SmbLocation;
 pub(crate) async fn execute_smb_source_file_plan<T>(
     plan: FileCopyPlan,
     location: SmbLocation,
-    pool: Arc<crate::smb::aio::SmbClientPool>,
+    pool: Arc<crate::smb::SmbClientPool>,
     target: T,
     stats: Arc<BackupStats>,
     log_prefix: &'static str,
@@ -59,7 +59,7 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
     let file_size = meta.size;
     let rel_path = src_path.to_string_lossy().replace('\\', "/");
     let client = pool.client();
-    let unc = match crate::smb::aio::relative_unc_path(&location, &rel_path) {
+    let unc = match crate::smb::relative_unc_path(&location, &rel_path) {
         Ok(unc) => unc,
         Err(msg) => {
             error!("{log_prefix}: read {:?}: {msg}", src_path);
@@ -105,7 +105,7 @@ pub(crate) async fn execute_smb_source_file_plan<T>(
     let collect_for_aggregation =
         aggregate_config.enabled && should_aggregate(file_size, &aggregate_config);
     let read_cap = clamp_copy_buffer_size(buffer_size)
-        .min(crate::smb::aio::SMB_MAX_SAFE_READ_CHUNK);
+        .min(crate::smb::SMB_MAX_SAFE_READ_CHUNK);
 
     if collect_for_aggregation {
         let mut data = Vec::with_capacity(file_size as usize);

@@ -20,9 +20,9 @@ pub(crate) mod fcb;
 pub(crate) mod stats;
 
 // Re-export snapshot types used in RunningBackup fields
-pub(crate) use crate::native::backup::bio::delete::DeleteStatsSnapshot;
-pub(crate) use crate::native::backup::bio::hardlink::HardlinkStatsSnapshot;
-pub(crate) use crate::native::backup::bio::mtime::MtimeStatsSnapshot;
+pub(crate) use crate::native::backup::local::delete::DeleteStatsSnapshot;
+pub(crate) use crate::native::backup::local::hardlink::HardlinkStatsSnapshot;
+pub(crate) use crate::native::backup::local::mtime::MtimeStatsSnapshot;
 pub use stats::BackupStatsSnapshot;
 
 // Aggregate backup/restore modules
@@ -355,7 +355,7 @@ impl BackupTask {
             ));
         }
 
-        let terminate_handle = crate::native::backup::bio::spawn_local_backup_pipeline(
+        let terminate_handle = crate::native::backup::local::spawn_local_backup_pipeline(
             control_file,
             source_dir_base,
             target_dir_base,
@@ -776,7 +776,7 @@ fn run_restore_copy_phase(
                 let write_chunk = pool.server_wtmax.max(4096);
                 let target = crate::nfs::backup::transport::NfsTarget {
                     pool,
-                    dir_cache: crate::nfs::aio::writer::new_dir_handle_cache(),
+                    dir_cache: crate::nfs::backup::writer::new_dir_handle_cache(),
                     root_fh,
                     write_chunk,
                     buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
@@ -803,7 +803,7 @@ fn run_restore_copy_phase(
             let smb_target = smb_target.clone();
             return rt.block_on(async {
                 let pool =
-                    crate::smb::aio::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
+                    crate::smb::SmbClientPool::connect(&smb_target, option.worker_count.max(1))
                         .await
                         .map_err(|e| {
                             RestoreError::IoError(std::io::Error::new(std::io::ErrorKind::Other, e))
@@ -811,7 +811,7 @@ fn run_restore_copy_phase(
                 let target = crate::smb::backup::transport::SmbTarget {
                     location: smb_target,
                     pool,
-                    dir_cache: crate::smb::aio::new_dir_cache(),
+                    dir_cache: crate::smb::new_dir_cache(),
                     buffer_size: crate::backup::aio::transport::DEFAULT_COPY_BUFFER_SIZE,
                 };
                 restore_pipeline::run_restore_copy_pipeline(
@@ -877,13 +877,13 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
                         e.to_string(),
                     ))
                 })?;
-            crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
+            crate::nfs::backup::hardlink::run_nfs_hardlink_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
                 "",
                 Arc::clone(&pool),
-                crate::nfs::aio::reader::new_file_handle_cache(),
-                crate::nfs::aio::writer::new_dir_handle_cache(),
+                crate::nfs::backup::reader::new_file_handle_cache(),
+                crate::nfs::backup::writer::new_dir_handle_cache(),
             )
             .await;
             Ok::<(), RestoreError>(())
@@ -899,7 +899,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async {
-            crate::smb::aio::hardlink::run_smb_hardlink_phase(
+            crate::smb::backup::hardlink::run_smb_hardlink_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
                 "",
@@ -910,7 +910,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         return Ok(());
     }
 
-    crate::native::backup::bio::hardlink::run_hardlink_phase(
+    crate::native::backup::local::hardlink::run_hardlink_phase(
         &option.ctrl_dir,
         &option.meta_dir,
         &option.original_source_base,
@@ -943,12 +943,12 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
                         e.to_string(),
                     ))
                 })?;
-            crate::nfs::aio::delete::run_nfs_delete_phase(
+            crate::nfs::backup::delete::run_nfs_delete_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
                 "",
                 pool,
-                crate::nfs::aio::reader::new_file_handle_cache(),
+                crate::nfs::backup::reader::new_file_handle_cache(),
             )
             .await;
             Ok::<(), RestoreError>(())
@@ -964,7 +964,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async {
-            crate::smb::aio::delete::run_smb_delete_phase(
+            crate::smb::backup::delete::run_smb_delete_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
                 "",
@@ -975,7 +975,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         return Ok(());
     }
 
-    crate::native::backup::bio::delete::run_delete_phase(
+    crate::native::backup::local::delete::run_delete_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
@@ -1007,12 +1007,12 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
                         e.to_string(),
                     ))
                 })?;
-            crate::nfs::aio::mtime::run_nfs_mtime_phase(
+            crate::nfs::backup::mtime::run_nfs_mtime_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
                 "",
                 pool,
-                crate::nfs::aio::reader::new_file_handle_cache(),
+                crate::nfs::backup::reader::new_file_handle_cache(),
             )
             .await;
             Ok::<(), RestoreError>(())
@@ -1028,7 +1028,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
             .build()
             .map_err(RestoreError::IoError)?;
         rt.block_on(async {
-            crate::smb::aio::mtime::run_smb_mtime_phase(
+            crate::smb::backup::mtime::run_smb_mtime_phase(
                 &option.ctrl_dir,
                 &option.original_source_base,
                 "",
@@ -1039,7 +1039,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         return Ok(());
     }
 
-    crate::native::backup::bio::mtime::run_mtime_phase(
+    crate::native::backup::local::mtime::run_mtime_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,

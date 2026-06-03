@@ -33,7 +33,7 @@ pub async fn run_local_to_smb_copy_pipeline(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     location: SmbLocation,
-    pool: Arc<crate::smb::aio::SmbClientPool>,
+    pool: Arc<crate::smb::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
     smb_copy_task_count: usize,
@@ -47,7 +47,7 @@ pub async fn run_local_to_smb_copy_pipeline(
     let target = SmbTarget {
         location,
         pool,
-        dir_cache: crate::smb::aio::new_dir_cache(),
+        dir_cache: crate::smb::new_dir_cache(),
         buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);
@@ -77,7 +77,7 @@ pub async fn run_smb_to_local_copy_pipeline(
     local_target_base: PathBuf,
     aggregate_config: AggregateConfig,
     location: SmbLocation,
-    pool: Arc<crate::smb::aio::SmbClientPool>,
+    pool: Arc<crate::smb::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
     smb_copy_task_count: usize,
@@ -120,8 +120,8 @@ pub async fn run_smb_to_smb_copy_pipeline(
     aggregate_config: AggregateConfig,
     source_location: SmbLocation,
     target_location: SmbLocation,
-    source_pool: Arc<crate::smb::aio::SmbClientPool>,
-    target_pool: Arc<crate::smb::aio::SmbClientPool>,
+    source_pool: Arc<crate::smb::SmbClientPool>,
+    target_pool: Arc<crate::smb::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
     smb_copy_task_count: usize,
@@ -157,7 +157,7 @@ pub async fn run_smb_to_smb_copy_pipeline(
     let target_prefix = PathBuf::from(target_prefix);
     let mapping = EntryMapping::remote_to_prefixed_target(target_prefix.clone());
     let target_pool_for_streaming = Arc::clone(&target_pool);
-    let target_dir_cache = crate::smb::aio::new_dir_cache();
+    let target_dir_cache = crate::smb::new_dir_cache();
     let target = SmbTarget {
         location: target_location.clone(),
         pool: target_pool,
@@ -195,8 +195,8 @@ async fn run_smb_to_smb_streaming_pipeline(
     target_prefix: String,
     source_location: SmbLocation,
     target_location: SmbLocation,
-    source_pool: Arc<crate::smb::aio::SmbClientPool>,
-    target_pool: Arc<crate::smb::aio::SmbClientPool>,
+    source_pool: Arc<crate::smb::SmbClientPool>,
+    target_pool: Arc<crate::smb::SmbClientPool>,
     stats: Arc<BackupStats>,
     max_concurrent_tasks: usize,
     copy_buffer_size: usize,
@@ -211,13 +211,13 @@ async fn run_smb_to_smb_streaming_pipeline(
     let dir_target = SmbTarget {
         location: target_location.clone(),
         pool: Arc::clone(&target_pool),
-        dir_cache: crate::smb::aio::new_dir_cache(),
+        dir_cache: crate::smb::new_dir_cache(),
         buffer_size: copy_buffer_size,
     };
     let task_sem = Arc::new(Semaphore::new(max_concurrent_tasks.max(1)));
     let (entry_tx, mut entry_rx) = mpsc::channel::<CopyPlanEntry>(256);
     let target_dir_cache = dir_target.dir_cache.clone();
-    let copy_metrics = Arc::new(crate::smb::aio::SmbCopyMetrics::default());
+    let copy_metrics = Arc::new(crate::smb::backup::metrics::SmbCopyMetrics::default());
     let mut dir_entries = 0u64;
     let mut file_entries = 0u64;
     let dispatch_started = Instant::now();
@@ -321,7 +321,7 @@ async fn run_smb_to_smb_streaming_pipeline(
 
         task_handles.push(tokio::spawn(async move {
             let _permit = task_sem2.acquire_owned().await.unwrap();
-            match crate::smb::aio::copy_relative_file_streaming(
+            match crate::smb::backup::writer::copy_relative_file_streaming(
                 &source_pool2,
                 &source_location2,
                 &src_rel,
@@ -399,7 +399,7 @@ pub(crate) async fn run_smb_source_copy_pipeline<T>(
     meta_dir: PathBuf,
     mapping: EntryMapping,
     source_location: SmbLocation,
-    source_pool: Arc<crate::smb::aio::SmbClientPool>,
+    source_pool: Arc<crate::smb::SmbClientPool>,
     target: T,
     stats: Arc<BackupStats>,
     log_prefix: &'static str,
@@ -529,9 +529,9 @@ async fn run_smb_to_smb_aggregate_pipeline(
     mapping: EntryMapping,
     source_location: SmbLocation,
     target_location: SmbLocation,
-    source_pool: Arc<crate::smb::aio::SmbClientPool>,
-    target_pool: Arc<crate::smb::aio::SmbClientPool>,
-    target_dir_cache: crate::smb::aio::DirCache,
+    source_pool: Arc<crate::smb::SmbClientPool>,
+    target_pool: Arc<crate::smb::SmbClientPool>,
+    target_dir_cache: crate::smb::DirCache,
     target: AggregatingTarget<SmbTarget>,
     stats: Arc<BackupStats>,
     log_prefix: &'static str,
@@ -642,7 +642,7 @@ async fn run_smb_to_smb_aggregate_pipeline(
                         return;
                     }
 
-                    match crate::smb::aio::copy_relative_file_streaming(
+                    match crate::smb::backup::writer::copy_relative_file_streaming(
                         &source_pool2,
                         &source_location2,
                         &src_rel,
@@ -772,7 +772,7 @@ pub async fn run_smb_to_nfs(
     target_prefix: String,
     aggregate_config: AggregateConfig,
     source_location: SmbLocation,
-    source_pool: Arc<crate::smb::aio::SmbClientPool>,
+    source_pool: Arc<crate::smb::SmbClientPool>,
     target_pool: Arc<crate::nfs::connection::NfsConnectionPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
@@ -783,7 +783,7 @@ pub async fn run_smb_to_nfs(
     use crate::backup::aio::aggregation::AggregatingTarget;
     use crate::backup::aio::entry::EntryMapping;
     use crate::backup::aio::transport::clamp_copy_buffer_size;
-    use crate::nfs::aio::writer::new_dir_handle_cache;
+    use crate::nfs::backup::writer::new_dir_handle_cache;
     use crate::nfs::backup::transport::NfsTarget;
 
     let copy_buffer_size = clamp_copy_buffer_size(copy_buffer_size);

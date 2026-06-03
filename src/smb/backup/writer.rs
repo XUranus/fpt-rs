@@ -7,14 +7,14 @@ use std::time::Instant;
 
 use log::warn;
 
-use crate::smb::aio::metrics::SmbCopyMetrics;
-use crate::smb::aio::{
-    close_resource, relative_unc_path, SMB_DEFAULT_READ_CHUNK, SMB_DEFAULT_WRITE_CHUNK,
+use crate::smb::backup::metrics::SmbCopyMetrics;
+use crate::path_util::{join_relative, normalize_relative_path};
+use crate::smb::{
+    close_resource, relative_unc_path, SmbClientPool, SmbLocation,
+    SMB_DEFAULT_READ_CHUNK, SMB_DEFAULT_WRITE_CHUNK,
     SMB_MAX_SAFE_READ_CHUNK, SMB_MAX_SAFE_WRITE_CHUNK,
 };
-use crate::path_util::{join_relative, normalize_relative_path};
-use crate::smb::connection::{connect_client, same_share, DirCache, SmbClientPool};
-use crate::smb::SmbLocation;
+use crate::smb::connection::{connect_client, same_share, DirCache};
 
 /// Ensure a directory exists on the SMB share, creating it (and parents) if needed.
 /// Uses a shared cache to skip redundant mkdir calls.
@@ -429,7 +429,7 @@ pub async fn upload_local_dir_to_smb(
     }
 
     let client = connect_client(location).await?;
-    let dir_cache = super::new_dir_cache();
+    let dir_cache = crate::smb::new_dir_cache();
     ensure_relative_directory(&client, location, &dir_cache, target_prefix).await?;
 
     let mut stack = vec![(
@@ -475,7 +475,7 @@ pub async fn upload_local_file_to_smb(
     let data =
         std::fs::read(local_file).map_err(|e| format!("read {}: {e}", local_file.display()))?;
     let client = connect_client(location).await?;
-    let dir_cache = super::new_dir_cache();
+    let dir_cache = crate::smb::new_dir_cache();
     write_relative_file(&client, location, &dir_cache, remote_path, &data).await?;
     client.close().await.map_err(|e| e.to_string())?;
     Ok(())

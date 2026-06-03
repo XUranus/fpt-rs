@@ -377,7 +377,7 @@ async fn validate_nfs_target_writable(
 
     let pool = crate::nfs::connection::NfsConnectionPool::new(loc).await?;
     let magic = prereq_magic_file_name();
-    crate::nfs::aio::writer::nfs_create_and_write(
+    crate::nfs::backup::writer::nfs_create_and_write(
         pool.clone(),
         PathBuf::from(&magic),
         b"fpt-prereq".to_vec(),
@@ -420,10 +420,10 @@ async fn validate_copy_structure_nfs(
     loc: &crate::nfs::NfsLocation,
 ) -> Result<(), crate::nfs::NfsError> {
     let pool = crate::nfs::connection::NfsConnectionPool::new(loc).await?;
-    let cache = crate::nfs::aio::reader::new_file_handle_cache();
+    let cache = crate::nfs::backup::reader::new_file_handle_cache();
     let root_fh = pool.root_fh();
     for rel in ["manifest.json", "D_REPO", "M_REPO/meta", "C_REPO/ctrl"] {
-        crate::nfs::aio::reader::resolve_path(&pool, &cache, rel, &root_fh)
+        crate::nfs::backup::reader::resolve_path(&pool, &cache, rel, &root_fh)
             .await
             .map_err(|e| match e {
                 crate::nfs::NfsError::Nfs(stat, _) => {
@@ -437,12 +437,12 @@ async fn validate_copy_structure_nfs(
 
 #[cfg(feature = "smb")]
 async fn validate_smb_target_writable(loc: &crate::smb::SmbLocation) -> Result<(), String> {
-    let client = crate::smb::aio::connect_client(loc).await?;
-    let dir_cache = crate::smb::aio::new_dir_cache();
+    let client = crate::smb::connect_client(loc).await?;
+    let dir_cache = crate::smb::new_dir_cache();
     let magic_dir = prereq_magic_file_name();
     let result = async {
-        crate::smb::aio::ensure_relative_directory(&client, loc, &dir_cache, &magic_dir).await?;
-        crate::smb::aio::delete::mark_delete_pending(&client, loc, &magic_dir, true)
+        crate::smb::backup::writer::ensure_relative_directory(&client, loc, &dir_cache, &magic_dir).await?;
+        crate::smb::backup::delete::mark_delete_pending(&client, loc, &magic_dir, true)
             .await
             .and_then(|deleted| {
                 if deleted {
@@ -461,7 +461,7 @@ async fn validate_smb_target_writable(loc: &crate::smb::SmbLocation) -> Result<(
 
 #[cfg(feature = "smb")]
 async fn validate_copy_structure_smb(loc: &crate::smb::SmbLocation) -> Result<(), String> {
-    let client = crate::smb::aio::connect_client(loc).await?;
+    let client = crate::smb::connect_client(loc).await?;
     let result = async {
         open_smb_existing(&client, loc, "manifest.json", false).await?;
         for rel in ["D_REPO", "M_REPO/meta", "C_REPO/ctrl"] {
@@ -481,7 +481,7 @@ async fn open_smb_existing(
     relative_path: &str,
     expect_dir: bool,
 ) -> Result<(), String> {
-    let unc = crate::smb::aio::relative_unc_path(loc, relative_path)?;
+    let unc = crate::smb::relative_unc_path(loc, relative_path)?;
     let args = if expect_dir {
         smb_client::FileCreateArgs {
             disposition: smb_client::CreateDisposition::Open,
@@ -500,5 +500,5 @@ async fn open_smb_existing(
         .create_file(&unc, &args)
         .await
         .map_err(|e| format!("open {unc}: {e}"))?;
-    crate::smb::aio::close_resource(resource).await
+    crate::smb::close_resource(resource).await
 }

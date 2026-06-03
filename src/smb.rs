@@ -6,11 +6,60 @@
 
 use std::path::PathBuf;
 
-pub mod aio;
+use crate::path_util;
+
 pub mod backup;
 pub(crate) mod connection;
 pub(crate) mod fstat;
 pub mod scanner;
+
+// Re-export commonly used types for backward compatibility.
+pub use connection::{connect_client, new_dir_cache, DirCache, SmbClientPool};
+pub use backup::metrics::SmbCopyMetrics;
+pub use path_util::{join_relative, normalize_relative_path, target_relative_path};
+
+pub(crate) const SMB_DEFAULT_WRITE_CHUNK: usize = 256 * 1024;
+pub(crate) const SMB_DEFAULT_READ_CHUNK: usize = 1024 * 1024;
+pub(crate) const SMB_MAX_SAFE_WRITE_CHUNK: usize = 256 * 1024;
+pub const SMB_MAX_SAFE_READ_CHUNK: usize = 2 * 1024 * 1024;
+
+/// Build a UNC path for a file relative to the share location.
+pub fn relative_unc_path(
+    location: &SmbLocation,
+    relative_path: &str,
+) -> Result<smb_client::UncPath, String> {
+    let relative_path = normalize_relative_path(relative_path);
+    let root = location.root_unc_path()?;
+    if relative_path.is_empty() {
+        Ok(root)
+    } else {
+        Ok(root.with_add_path(&relative_path))
+    }
+}
+
+pub fn share_relative_path(location: &SmbLocation, relative_path: &str) -> String {
+    let relative_path = normalize_relative_path(relative_path);
+    if location.sub_path.is_empty() {
+        relative_path.replace('/', "\\")
+    } else if relative_path.is_empty() {
+        location.sub_path.replace('/', "\\")
+    } else {
+        format!(
+            "{}\\{}",
+            location.sub_path.replace('/', "\\"),
+            relative_path.replace('/', "\\")
+        )
+    }
+}
+
+/// Close an SMB resource (file, directory, or pipe) regardless of its type.
+pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
+    match resource {
+        smb_client::Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
+        smb_client::Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
+        smb_client::Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
+    }
+}
 
 /// Connection information for a single SMB share root.
 ///
@@ -319,14 +368,6 @@ fn parse_query_credentials(query: Option<&str>) -> (Option<String>, Option<Strin
     }
 
     (username, password)
-}
-
-pub async fn close_resource(resource: smb_client::Resource) -> Result<(), String> {
-    match resource {
-        smb_client::Resource::File(file) => file.close().await.map_err(|e| e.to_string()),
-        smb_client::Resource::Directory(dir) => dir.close().await.map_err(|e| e.to_string()),
-        smb_client::Resource::Pipe(pipe) => pipe.close().await.map_err(|e| e.to_string()),
-    }
 }
 
 #[cfg(test)]

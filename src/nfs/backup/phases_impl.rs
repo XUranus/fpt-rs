@@ -13,8 +13,8 @@ use crate::nfs::connection::NfsConnectionPool;
 #[allow(dead_code)]
 pub struct NfsPostCopyPhases {
     pub pool: Arc<NfsConnectionPool>,
-    pub file_cache: crate::nfs::aio::reader::FileHandleCache,
-    pub dir_cache: crate::nfs::aio::writer::DirHandleCache,
+    pub file_cache: crate::nfs::backup::reader::FileHandleCache,
+    pub dir_cache: crate::nfs::backup::writer::DirHandleCache,
 }
 
 #[allow(async_fn_in_trait)]
@@ -29,7 +29,7 @@ impl crate::backup::aio::phases_trait::PostCopyPhases for NfsPostCopyPhases {
         _failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("NFS: starting hardlink phase...");
-        let hl_stats = crate::nfs::aio::hardlink::run_nfs_hardlink_phase(
+        let hl_stats = crate::nfs::backup::hardlink::run_nfs_hardlink_phase(
             ctrl_dir,
             source_dir_base,
             target_prefix,
@@ -54,7 +54,7 @@ impl crate::backup::aio::phases_trait::PostCopyPhases for NfsPostCopyPhases {
         _failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("NFS: starting delete phase...");
-        let del_stats = crate::nfs::aio::delete::run_nfs_delete_phase(
+        let del_stats = crate::nfs::backup::delete::run_nfs_delete_phase(
             ctrl_dir,
             source_dir_base,
             target_prefix,
@@ -78,7 +78,7 @@ impl crate::backup::aio::phases_trait::PostCopyPhases for NfsPostCopyPhases {
         _failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("NFS: starting mtime phase...");
-        let mt_stats = crate::nfs::aio::mtime::run_nfs_mtime_phase(
+        let mt_stats = crate::nfs::backup::mtime::run_nfs_mtime_phase(
             ctrl_dir,
             source_dir_base,
             target_prefix,

@@ -10,7 +10,7 @@ use crate::backup::aio::transport::{clamp_copy_buffer_size, CopyBlock, SourceRea
 #[derive(Clone)]
 pub struct NfsSource {
     pub pool: Arc<crate::nfs::connection::NfsConnectionPool>,
-    pub dir_cache: crate::nfs::aio::reader::FileHandleCache,
+    pub dir_cache: crate::nfs::backup::reader::FileHandleCache,
     pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
     pub read_chunk: u32,
     pub buffer_size: usize,
@@ -21,7 +21,7 @@ impl SourceReader for NfsSource {
         &self,
         block: CopyBlock,
     ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
-        use crate::nfs::aio::reader::{nfs_read_task, NfsReaderResult};
+        use crate::nfs::backup::reader::{nfs_read_task, NfsReaderResult};
         let this = self.clone();
         Box::pin(async move {
             let fcb = block.into_fcb();
@@ -46,7 +46,7 @@ impl SourceReader for NfsSource {
 #[derive(Clone)]
 pub struct NfsTarget {
     pub pool: Arc<crate::nfs::connection::NfsConnectionPool>,
-    pub dir_cache: crate::nfs::aio::writer::DirHandleCache,
+    pub dir_cache: crate::nfs::backup::writer::DirHandleCache,
     pub root_fh: nfs3_client::nfs3_types::nfs3::nfs_fh3,
     pub write_chunk: u32,
     pub buffer_size: usize,
@@ -56,7 +56,7 @@ impl TargetWriter for NfsTarget {
     fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>> {
         let this = self.clone();
         Box::pin(async move {
-            crate::nfs::aio::writer::get_or_create_dir(
+            crate::nfs::backup::writer::get_or_create_dir(
                 &this.pool,
                 &this.dir_cache,
                 &path.to_string_lossy(),
@@ -72,7 +72,7 @@ impl TargetWriter for NfsTarget {
         &self,
         block: CopyBlock,
     ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
-        use crate::nfs::aio::writer::{nfs_write_task, NfsWriterResult};
+        use crate::nfs::backup::writer::{nfs_write_task, NfsWriterResult};
         let this = self.clone();
         Box::pin(async move {
             let fcb = block.into_fcb();

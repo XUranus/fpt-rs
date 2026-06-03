@@ -24,7 +24,7 @@ pub enum BackupSource {
     #[cfg(feature = "smb")]
     Smb {
         location: crate::smb::SmbLocation,
-        pool: Arc<crate::smb::aio::SmbClientPool>,
+        pool: Arc<crate::smb::SmbClientPool>,
     },
 }
 
@@ -48,7 +48,7 @@ impl BackupSource {
             }
             #[cfg(feature = "smb")]
             DataLocation::Smb(loc) => {
-                let pool = crate::smb::aio::SmbClientPool::connect(
+                let pool = crate::smb::SmbClientPool::connect(
                     loc,
                     smb_connection_count.max(1),
                 )

@@ -14,7 +14,7 @@ use crate::backup::aio::transport::{clamp_copy_buffer_size, LocalSource, LocalTa
 use crate::nfs::backup::transport::{NfsSource, NfsTarget};
 use crate::backup::stats::BackupStats;
 use crate::failure::{FailureRecorder, RetryPolicy};
-use crate::nfs::aio::{reader::new_file_handle_cache, writer::new_dir_handle_cache};
+use crate::nfs::backup::{reader::new_file_handle_cache, writer::new_dir_handle_cache};
 use crate::nfs::connection::NfsConnectionPool;
 
 const NFS_MAX_CONCURRENT_TASKS: usize = 16;
@@ -160,7 +160,7 @@ pub async fn run_nfs_to_smb(
     aggregate_config: AggregateConfig,
     source_pool: Arc<NfsConnectionPool>,
     target_location: crate::smb::SmbLocation,
-    target_pool: Arc<crate::smb::aio::SmbClientPool>,
+    target_pool: Arc<crate::smb::SmbClientPool>,
     stats: Arc<BackupStats>,
     copy_buffer_size: usize,
     smb_copy_task_count: usize,
@@ -170,7 +170,7 @@ pub async fn run_nfs_to_smb(
     use crate::backup::aio::aggregation::AggregatingTarget;
     use crate::backup::aio::entry::EntryMapping;
     use crate::backup::aio::pipeline::run_copy_pipeline;
-    use crate::nfs::aio::reader::new_file_handle_cache;
+    use crate::nfs::backup::reader::new_file_handle_cache;
     use crate::smb::backup::pipeline::smb_copy_task_limit;
     use crate::smb::backup::transport::SmbTarget;
 
@@ -190,7 +190,7 @@ pub async fn run_nfs_to_smb(
     let target = SmbTarget {
         location: target_location,
         pool: target_pool,
-        dir_cache: crate::smb::aio::new_dir_cache(),
+        dir_cache: crate::smb::new_dir_cache(),
         buffer_size: copy_buffer_size,
     };
     let target = AggregatingTarget::with_repo_prefix(target, aggregate_config, target_prefix);

@@ -10,8 +10,8 @@ use crate::backup::aio::transport::{clamp_copy_buffer_size, CopyBlock, TargetWri
 #[derive(Clone)]
 pub struct SmbTarget {
     pub location: crate::smb::SmbLocation,
-    pub pool: Arc<crate::smb::aio::SmbClientPool>,
-    pub dir_cache: crate::smb::aio::DirCache,
+    pub pool: Arc<crate::smb::SmbClientPool>,
+    pub dir_cache: crate::smb::DirCache,
     pub buffer_size: usize,
 }
 
@@ -20,7 +20,7 @@ impl TargetWriter for SmbTarget {
         let this = self.clone();
         Box::pin(async move {
             let client = this.pool.client();
-            crate::smb::aio::ensure_relative_directory(
+            crate::smb::backup::writer::ensure_relative_directory(
                 &client,
                 &this.location,
                 &this.dir_cache,
@@ -38,7 +38,7 @@ impl TargetWriter for SmbTarget {
         Box::pin(async move {
             let rel_path = block.dst_path.to_string_lossy().replace('\\', "/");
             let client = this.pool.client();
-            match crate::smb::aio::write_relative_file_chunk(
+            match crate::smb::backup::writer::write_relative_file_chunk(
                 &client,
                 &this.location,
                 &this.dir_cache,

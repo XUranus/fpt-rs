@@ -28,7 +28,7 @@ pub async fn run_smb_hardlink_phase(
         return stats;
     };
 
-    let client = match crate::smb::aio::connect_client(location).await {
+    let client = match crate::smb::connect_client(location).await {
         Ok(client) => client,
         Err(e) => {
             error!("SMB hardlink phase: connect failed: {e}");
@@ -111,8 +111,8 @@ async fn process_group(
     }
 
     let primary_rel =
-        crate::smb::aio::target_relative_path(source_dir_base, target_prefix, &files[0]);
-    let primary_unc = match crate::smb::aio::relative_unc_path(location, &primary_rel) {
+        crate::smb::target_relative_path(source_dir_base, target_prefix, &files[0]);
+    let primary_unc = match crate::smb::relative_unc_path(location, &primary_rel) {
         Ok(unc) => unc,
         Err(e) => {
             error!("SMB hardlink: invalid primary path {}: {}", files[0], e);
@@ -120,7 +120,7 @@ async fn process_group(
             return;
         }
     };
-    let primary_share_path = crate::smb::aio::share_relative_path(location, &primary_rel);
+    let primary_share_path = crate::smb::share_relative_path(location, &primary_rel);
 
     let access = smb_client::FileAccessMask::new().with_generic_all(true);
     let open_args = smb_client::FileCreateArgs::make_open_existing(access);
@@ -128,7 +128,7 @@ async fn process_group(
         Ok(resource) => match resource {
             smb_client::Resource::File(file) => file,
             other => {
-                let _ = crate::smb::aio::close_resource(other).await;
+                let _ = crate::smb::close_resource(other).await;
                 warn!("SMB hardlink: primary {} is not a file", primary_unc);
                 stats.hardlinks_failed += files.len().saturating_sub(1) as u64;
                 return;
@@ -144,8 +144,8 @@ async fn process_group(
 
     for secondary_path in files.iter().skip(1) {
         let secondary_rel =
-            crate::smb::aio::target_relative_path(source_dir_base, target_prefix, secondary_path);
-        let share_path = crate::smb::aio::share_relative_path(location, &secondary_rel);
+            crate::smb::target_relative_path(source_dir_base, target_prefix, secondary_path);
+        let share_path = crate::smb::share_relative_path(location, &secondary_rel);
         let link_info = smb_client::FileLinkInformation {
             replace_if_exists: false.into(),
             file_name: share_path.as_str().into(),

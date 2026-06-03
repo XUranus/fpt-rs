@@ -23,7 +23,6 @@
 
 use std::path::PathBuf;
 
-pub mod aio;
 pub mod backup;
 pub mod connection;
 pub mod error;

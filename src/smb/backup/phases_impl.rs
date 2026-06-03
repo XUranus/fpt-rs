@@ -26,7 +26,7 @@ impl<'a> crate::backup::aio::phases_trait::PostCopyPhases for SmbPostCopyPhases<
         _failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("SMB: starting hardlink phase...");
-        let hl_stats = crate::smb::aio::hardlink::run_smb_hardlink_phase(
+        let hl_stats = crate::smb::backup::hardlink::run_smb_hardlink_phase(
             ctrl_dir,
             source_dir_base,
             target_prefix,
@@ -49,7 +49,7 @@ impl<'a> crate::backup::aio::phases_trait::PostCopyPhases for SmbPostCopyPhases<
         _failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("SMB: starting delete phase...");
-        let del_stats = crate::smb::aio::delete::run_smb_delete_phase(
+        let del_stats = crate::smb::backup::delete::run_smb_delete_phase(
             ctrl_dir,
             source_dir_base,
             target_prefix,
@@ -72,7 +72,7 @@ impl<'a> crate::backup::aio::phases_trait::PostCopyPhases for SmbPostCopyPhases<
         _failure_recorder: Option<&FailureRecorder>,
     ) {
         info!("SMB: starting mtime phase...");
-        let mt_stats = crate::smb::aio::mtime::run_smb_mtime_phase(
+        let mt_stats = crate::smb::backup::mtime::run_smb_mtime_phase(
             ctrl_dir,
             source_dir_base,
             target_prefix,

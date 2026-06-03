@@ -239,19 +239,19 @@ impl<'a> BackupPostJob<'a> {
                 let manifest = self.local_repo.manifest_path();
 
                 rt.block_on(async move {
-                    crate::smb::aio::upload_local_dir_to_smb(
+                    crate::smb::backup::writer::upload_local_dir_to_smb(
                         &m_repo,
                         &smb_loc_clone,
                         &format!("{copy_folder}/M_REPO"),
                     )
                     .await?;
-                    crate::smb::aio::upload_local_dir_to_smb(
+                    crate::smb::backup::writer::upload_local_dir_to_smb(
                         &c_repo,
                         &smb_loc_clone,
                         &format!("{copy_folder}/C_REPO"),
                     )
                     .await?;
-                    crate::smb::aio::upload_local_file_to_smb(
+                    crate::smb::backup::writer::upload_local_file_to_smb(
                         &manifest,
                         &smb_loc_clone,
                         &format!("{copy_folder}/manifest.json"),
@@ -340,7 +340,7 @@ async fn upload_file_to_nfs(
         .await
         .map_err(|e| format!("NFS connect: {e}"))?;
 
-    crate::nfs::aio::writer::nfs_create_and_write(pool, std::path::PathBuf::from(nfs_path), data)
+    crate::nfs::backup::writer::nfs_create_and_write(pool, std::path::PathBuf::from(nfs_path), data)
         .await
         .map_err(|e| format!("NFS write {nfs_path}: {e}"))
 }
