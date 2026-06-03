@@ -20,9 +20,9 @@ pub(crate) mod fcb;
 pub(crate) mod stats;
 
 // Re-export snapshot types used in RunningBackup fields
-pub(crate) use crate::native::backup::local::delete::DeleteStatsSnapshot;
-pub(crate) use crate::native::backup::local::hardlink::HardlinkStatsSnapshot;
-pub(crate) use crate::native::backup::local::mtime::MtimeStatsSnapshot;
+pub(crate) use crate::native::backup::delete::DeleteStatsSnapshot;
+pub(crate) use crate::native::backup::hardlink::HardlinkStatsSnapshot;
+pub(crate) use crate::native::backup::mtime::MtimeStatsSnapshot;
 pub use stats::BackupStatsSnapshot;
 
 // Aggregate backup/restore modules
@@ -355,7 +355,7 @@ impl BackupTask {
             ));
         }
 
-        let terminate_handle = crate::native::backup::local::spawn_local_backup_pipeline(
+        let terminate_handle = crate::native::backup::spawn_local_backup_pipeline(
             control_file,
             source_dir_base,
             target_dir_base,
@@ -910,7 +910,7 @@ fn run_restore_hardlink_phase(option: &RestoreOption) -> Result<(), RestoreError
         return Ok(());
     }
 
-    crate::native::backup::local::hardlink::run_hardlink_phase(
+    crate::native::backup::hardlink::run_hardlink_phase(
         &option.ctrl_dir,
         &option.meta_dir,
         &option.original_source_base,
@@ -975,7 +975,7 @@ fn run_restore_delete_phase(option: &RestoreOption) -> Result<(), RestoreError> 
         return Ok(());
     }
 
-    crate::native::backup::local::delete::run_delete_phase(
+    crate::native::backup::delete::run_delete_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
@@ -1039,7 +1039,7 @@ fn run_restore_mtime_phase(option: &RestoreOption) -> Result<(), RestoreError> {
         return Ok(());
     }
 
-    crate::native::backup::local::mtime::run_mtime_phase(
+    crate::native::backup::mtime::run_mtime_phase(
         &option.ctrl_dir,
         &option.original_source_base,
         &option.target_dir_base,
