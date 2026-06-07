@@ -55,11 +55,124 @@ The `RoutingLogger` directs log records to specific files based on the module pa
 
 ### How Routing Works
 
+The routing logic is implemented in `src/logging.rs`. The core data structures are:
+
+```rust
+// src/logging.rs
+struct LogRoute {
+    prefix: String,
+    file: Mutex<std::fs::File>,
+}
+
+struct LoggerState {
+    level: log::LevelFilter,       // Info, Debug, or Trace
+    routes: Vec<LogRoute>,         // module->file routes
+    extra: Vec<Mutex<std::fs::File>>, // catch-all files (--log-file)
+}
+
+static STATE: LazyLock<Arc<Mutex<LoggerState>>> = LazyLock::new(|| {
+    Arc::new(Mutex::new(LoggerState {
+        level: log::LevelFilter::Info,
+        routes: Vec::new(),
+        extra: Vec::new(),
+    }))
+});
+```
+
+The routing decision happens in `RoutingLogger::log()` at `src/logging.rs:161`:
+
+```rust
+// src/logging.rs -- RoutingLogger::log()
+fn log(&self, record: &log::Record) {
+    // ... format the line: "YYYY-MM-DD HH:MM:SS [LEVEL] target - message"
+
+    let st = self.state.lock().unwrap();
+    let target = record.target();
+
+    // Find the most specific (longest) matching route.
+    let mut matched: Option<&Mutex<std::fs::File>> = None;
+    for route in &st.routes {
+        if target.starts_with(&route.prefix) {
+            matched = Some(&route.file);
+            break; // routes are sorted longest-prefix-first
+        }
+    }
+
+    if let Some(file_mtx) = matched {
+        // Route match -> write to the route file only (not stdout).
+        if let Ok(mut file) = file_mtx.lock() {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+    } else {
+        // No route -> write to stdout.
+        let _ = writeln!(std::io::stdout(), "{line}");
+    }
+
+    // Always write to catch-all extra files (--log-file).
+    for f_mtx in &st.extra {
+        if let Ok(mut f) = f_mtx.lock() {
+            let _ = writeln!(f, "{line}");
+            let _ = f.flush();
+        }
+    }
+}
+```
+
+The step-by-step routing algorithm:
+
 1. Each log record has a `target()` field (the Rust module path, e.g., `fpt::scanner::engine`).
 2. The logger checks the target against registered routes, sorted longest-prefix-first.
 3. If a route matches, the record goes to that route's file (not stdout).
 4. If no route matches, the record goes to stdout.
 5. All records also go to any catch-all files registered via `--log-file`.
+
+Routes are registered via `add_route()` at `src/logging.rs:121`, which sorts
+routes by prefix length (longest first) for fast lookup:
+
+```rust
+// src/logging.rs
+pub fn add_route(prefix: &str, path: &Path) {
+    if let Ok(f) = std::fs::OpenOptions::new()
+        .append(true).create(true).open(path)
+    {
+        let mut st = STATE.lock().unwrap();
+        st.routes.push(LogRoute {
+            prefix: prefix.to_string(),
+            file: Mutex::new(f),
+        });
+        // Keep routes sorted longest-prefix-first for fast lookup.
+        st.routes.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+    }
+}
+```
+
+The `remove_route()` function at `src/logging.rs:142` clears routes between
+subtasks so each subtask gets its own log file:
+
+```rust
+// src/logging.rs
+pub fn remove_route(prefix: &str) {
+    let mut st = STATE.lock().unwrap();
+    st.routes.retain(|r| !r.prefix.starts_with(prefix));
+}
+```
+
+### Verbosity Initialization
+
+The `init()` function at `src/logging.rs:84` maps the `-v` flag count to a log level:
+
+```rust
+// src/logging.rs
+pub fn init(verbose: u8) {
+    let level = match verbose {
+        0 => log::LevelFilter::Info,   // default
+        1 => log::LevelFilter::Debug,  // -v
+        _ => log::LevelFilter::Trace,  // -vv or more
+    };
+    // ... register the global logger
+}
+```
 
 ### Built-In Routes
 
@@ -166,9 +279,24 @@ The failure log is written to `C_REPO/logs/FSBACKUP_FAILURE.json`.
 
 ## Log Suppression
 
-fpt-rs automatically suppresses noisy log messages from the SMB library (`smb::resource`) that are known to be harmless:
+fpt-rs automatically suppresses noisy log messages from the SMB library (`smb::resource`) that are known to be harmless. The suppression logic is at `src/logging.rs:227`:
 
-- `"Error closing file: ... Unexpected Message ..."`
-- `"Error closing file: ... Network Name Deleted (0xc00000c9)"`
+```rust
+// src/logging.rs
+fn should_suppress_record(record: &log::Record) -> bool {
+    if record.target() != "smb::resource" {
+        return false;
+    }
+    let msg = record.args().to_string();
+    msg.starts_with("Error closing file:")
+        && (msg.contains(
+            "Unexpected Message, Received message for different tree, or tree disconnecting.",
+        ) || msg.contains("Network Name Deleted (0xc00000c9)"))
+}
+```
+
+Suppressed messages:
+- `"Error closing file: ... Unexpected Message ..."` -- occurs during SMB session teardown
+- `"Error closing file: ... Network Name Deleted (0xc00000c9)"` -- share disconnected
 
 These typically occur during SMB session teardown and do not indicate actual data loss.

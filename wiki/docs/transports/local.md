@@ -15,19 +15,22 @@ with `std::fs` for all I/O operations.
 ### BIO Traversal Workers
 
 The local scanner (`src/native/scanner.rs`) uses a pool of OS threads to
-traverse directories in parallel:
+traverse directories in parallel. Each worker pops `DirScanEntry` items from
+a shared `SpillQueue`, processes the directory, and pushes `DirBatchScanResult`
+batches into the output queue.
 
 ```mermaid
 graph LR
     subgraph "Scanner"
-        EQ[Entry Queue]
+        EQ[SpillQueue - DirScanEntry]
         W1[Worker Thread 1]
         W2[Worker Thread 2]
         WN[Worker Thread N]
+        AW[Active Workers Counter]
     end
 
     subgraph "Output"
-        SQ[SpillQueue]
+        OQ[Output BlockingQueue]
         MW[Meta Writers]
         MREPO[M_REPO]
         CREPO[C_REPO]
@@ -36,67 +39,219 @@ graph LR
     EQ --> W1
     EQ --> W2
     EQ --> WN
-    W1 -->|DirBatchScanResult| SQ
-    W2 -->|DirBatchScanResult| SQ
-    WN -->|DirBatchScanResult| SQ
-    SQ --> MW
+    AW -.-> W1
+    AW -.-> W2
+    AW -.-> WN
+    W1 -->|DirBatchScanResult| OQ
+    W2 -->|DirBatchScanResult| OQ
+    WN -->|DirBatchScanResult| OQ
+    OQ --> MW
     MW --> MREPO
     MW --> CREPO
 ```
 
-1. **Entry Queue** -- directories to scan are enqueued via `scanner.enqueue_path()`.
-2. **Worker Threads** -- each worker dequeues a directory, calls `std::fs::read_dir()`,
-   collects file metadata via `stat()`, and pushes a `DirBatchScanResult` into the
-   output queue.
-3. **SpillQueue** -- a bounded in-memory queue that spills to disk when memory usage
-   exceeds a threshold, preventing OOM on large directory trees.
-4. **Meta Writer Threads** -- consume batches from the SpillQueue, serialize metadata
-   into `meta_*.dat` files and directory cache `dcache_*.dat` files in M_REPO.
+### Worker Thread Loop
 
-### Scanner Configuration
+Each worker thread runs in a loop, processing one directory at a time
+(`src/native/scanner.rs`):
 
-The `ScannerConfig` struct controls local scanning:
+```rust
+pub fn start_workers(
+    context: &ScanWorkerContext,
+    workers_count: usize,
+) -> Vec<thread::JoinHandle<()>> {
+    let active_workers = Arc::new(AtomicI32::new(0));
 
-| Field                     | Description                                              |
-|---------------------------|----------------------------------------------------------|
-| `ctrl_dir`                | Output directory for control files (C_REPO/ctrl)         |
-| `meta_dir`                | Output directory for metadata files (M_REPO/meta)        |
-| `worker_count`            | Number of traversal worker threads                       |
-| `writer_count`            | Number of metadata writer threads                        |
-| `prev_meta_dir`           | Previous metadata directory for incremental scanning     |
-| `stats_only`              | Skip on-disk outputs, only collect statistics            |
-| `enable_aggregation`      | Whether to store small files in aggregate blobs          |
-| `max_aggregate_blob_size` | Maximum aggregate blob size in bytes                     |
-| `aggregate_file_threshold`| Files smaller than this are aggregate candidates         |
-| `failure_log`             | Optional failure log configuration                       |
-| `retry_policy`            | Retry policy for scan operations                         |
-| `path_filters`            | Compiled path include/exclude filter patterns            |
+    for i in 0..workers_count {
+        let active_workers = Arc::clone(&active_workers);
+        let context = context.clone();
 
-### Incremental Scanning
+        let handle = thread::spawn(move || {
+            loop {
+                match context.dirent_queue.pop() {
+                    Ok(Some(dir_entry)) => {
+                        active_workers.fetch_add(1, Ordering::SeqCst);
+                        process_dir_entry(dir_entry, &context);
+                        active_workers.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    Ok(None) => {
+                        // Queue empty -- wait briefly then check for termination
+                        thread::sleep(Duration::from_millis(100));
+                        let queue_empty = context.dirent_queue.is_empty();
+                        let no_active = active_workers.load(Ordering::SeqCst) == 0;
+                        if queue_empty && no_active { break; }
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(100)),
+                }
+            }
+        });
+        worker_handles.push(handle);
+    }
+    worker_handles
+}
+```
 
-When `prev_meta_dir` is set, the scanner compares the current filesystem state
-against the previous metadata. Only changed files are written to new control
-files, significantly reducing backup time for large, mostly-static datasets.
+Workers terminate when the queue is empty **and** no other workers are active.
+This prevents premature exit when subdirectories are still being discovered.
+
+### Directory Processing
+
+`process_dir_entry()` handles a single directory (`src/native/scanner.rs`):
+
+1. **Stat the directory** -- captures dir metadata via `fstat::stat_dir()`
+2. **Iterate entries** -- calls `std::fs::read_dir()` with retry logic
+3. **Classify each entry** -- dispatches to specialized handlers:
+
+| Entry Type       | Handler                       | Action                              |
+|------------------|-------------------------------|-------------------------------------|
+| Symlink          | `process_symlink_entry()`     | Stat, optionally follow if dir      |
+| Directory        | `process_dir_subentry()`      | Apply filters, enqueue for scan     |
+| Regular file     | `process_regular_file_entry()`| Stat, collect metadata              |
+| Special (FIFO, socket, etc.) | `process_special_file_entry()` | Stat, collect metadata |
+
+All `stat()` calls use `retry_scan_io()` which retries according to the
+configured `RetryPolicy`:
+
+```rust
+fn retry_scan_io<T, F>(context: &ScanWorkerContext, mut op: F) -> io::Result<(T, u32)>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let policy = context.scan_option.retry_policy;
+    let mut attempts = 0_u32;
+    loop {
+        attempts += 1;
+        match op() {
+            Ok(v) => return Ok((v, attempts)),
+            Err(e) if policy.should_retry(attempts) => {
+                thread::sleep(policy.delay_for_attempt(attempts));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+### Filtering
+
+Before processing any entry, the scanner applies filters:
+
+- **Hidden files**: skipped when `scan_hidden` is false (Unix: name starts with
+  `.`; Windows: also checks `FILE_ATTRIBUTE_HIDDEN`)
+- **Configured skip entries**: names in `skip_entries` set (e.g., `"node_modules"`)
+- **Path filters**: compiled `ScanPathFilterSet` with include/exclude patterns
+  for both directories and files
+
+```rust
+if !scan_option.meta_option.scan_hidden && is_hidden_entry(&entry_name, &entry) {
+    continue;
+}
+if scan_option.meta_option.skip_entries.contains(&entry_name) {
+    continue;
+}
+```
 
 ## Backup Pipeline
 
-### Blocking I/O Copy Engine
+### LocalSource and LocalTarget
 
-The local backup uses the BIO (Blocking I/O) pipeline for data transfer.
-All reads and writes happen on dedicated OS threads:
+The AIO pipeline traits `SourceReader` and `TargetWriter` are implemented for
+local filesystem I/O in `src/backup/aio/transport.rs`:
 
-```mermaid
-sequenceDiagram
-    participant Ctrl as Control File
-    participant Reader as Reader Thread
-    participant Writer as Writer Thread
-    participant Target as Target FS
+**LocalSource** reads file data via blocking I/O on a spawned thread:
 
-    Ctrl->>Reader: FileControlBlock
-    Reader->>Reader: read_local_file_chunk()
-    Reader->>Writer: CopyBlock + data
-    Writer->>Target: write_local_file_chunk()
-    Writer->>Ctrl: mark complete
+```rust
+#[derive(Clone)]
+pub struct LocalSource {
+    pub buffer_size: usize,
+}
+
+impl SourceReader for LocalSource {
+    fn read_block(
+        &self,
+        mut block: CopyBlock,
+    ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
+        let buffer_size = clamp_copy_buffer_size(self.buffer_size);
+        Box::pin(async move {
+            let src_path = block.src_path.clone();
+            let meta_size = block.file_size;
+            let offset = block.src_offset;
+            let read_result = task::spawn_blocking(move || {
+                read_local_file_chunk(&src_path, offset, meta_size, buffer_size)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
+
+            match read_result {
+                Ok(buf) => {
+                    block.src_offset = block.src_offset.saturating_add(buf.len() as u64);
+                    block.is_last = block.src_offset >= block.file_size;
+                    block.data = buf;
+                    Ok(block)
+                }
+                Err(msg) => Err((block, msg)),
+            }
+        })
+    }
+}
+```
+
+**LocalTarget** writes file data via blocking I/O, supporting sparse files:
+
+```rust
+#[derive(Clone)]
+pub struct LocalTarget {
+    pub base: PathBuf,
+}
+
+impl TargetWriter for LocalTarget {
+    fn create_dir(&self, path: PathBuf) -> BoxFuture<'static, Result<(), String>> {
+        let full_path = self.base.join(path);
+        Box::pin(async move {
+            task::spawn_blocking(move || {
+                std::fs::create_dir_all(&full_path)
+                    .map_err(|e| format!("mkdir {:?}: {e}", full_path))
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")))
+        })
+    }
+
+    fn write_block(
+        &self,
+        mut block: CopyBlock,
+    ) -> BoxFuture<'static, Result<CopyBlock, (CopyBlock, String)>> {
+        let dst_path = self.base.join(&block.dst_path);
+        let buf = block.data.clone();
+        let offset = block.dst_offset;
+        let mark_sparse = block.meta.sparse_range.is_some();
+        Box::pin(async move {
+            let result = task::spawn_blocking(move || {
+                write_local_file_chunk(&dst_path, offset, &buf, mark_sparse)
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("blocking task panicked: {e}")));
+
+            match result {
+                Ok(()) => {
+                    block.dst_offset = block.dst_offset.saturating_add(block.data.len() as u64);
+                    Ok(block)
+                }
+                Err(msg) => Err((block, msg)),
+            }
+        })
+    }
+}
+```
+
+The copy buffer size is clamped between 256 KB and 4 MB:
+
+```rust
+pub const DEFAULT_COPY_BUFFER_SIZE: usize = 1024 * 1024; // 1 MB
+
+pub fn clamp_copy_buffer_size(size: usize) -> usize {
+    size.clamp(256 * 1024, 4 * 1024 * 1024)
+}
 ```
 
 ### Post-Copy Phases
@@ -140,15 +295,28 @@ directory mtimes.
 ### Phase Implementation
 
 All three phases are implemented in `src/native/backup/phases_impl.rs` via the
-`PostCopyPhases` trait:
+`PostCopyPhases` trait (`src/backup/aio/phases_trait.rs`):
 
 ```rust
-pub struct LocalPostCopyPhases;
+pub trait PostCopyPhases: Send + Sync {
+    async fn run_hardlink_phase(
+        &self, ctrl_dir: &Path, source_dir_base: &Path,
+        target_prefix: &str, phase_flags: PhaseFlags,
+        retry_policy: RetryPolicy, failure_recorder: Option<&FailureRecorder>,
+    ) { /* default: no-op */ }
 
-impl PostCopyPhases for LocalPostCopyPhases {
-    async fn run_hardlink_phase(&self, ctrl_dir, ...) { ... }
-    async fn run_delete_phase(&self, ctrl_dir, ...) { ... }
-    async fn run_mtime_phase(&self, ctrl_dir, ...) { ... }
+    async fn run_delete_phase(&self, ...) { /* default: no-op */ }
+    async fn run_mtime_phase(&self, ...) { /* default: no-op */ }
+
+    async fn run_all_phases(
+        &self, ctrl_dir: &Path, source_dir_base: &Path,
+        target_prefix: &str, phase_flags: PhaseFlags,
+        retry_policy: RetryPolicy, failure_recorder: Option<&FailureRecorder>,
+    ) {
+        self.run_hardlink_phase(...).await;
+        self.run_delete_phase(...).await;
+        self.run_mtime_phase(...).await;
+    }
 }
 ```
 
@@ -166,29 +334,37 @@ D_REPO (staging) --> read_local_file_chunk() --> write_local_file_chunk() --> ta
 ### RestoreOps Implementation
 
 The `LocalRestoreOps` struct (`src/native/backup/restore_ops.rs`) implements
-transport-specific restore operations:
+the `RestoreOps` trait (`src/backup/aio/restore_ops.rs`):
 
 ```rust
-pub struct LocalRestoreOps;
-
-impl RestoreOps for LocalRestoreOps {
-    fn create_symlink(&self, link_path: &Path, target: &str) -> Result<(), String> {
-        // Create symbolic link on local filesystem
+/// Transport-specific operations needed during restore.
+///
+/// The default implementations are no-ops, so transports only override
+/// what they support.
+pub trait RestoreOps: Send + Sync {
+    /// Create a symlink at `link_path` pointing to `target`.
+    fn create_symlink(&self, _link_path: &Path, _target: &str) -> Result<(), String> {
+        Ok(())
     }
 
-    fn restore_metadata(&self, path: &Path, meta: &MetaCommon) {
-        // Restore permissions, timestamps, xattrs, ACLs
-    }
+    /// Restore common metadata (permissions, timestamps, xattrs, ACLs) on a file.
+    fn restore_metadata(&self, _path: &Path, _meta: &MetaCommon) {}
 }
 ```
+
+Only local targets override these methods. Remote targets (NFS, SMB) handle
+metadata through their own transport-specific mechanisms during write operations.
 
 ## Key Source Files
 
 | File                               | Purpose                                    |
 |------------------------------------|--------------------------------------------|
-| `src/native/scanner.rs`            | Blocking I/O directory traversal           |
-| `src/native/backup/local_copy.rs`  | Local file read/write operations           |
-| `src/native/backup/local_block.rs` | Block-level copy helpers                   |
+| `src/native/scanner.rs`            | BIO directory traversal with worker pool   |
+| `src/backup/aio/transport.rs`      | `SourceReader`/`TargetWriter` traits + `LocalSource`/`LocalTarget` |
+| `src/backup/aio/local_fs.rs`       | `read_local_file_chunk()`, `write_local_file_chunk()` |
+| `src/backup/aio/phases_trait.rs`   | `PostCopyPhases` trait definition          |
+| `src/backup/aio/restore_ops.rs`    | `RestoreOps` trait definition              |
+| `src/backup/copy_block.rs`         | `CopyBlock` transfer unit                  |
 | `src/native/backup/hardlink.rs`    | Hardlink creation phase                    |
 | `src/native/backup/delete.rs`      | Delete phase                               |
 | `src/native/backup/mtime.rs`       | Mtime restoration phase                    |
@@ -196,4 +372,3 @@ impl RestoreOps for LocalRestoreOps {
 | `src/native/backup/restore_ops.rs` | `RestoreOps` trait implementation          |
 | `src/native/fstat.rs`              | File stat helpers                          |
 | `src/native/fwrite_meta.rs`        | Metadata write helpers                     |
-| `src/backup/aio/transport.rs`      | `LocalSource` / `LocalTarget` structs      |

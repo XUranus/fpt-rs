@@ -9,10 +9,33 @@ description: Complete reference for the fptcli backup and restore CLI tool
 `fptcli` is the primary CLI tool for creating backup copies and restoring data.
 It supports local, NFS, and SMB sources and targets with a unified interface.
 
+**Source file:** `src/bin/fptcli.rs`
+
 ## Synopsis
 
 ```text
 fptcli <COMMAND> [OPTIONS]
+```
+
+## CLI Structure
+
+The CLI is built with `clap` using the derive API:
+
+```rust
+#[derive(Parser, Debug)]
+#[command(name = "fptcli")]
+#[command(about = "File Protection Tool - Backup and Restore CLI")]
+#[command(version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Backup { ... },
+    Restore { ... },
+}
 ```
 
 ## Subcommands
@@ -40,6 +63,20 @@ fptcli backup --data <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | NFS      | `nfs://127.0.0.1/opt/dataset?sub=/ds1`                        |
 | SMB      | `smb://127.0.0.1/share/root?username=u&password=p`            |
 
+Location parsing (`parse_data_location()`) detects the transport by URL prefix:
+
+```rust
+fn parse_data_location(spec: &str, ...) -> Result<DataLocation, ...> {
+    if spec.starts_with("nfs://") {
+        // Parse NfsLocation::from_url(), apply connection_count, uid/gid
+    } else if spec.starts_with("smb://") || spec.starts_with(r"smb:\\") {
+        // Parse SmbLocation::from_url()
+    } else {
+        Ok(DataLocation::local(PathBuf::from(spec)))
+    }
+}
+```
+
 #### Backup Format Flags
 
 | Flag                      | Short | Default  | Description                                       |
@@ -51,6 +88,33 @@ fptcli backup --data <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | `--blob-size <MB>`        |       | `4`      | Aggregate blob size in MB (aggregated only)       |
 | `--threshold <KB>`        |       | `1024`   | Aggregate file threshold in KB (aggregated only)  |
 
+The actual Rust definitions:
+
+```rust
+#[arg(long, short = 'f', value_enum, default_value = "common")]
+format: BackupFormat,
+
+#[arg(long, action = clap::ArgAction::SetTrue)]
+aggregate: bool,
+
+#[arg(long, short = 'i', value_name = "DIR")]
+incremental_base: Option<PathBuf>,
+
+#[arg(long, value_enum, default_value = "shard")]
+aggregate_layout: AggregateLayoutArg,
+
+#[arg(long, default_value = "4", value_name = "MB")]
+blob_size: u64,
+
+#[arg(long, default_value = "1024", value_name = "KB")]
+threshold: u64,
+```
+
+:::caution
+Incremental backup is only valid with aggregated format. The CLI returns an
+error if `--incremental-base` is used with `--format common`.
+:::
+
 #### Phase Flags
 
 | Flag           | Default | Description                    |
@@ -58,6 +122,14 @@ fptcli backup --data <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | `--hardlink`   | `false` | Enable hardlink phase          |
 | `--delete`     | `false` | Enable delete phase            |
 | `--mtime`      | `false` | Enable mtime phase             |
+
+Phase flags are disabled for aggregated format:
+
+```rust
+enable_hardlink: hardlink && !matches!(format, BackupFormat::Aggregated),
+enable_delete: delete && !matches!(format, BackupFormat::Aggregated),
+enable_mtime: mtime && !matches!(format, BackupFormat::Aggregated),
+```
 
 #### Scan Filter Flags
 
@@ -67,6 +139,34 @@ fptcli backup --data <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | `--include-file-pattern <PAT>`| Include files matching pattern (repeatable)       |
 | `--exclude-dir-pattern <PAT>` | Exclude directories matching pattern (repeatable) |
 | `--exclude-file-pattern <PAT>`| Exclude files matching pattern (repeatable)       |
+
+These are bundled in a `ScanFilterArgs` struct and compiled into a
+`ScanPathFilterSet`:
+
+```rust
+#[derive(clap::Args, Debug, Clone, Default)]
+struct ScanFilterArgs {
+    #[arg(long, value_name = "PATTERN")]
+    include_dir_pattern: Vec<String>,
+    #[arg(long, value_name = "PATTERN")]
+    include_file_pattern: Vec<String>,
+    #[arg(long, value_name = "PATTERN")]
+    exclude_dir_pattern: Vec<String>,
+    #[arg(long, value_name = "PATTERN")]
+    exclude_file_pattern: Vec<String>,
+}
+
+impl ScanFilterArgs {
+    fn compile(&self) -> Result<Option<ScanPathFilterSet>, std::io::Error> {
+        ScanPathFilterSet::compile(
+            self.include_dir_pattern.clone(),
+            self.include_file_pattern.clone(),
+            self.exclude_dir_pattern.clone(),
+            self.exclude_file_pattern.clone(),
+        ).map_err(std::io::Error::other)
+    }
+}
+```
 
 #### Concurrency Flags
 
@@ -79,12 +179,55 @@ fptcli backup --data <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | `--smb-copy-tasks <COUNT>`  |       | `0`     | Concurrent SMB copy tasks (0 = auto)    |
 | `--buffer-size <SIZE_KB>`   |       | `1024`  | Per-file copy buffer size in KB         |
 
+The actual Rust definitions with defaults:
+
+```rust
+#[arg(long, short = 'j', default_value = "4", value_name = "COUNT")]
+jobs: usize,
+
+#[arg(long, short = 'w', default_value = "8", value_name = "COUNT")]
+workers: usize,
+
+#[arg(long, default_value = "32", value_name = "COUNT")]
+nfs_connections: usize,
+
+#[arg(long, default_value = "4", value_name = "COUNT")]
+smb_connections: usize,
+
+#[arg(long, default_value = "0", value_name = "COUNT")]
+smb_copy_tasks: usize,
+
+#[arg(long, default_value = "1024", value_name = "SIZE_KB")]
+buffer_size: usize,
+```
+
+The buffer size is clamped at job creation:
+
+```rust
+copy_buffer_size: (buffer_size * 1024).clamp(256 * 1024, 4 * 1024 * 1024),
+```
+
 #### NFS Flags
 
 | Flag              | Description                                           |
 |-------------------|-------------------------------------------------------|
 | `--nfs-uid <UID>` | AUTH_UNIX uid (overrides `uid=` in URL)               |
 | `--nfs-gid <GID>` | AUTH_UNIX gid (overrides `gid=` in URL)               |
+
+NFS URL parsing applies connection count and credential overrides:
+
+```rust
+#[cfg(feature = "nfs")]
+fn parse_nfs_location(url: &str, connections: usize, uid: Option<u32>, gid: Option<u32>)
+    -> Result<DataLocation, Box<dyn std::error::Error>>
+{
+    let mut loc = NfsLocation::from_url(url)?.connection_count(connections);
+    let final_uid = uid.unwrap_or(loc.uid);
+    let final_gid = gid.unwrap_or(loc.gid);
+    loc = loc.credentials(final_uid, final_gid);
+    Ok(DataLocation::nfs(loc))
+}
+```
 
 #### Retry Flags
 
@@ -95,6 +238,17 @@ fptcli backup --data <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | `--retry-backoff`       | `1.0`    | Exponential backoff multiplier               |
 | `--retry-max-delay-ms`  | `1000`   | Maximum retry delay (ms)                     |
 | `--retry-jitter`        | `0.0`    | Jitter ratio (0.0..1.0)                      |
+
+These are combined into a `RetryPolicy`:
+
+```rust
+let retry_policy = RetryPolicy::new(
+    operation_retries,
+    std::time::Duration::from_millis(retry_delay_ms),
+)
+.with_backoff(retry_backoff, std::time::Duration::from_millis(retry_max_delay_ms))
+.with_jitter(retry_jitter);
+```
 
 #### Logging Flags
 
@@ -132,6 +286,28 @@ fptcli restore --copy <PATH_OR_URL> --target <PATH_OR_URL> [OPTIONS]
 | `--hardlinks`          |       | `false`    | Restore hardlinks                          |
 | `--mtime`              |       | `true`     | Restore modification times                 |
 | `--path <PATH>`        |       |            | Fine-grained restore path (repeatable)     |
+
+The actual Rust definitions:
+
+```rust
+#[arg(long, short = 'p', value_enum, default_value = "replace")]
+policy: RestorePolicyArg,
+
+#[arg(long, short = 'j', default_value = "4", value_name = "COUNT")]
+jobs: usize,
+
+#[arg(long, short = 'w', default_value = "8", value_name = "COUNT")]
+workers: usize,
+
+#[arg(long, action = clap::ArgAction::SetTrue)]
+hardlinks: bool,
+
+#[arg(long, action = clap::ArgAction::SetTrue, default_value = "true")]
+mtime: bool,
+
+#[arg(long = "path", value_name = "PATH")]
+paths: Vec<String>,
+```
 
 #### Path Filtering
 
@@ -172,6 +348,57 @@ fptcli restore --copy /backup/copy1 --target /restore \
 | `replace`    | Overwrite existing files unconditionally              |
 | `skip`       | Skip files that already exist on the target           |
 | `keep-newer` | Only replace if the source file is newer than target  |
+
+## File Descriptor Limit
+
+On Unix, `fptcli` automatically raises the file descriptor soft limit to the
+hard limit at startup. This prevents `EMFILE` ("Too many open files") errors
+when backing up large datasets with many small files:
+
+```rust
+#[cfg(unix)]
+{
+    use nix::sys::resource::{getrlimit, setrlimit, Resource};
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft, hard)) => {
+            if soft < hard {
+                let _ = setrlimit(Resource::RLIMIT_NOFILE, hard, hard);
+            }
+        }
+        Err(e) => eprintln!("Warning: failed to query fd limit: {}", e),
+    }
+}
+```
+
+## Backup Summary Output
+
+After a successful backup, `fptcli` prints a summary:
+
+```text
+============================================================
+Backup Summary
+============================================================
+Source type : NFS
+Target type : Local
+Format      : AGGR
+Aggregation : enabled
+Layout      : shard
+Blob size   : 4 MiB
+Threshold   : 1024 KiB
+Source path : nfs://192.168.1.10/export?sub=/ds1
+Target path : /backup/nfs_copy
+Copy UUID   : 550e8400-e29b-41d4-a716-446655440000
+Copy root   : /backup/nfs_copy/550e8400-...
+Subtasks    : 4 ok, 0 failed
+Total files : 15000
+Total dirs  : 500
+Total bytes : 1073741824
+Elapsed     : 2m 15.123s
+File rate   : 111.11 files/s
+Data rate   : 7.95 MiB/s
+
+Backup completed successfully!
+```
 
 ## Examples
 

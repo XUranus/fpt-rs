@@ -14,7 +14,9 @@ const config = {
   projectName: 'fpt-rs',
   onBrokenLinks: 'warn',
   onBrokenMarkdownLinks: 'warn',
-  i18n: { defaultLocale: 'en', locales: ['en'] },
+  i18n: { defaultLocale: 'en', locales: ['en', 'zh-CN'] },
+  markdown: { mermaid: true },
+  themes: ['@docusaurus/theme-mermaid'],
   presets: [
     ['classic', /** @type {import('@docusaurus/preset-classic').Options} */ ({
       docs: {

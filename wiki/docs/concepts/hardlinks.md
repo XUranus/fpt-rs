@@ -11,27 +11,129 @@ A hardlink is a directory entry that shares the same inode (and therefore the sa
 
 The scanner detects hardlinks by examining each file's link count (`nlink` on Unix, `GetFileInformationByHandle` on Windows). Files with `nlink > 1` are potential hardlink candidates.
 
+During scanning, the scanner maintains an in-memory `HardlinkIndex` (`src/scanner/metadata/hardlink.rs`) that groups files by `(device, inode)`:
+
+```rust
+// src/scanner/metadata/hardlink.rs
+#[derive(Debug, Default)]
+pub struct HardlinkIndex {
+    inode_map: HashMap<(u64, u64), usize>,  // (device, inode) -> group index
+    groups: Vec<HardlinkGroup>,
+}
+
+#[derive(Debug, Default)]
+pub struct HardlinkGroup {
+    pub inode: u64,
+    pub device: u64,
+    pub link_count: u32,
+    pub files: Vec<(u32, u32, String)>,  // (meta_fid, meta_offset, path)
+}
+```
+
+The `add_file()` method groups files by inode:
+
+```rust
+// src/scanner/metadata/hardlink.rs
+impl HardlinkIndex {
+    pub fn add_file(
+        &mut self,
+        inode: u64,
+        device: u64,
+        link_count: u32,
+        meta_fid: u32,
+        meta_offset: u32,
+        path: String,
+    ) -> bool {
+        if link_count <= 1 {
+            return false;  // not a hardlink
+        }
+        let key = (device, inode);
+        if let Some(&idx) = self.inode_map.get(&key) {
+            self.groups[idx].files.push((meta_fid, meta_offset, path));
+        } else {
+            let idx = self.groups.len();
+            let mut group = HardlinkGroup {
+                inode, device, link_count,
+                files: Vec::with_capacity(link_count as usize),
+            };
+            group.files.push((meta_fid, meta_offset, path));
+            self.groups.push(group);
+            self.inode_map.insert(key, idx);
+        }
+        true
+    }
+}
+```
+
 ```mermaid
 flowchart TD
     A[Scanner reads directory] --> B{For each file}
     B --> C[stat / lstat]
     C --> D{links > 1?}
     D -->|No| E[Normal file<br/>Write to copy.txt]
-    D -->|Yes| F[Record device + inode<br/>in HardlinkInodeEntry]
-    F --> G[Record file path<br/>in HardlinkFileEntry]
-    G --> H[Group by<br/>device + inode pair]
+    D -->|Yes| F[HardlinkIndex::add_file<br/>device + inode + meta_fid + path]
+    F --> G[Group by<br/>device + inode pair]
 ```
 
-During scanning, the scanner maintains an in-memory map of `(device, inode) -> Vec<path>`. When a file with `nlink > 1` is encountered:
+The `HardlinkIndex` can be serialized to a control file:
 
-1. A `HardlinkInodeEntry` is written with the inode number, device number, and link count
-2. A `HardlinkFileEntry` is written for each path that shares that inode
-
-The control file interleaves these as `Inode` then `File` records, forming groups.
+```rust
+// src/scanner/metadata/hardlink.rs
+impl HardlinkIndex {
+    pub fn write_to_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        let mut writer = HardlinkControlFileWriter::new(path)?;
+        for group in &self.groups {
+            writer.write_inode(&HardlinkInodeEntry {
+                inode: group.inode,
+                device: group.device,
+                link_count: group.link_count,
+            })?;
+            for (meta_fid, meta_offset, path) in &group.files {
+                writer.write_file(&HardlinkFileEntry {
+                    meta_fid: *meta_fid,
+                    meta_offset: *meta_offset,
+                    path: path.clone(),
+                })?;
+            }
+        }
+        writer.finish()
+    }
+}
+```
 
 ## Control File Format
 
-The `hardlink.txt` binary file contains:
+The `hardlink.txt` binary file uses the standard control file codec (`src/scanner/metadata/hardlink.rs`). The magic identifier is `#FPT_HARDLINK_CTRL_FILE`.
+
+### Data Structures
+
+```rust
+// src/scanner/metadata/hardlink.rs
+const HARDLINK_MAGIC: &str = "#FPT_HARDLINK_CTRL_FILE";
+const RECORD_TYPE_INODE: u8 = 1;
+const RECORD_TYPE_FILE: u8 = 2;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HardlinkInodeEntry {
+    pub inode: u64,
+    pub device: u64,
+    pub link_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HardlinkFileEntry {
+    pub meta_fid: u32,
+    pub meta_offset: u32,
+    pub path: String,
+}
+
+pub enum HardlinkEntry {
+    Inode(HardlinkInodeEntry),
+    File(HardlinkFileEntry),
+}
+```
+
+### Record Layout
 
 ```mermaid
 block-beta
@@ -53,9 +155,24 @@ block-beta
     end
 ```
 
-Each record is length-prefixed (4-byte little-endian length, then payload). The payload starts with a 1-byte record type tag (`1` = Inode, `2` = File).
+Each record is length-prefixed (4-byte little-endian length, then payload). The payload starts with a 1-byte record type tag.
 
 ### Inode Record Payload (21 bytes)
+
+Written by `write_inode()`:
+
+```rust
+// src/scanner/metadata/hardlink.rs
+pub fn write_inode(&mut self, entry: &HardlinkInodeEntry) -> io::Result<()> {
+    let mut payload = Vec::with_capacity(1 + 8 + 8 + 4);
+    put_u8(&mut payload, RECORD_TYPE_INODE);   // 1 byte
+    put_u64(&mut payload, entry.inode);         // 8 bytes
+    put_u64(&mut payload, entry.device);        // 8 bytes
+    put_u32(&mut payload, entry.link_count);    // 4 bytes
+    write_record(&mut self.fwriter, &payload)?;
+    Ok(())
+}
+```
 
 | Offset | Size | Field |
 |---|---|---|
@@ -66,6 +183,23 @@ Each record is length-prefixed (4-byte little-endian length, then payload). The 
 
 ### File Record Payload (variable)
 
+Written by `write_file()`:
+
+```rust
+// src/scanner/metadata/hardlink.rs
+pub fn write_file(&mut self, entry: &HardlinkFileEntry) -> io::Result<()> {
+    let path = entry.path.as_bytes();
+    let mut payload = Vec::with_capacity(1 + 4 + 4 + 4 + path.len());
+    put_u8(&mut payload, RECORD_TYPE_FILE);     // 1 byte
+    put_u32(&mut payload, entry.meta_fid);      // 4 bytes
+    put_u32(&mut payload, entry.meta_offset);   // 4 bytes
+    put_u32(&mut payload, path.len() as u32);   // 4 bytes
+    put_bytes(&mut payload, path);              // N bytes
+    write_record(&mut self.fwriter, &payload)?;
+    Ok(())
+}
+```
+
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 1 | Type tag (`0x02`) |
@@ -73,6 +207,44 @@ Each record is length-prefixed (4-byte little-endian length, then payload). The 
 | 5 | 4 | `meta_offset` -- byte offset in metadata file (u32 LE) |
 | 9 | 4 | Path length in bytes (u32 LE) |
 | 13 | N | Path (UTF-8) |
+
+### Reading Hardlink Files
+
+The `HardlinkControlFileReader` implements `Iterator` for streaming reads:
+
+```rust
+// src/scanner/metadata/hardlink.rs
+impl Iterator for HardlinkControlFileReader {
+    type Item = io::Result<HardlinkEntry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let payload = match read_record(&mut self.freader) {
+            Ok(Some(payload)) => payload,
+            Ok(None) => return None,
+            Err(err) => return Some(Err(err)),
+        };
+        let mut cursor = 0usize;
+        let record_type = take_u8(&payload, &mut cursor)?;
+        match record_type {
+            RECORD_TYPE_INODE => {
+                let inode = take_u64(&payload, &mut cursor)?;
+                let device = take_u64(&payload, &mut cursor)?;
+                let link_count = take_u32(&payload, &mut cursor)?;
+                Some(Ok(HardlinkEntry::Inode(HardlinkInodeEntry { inode, device, link_count })))
+            }
+            RECORD_TYPE_FILE => {
+                let meta_fid = take_u32(&payload, &mut cursor)?;
+                let meta_offset = take_u32(&payload, &mut cursor)?;
+                let path_len = take_u32(&payload, &mut cursor)? as usize;
+                let path = take_bytes(&payload, &mut cursor, path_len)?;
+                let path = std::str::from_utf8(path)?.to_string();
+                Some(Ok(HardlinkEntry::File(HardlinkFileEntry { meta_fid, meta_offset, path })))
+            }
+            _ => Some(Err(io::Error::new(InvalidData, "unknown hardlink record type"))),
+        }
+    }
+}
+```
 
 ## Backup Phase -- Creating Hardlinks
 

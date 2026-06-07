@@ -20,6 +20,127 @@ This guide explains how to tune fpt-rs for maximum throughput by adjusting worke
 | `--blob-size` | 4 MB | Aggregate blob maximum size |
 | `--threshold` | 1024 KB | File size threshold for aggregation |
 
+:::info Source of defaults
+These defaults come directly from the source code. The scan-level defaults are
+defined in `src/scanner/options.rs` and the backup-level defaults in
+`src/backup.rs`. See the sections below for exact values.
+:::
+
+### Scan-Level Defaults (from `src/scanner/options.rs`)
+
+The `ScanOption::default()` implementation at `src/scanner/options.rs:236`
+sets these values:
+
+```rust
+// src/scanner/options.rs
+impl Default for ScanOption {
+    fn default() -> Self {
+        Self {
+            max_depth: None,            // unlimited depth
+            worker_count: 8,            // traversal worker threads
+            writer_count: 4,            // metadata writer threads
+            target_dir: TargetDirOption {
+                ctrl_dir: PathBuf::from("/tmp/fpt/ctrl"),
+                meta_dir: PathBuf::from("/tmp/fpt/meta"),
+                prev_meta_dir: None,
+            },
+            queue_option: QueueOption {
+                temp_dir: PathBuf::from("/tmp/fpt/cache"),
+                memory_upper_bound: 100_000,   // spill threshold
+                memory_lower_bound: 50_000,    // reload threshold
+                spill_load_batch_size: 20_000, // items per disk batch
+            },
+            shard_option: ShardOption::default(),
+            // ...
+        }
+    }
+}
+```
+
+The `MetaScanOption::default()` at `src/scanner/options.rs:218` disables
+expensive metadata collection by default:
+
+```rust
+// src/scanner/options.rs
+impl Default for MetaScanOption {
+    fn default() -> Self {
+        Self {
+            scan_acl: false,             // disabled for performance
+            scan_xattrs: false,          // may require elevated privileges
+            scan_hardlinks: false,       // disabled by default
+            scan_hidden: false,          // skip dot-files
+            follow_symlinks: false,      // safe default (avoid loops)
+            skip_entries: Vec::new(),    // no entries skipped by default
+            path_filters: None,          // no path filters
+            skip_block_devices: true,    // safe default
+            enable_aggregation: false,   // off by default
+            max_aggregate_blob_size: DEFAULT_MAX_AGGREGATE_BLOB_SIZE, // 64 MB
+            aggregate_file_threshold: DEFAULT_AGGREGATE_FILE_THRESHOLD, // 1 MB
+        }
+    }
+}
+```
+
+The `ShardOption::default()` at `src/scanner/options.rs:206`:
+
+```rust
+// src/scanner/options.rs
+impl Default for ShardOption {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            num_shards: 16,
+            max_entries_copy: 1_000_000,
+            max_entries_other: 5_000_000,
+            max_size: 100 * 1024 * 1024, // 100 MB
+        }
+    }
+}
+```
+
+### Aggregate Defaults (from `src/scanner/options.rs`)
+
+The aggregate-related constants are defined at `src/scanner/options.rs:21`:
+
+```rust
+// src/scanner/options.rs
+pub const DEFAULT_MAX_AGGREGATE_BLOB_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+pub const DEFAULT_AGGREGATE_FILE_THRESHOLD: u64 = 1024 * 1024;     // 1 MB
+pub const DEFAULT_SCAN_QUEUE_CAPACITY: usize = 1000;
+pub const DEFAULT_MPSC_CHANNEL_CAPACITY: usize = 256;
+```
+
+### Backup-Level Defaults (from `src/backup.rs`)
+
+The `BackupOption` at `src/backup.rs` uses a builder pattern. The copy buffer
+size is clamped between 256 KB and 4 MB:
+
+```rust
+// src/backup/aio/transport.rs
+pub const DEFAULT_COPY_BUFFER_SIZE: usize = 1024 * 1024; // 1 MB
+
+pub fn clamp_copy_buffer_size(size: usize) -> usize {
+    size.clamp(256 * 1024, 4 * 1024 * 1024)
+}
+```
+
+The `RetryPolicy::default()` at `src/failure.rs:78`:
+
+```rust
+// src/failure.rs
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            retry_delay: Duration::from_secs(1),
+            backoff_multiplier: 1.0,
+            max_retry_delay: Duration::from_secs(1),
+            jitter_ratio: 0.0,
+        }
+    }
+}
+```
+
 ## Worker Threads (`-w`)
 
 The worker count controls how many files are copied in parallel within a single subtask. Each worker reads from the source, writes to the target, and verifies the copy.
