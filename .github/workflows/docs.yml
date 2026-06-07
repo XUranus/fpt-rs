@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'wiki/**'
+      - 'docs/**'
       - '.github/workflows/docs.yml'
 
 permissions:
@@ -27,31 +27,20 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: wiki/package-lock.json
+          cache-dependency-path: docs/package-lock.json
 
       - name: Install dependencies
-        working-directory: wiki
+        working-directory: docs
         run: npm ci
 
-      - name: Restore Docusaurus cache
-        uses: actions/cache@v4
-        with:
-          path: wiki/node_modules/.cache
-          key: docusaurus-${{ hashFiles('wiki/package-lock.json') }}
-          restore-keys: docusaurus-
-
-      - name: Build docs (English)
-        working-directory: wiki
-        run: npx docusaurus build --locale en
-
-      - name: Build docs (Chinese)
-        working-directory: wiki
-        run: npx docusaurus build --locale zh-CN
+      - name: Build docs (all locales)
+        working-directory: docs
+        run: npx docusaurus build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: wiki/build
+          path: docs/build
 
   deploy:
     environment:
